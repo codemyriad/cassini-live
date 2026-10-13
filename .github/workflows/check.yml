@@ -1,0 +1,48 @@
+name: Checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.2'
+          python-version: '3.12'
+      - run: uv sync --frozen
+      - run: uv run python scripts/prepare_vad.py
+      - run: uv run ruff check cassini_live scripts tests
+      - run: uv run python scripts/check_manifest.py
+      - run: uv run pytest -m 'not integration'
+      - run: uv run python scripts/prepare_model.py
+      - run: uv run pytest -m integration
+      - run: uv run python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cassini-live-package
+          path: dist/*.tar.gz
+  container:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: cassini-live:test
+      - run: >-
+          docker run --rm --network none --entrypoint python cassini-live:test
+          -c 'import needle; needle.Whistle(weights="/opt/whistle/whistle.cact"); print("Whistle ready offline")'
+      - name: Refuse recognition without enforced resource limits
+        run: >-
+          docker run --rm --network none --entrypoint python cassini-live:test
+          -c 'import asyncio; from cassini_live.pool import WorkerPool; from cassini_live.capacity import CapacityAssessment; from cassini_live.safety import SafetyController; p=WorkerPool(2); s=SafetyController(p,CapacityAssessment(p)); asyncio.run(s.start()); assert s.state == "blocked" and not p.workers; print(s.status())'

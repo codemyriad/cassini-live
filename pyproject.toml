@@ -1,0 +1,32 @@
+[project]
+name = "cassini-live"
+version = "0.4.0"
+description = "Local Whistle captions for Nextcloud Talk"
+requires-python = ">=3.12,<3.14"
+license = "AGPL-3.0-or-later"
+dependencies = [
+  "cactus-needle==3.2.0",
+  "nc-py-api[app]>=0.24.0,<0.25",
+  "aiortc>=1.14,<2",
+  "av>=16,<17",
+  "numpy>=2,<3",
+  "websockets>=15,<16",
+  "onnxruntime>=1.20,<2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=1,<2", "httpx>=0.28,<0.29", "ruff>=0.14,<0.15", "lxml>=6,<7"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["integration: requires real Whistle weights"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["cassini_live/talk/client.py", "cassini_live/talk/types.py", "cassini_live/talk/constants.py", "cassini_live/talk/audio_stream.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
