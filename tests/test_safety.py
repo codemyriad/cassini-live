@@ -233,3 +233,24 @@ async def test_sustained_overload_trips_circuit(monkeypatch, cause):
         assert guard.state == "blocked"
     finally:
         await guard.close()
+
+
+async def test_monitor_read_failure_during_preload_reaps_worker():
+    workers = []
+
+    def factory(weights):
+        worker = FakeWorker(weights)
+        workers.append(worker)
+        return worker
+
+    def check():
+        if workers:
+            raise OSError("Counters became unreadable")
+        return None
+
+    pool = WorkerPool(1, worker_factory=factory)
+    pool.resource_check = check
+    with pytest.raises(OSError):
+        await pool.start()
+    assert workers[0].process.returncode is not None
+    assert not pool.workers and pool.closed

@@ -2,7 +2,7 @@
 
 Local checks on Linux amd64, 13 October 2026:
 
-* 70 tests passed, including real Whistle workers, local WebRTC/Opus,
+* 71 tests passed, including real Whistle workers, local WebRTC/Opus,
   signalling, noise gating, scheduling and resource refusal.
 * An unrestricted Docker container refused to load recognition workers.
 * With a four-CPU quota, 2 GiB RAM, no swap and 128 PIDs, the offline capacity

@@ -134,17 +134,18 @@ class SafetyController:
             await self.trip("Resource monitoring failed; captions stopped")
 
     async def trip(self, reason):
-        self.state, self.reason = "blocked", reason
-        # Close workers first: cancellation cannot spawn replacements or leave
-        # native recognition chewing CPU during transport teardown.
-        await self.pool.close()
-        await self.assessment.interrupt()
-        if self.service is not None:
-            with suppress(Exception):
-                async with asyncio.timeout(5):
-                    await self.service.stop_rooms()
-        for lease in list(self.tracks):
-            lease.release()
+        async with self.lock:
+            self.state, self.reason = "blocked", reason
+            # Close workers first: cancellation cannot spawn replacements or leave
+            # native recognition chewing CPU during transport teardown.
+            await self.pool.close()
+            await self.assessment.interrupt()
+            if self.service is not None:
+                with suppress(Exception):
+                    async with asyncio.timeout(5):
+                        await self.service.stop_rooms()
+            for lease in list(self.tracks):
+                lease.release()
 
     async def _stop_monitor(self):
         if self.monitor and self.monitor is not asyncio.current_task():

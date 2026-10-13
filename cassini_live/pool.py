@@ -129,6 +129,7 @@ class WorkerPool:
                 await worker.close()
                 raise CapacityError("Recognition worker exhausted the resource headroom")
         except BaseException:
+            await worker.close()
             self.workers.discard(worker)
             raise
         if self.closed:
