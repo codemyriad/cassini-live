@@ -2,6 +2,9 @@
 
 ## Diagnostic video
 
+Release checks: 114 tests passed; Ruff, manifest validation, source packaging
+and the amd64 container build passed.
+
 Local checks include a real WebRTC sender/receiver, bounded VP8 packets at
 realistic timestamps, one-publisher admission, cancellation during process
 reaping, memory refusal, and last-human departure with an extra internal
@@ -14,6 +17,20 @@ periods were throttled, but for only 70–104 ms per second. The revised guard
 uses throttled duration and separately checks host CPU pressure and event-loop
 lag. Hard CPU, memory, no-swap and PID limits are unchanged. Claude reviewed
 the design and the correction; the diagnostic lifecycle findings were addressed.
+The final review also caught a backend URL mismatch for installations using an
+internal Nextcloud address, and a missing host-pressure check before worker
+loading. Both were fixed with regression coverage.
+
+The final staging run recovered through the saved cooldown and passed capacity
+calibration without intervention. With diagnostics enabled, a Talk browser
+received 63 caption updates and decoded 30 dashboard frames during 60 seconds
+of recorded speech. The service stayed ready, then removed both internal
+participants when the last human left. On that four-CPU host with a two-CPU
+caption quota, host CPU PSI `some avg10` peaked at 6.62%. Sampled event-loop lag
+stayed below 1 ms. Steady publisher cost was 1.5–4.9% of one CPU, about 98 MiB
+RSS and 91–93 kbit/s; its first startup sample briefly reached 31% CPU.
+The parent sampler used 1.1–3.0 ms per update. This is one short fixture call,
+not a long meeting or a multi-room load test.
 
 ## Pause-aware handoffs
 

@@ -68,7 +68,8 @@ def test_retry_budget_grows_caps_and_jitter_never_shortens_minimum():
     assert policy.insufficient == 900
 
 
-async def test_automatic_recovery_requires_cooldown_and_continuous_headroom(harness):
+@pytest.mark.parametrize("pressure", ["cpuPressure", "hostCpuPressure"])
+async def test_automatic_recovery_requires_cooldown_and_continuous_headroom(harness, pressure):
     guard, pool, data, clock = harness
     try:
         await guard.start()
@@ -81,7 +82,7 @@ async def test_automatic_recovery_requires_cooldown_and_continuous_headroom(harn
         assert pool.closed  # Cooldown elapsed, but sustained headroom is still required.
         await advance(guard, clock, 179)
         assert pool.closed
-        data["cpuPressure"] = 30
+        data[pressure] = 30
         await advance(guard, clock, 1)
         data.update(SAFE)
         await advance(guard, clock, 1)
@@ -224,6 +225,8 @@ async def test_excess_demand_does_not_trip_resource_safety(harness):
 
 
 def test_unknown_or_high_pressure_prevents_reload():
+    assert recovery_problem({**SAFE, "hostCpuPressure": 30}, 1)
+    assert recovery_problem({**SAFE, "hostCpuPressure": None}, 1)
     assert recovery_problem({**SAFE, "cpuPressure": 30}, 1)
     assert recovery_problem({**SAFE, "memoryPressure": 2}, 1)
     missing = dict(SAFE)
@@ -264,5 +267,20 @@ async def test_status_request_does_not_recalibrate_or_raise_backoff(harness):
         await asyncio.sleep(0.03)
         assert guard.state == "ready"
         assert pool.generation == generation and guard.failures == failures
+    finally:
+        await guard.close()
+
+
+@pytest.mark.parametrize("host", [None, 25])
+async def test_host_pressure_prevents_initial_worker_allocation(harness, host):
+    guard, pool, data, clock = harness
+    data["hostCpuPressure"] = host
+    pool.start = AsyncMock()
+    try:
+        await guard.start()
+        await advance(guard, clock, 1000)
+        pool.start.assert_not_awaited()
+        assert guard.state == ("blocked" if host is None else "recovering")
+        assert "host CPU" in guard.reason or "Host CPU" in guard.reason
     finally:
         await guard.close()

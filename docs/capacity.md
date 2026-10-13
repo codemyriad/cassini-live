@@ -41,7 +41,7 @@ with exponential backoff up to an hour plus 0–20% jitter. A failed capacity
 assessment waits at least 15 minutes. Before reloading models, it requires three
 continuous minutes with memory/PIDs below 60%, spare host memory for workers,
 and readable, low host/container pressure (PSI `some avg60`: CPU below 20%, memory below
-1%). Missing PSI is reported as a configuration problem (enable PSI in the
+1%; host CPU `some avg10` also below 20%). Missing PSI is reported as a configuration problem (enable PSI in the
 kernel and expose its host and cgroup counters). A pressure spike restarts that healthy window. Recovery attempts use the
 same bounded capacity test; failure counts reset only after 30 minutes ready.
 

@@ -89,7 +89,7 @@ class DiagnosticVideo:
             settings = self.service.settings
             config = {
                 "room": token,
-                "backend": os.environ.get("NEXTCLOUD_URL", ""),
+                "backend": owner.backend_url,
                 "server": settings.server,
                 "stunservers": settings.model_dump()["stunservers"],
                 "turnservers": settings.model_dump()["turnservers"],

@@ -194,6 +194,10 @@ class SafetyController:
                         problem = (
                             "Linux PSI pressure statistics are unavailable; enable and expose PSI"
                         )
+                    if not problem and data.get("hostCpuPressure") is None:
+                        problem = (
+                            "Host CPU PSI statistics are unavailable; expose /proc/pressure/cpu"
+                        )
                     if problem:
                         transient = problem == pressure_problem(data) and data.get(
                             "monitoringAvailable"

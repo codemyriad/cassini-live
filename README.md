@@ -12,10 +12,10 @@ If the machine cannot keep up, Cassini Live should refuse to caption.
 
 ## Where it stands
 
-**0.6.0 is a development release.** The earlier 0.3.0 pipeline has produced
-captions in a real Nextcloud Talk browser call. This version includes automatic recovery after resource pressure and worker
-handoffs that prefer pauses in speech. It has automated tests and still needs
-validation in real meetings.
+**0.6.0 is a development release.** It includes automatic recovery after resource
+pressure, worker handoffs that prefer pauses in speech, and an optional dashboard
+inside the call. Captions and the dashboard have run in a real Talk browser call
+with recorded speech. Validation in everyday meetings is still needed.
 
 * Whistle runs on the CPU. A GPU does not accelerate this engine.
 * Seven languages: English, German, French, Spanish, Italian, Dutch and Polish.
@@ -32,17 +32,20 @@ It refuses unsafe configurations before loading recognition workers. During use,
 resource pressure or repeated failures stop captions. After resources recover,
 it waits, retests and becomes available automatically. Repeated failures make
 retries less frequent; container restarts preserve that delay. The operating
-system enforces the limits even if the application misbehaves. An interrupted call may need captions toggled back on once the
-service is ready. See [the safety policy and capacity test](docs/capacity.md).
+system enforces the limits even if the application misbehaves. An interrupted
+call may need captions toggled back on once the service is ready.
+See [the safety policy and capacity test](docs/capacity.md).
 
 An optional [diagnostic video](docs/diagnostic-video.md) shows resource usage and
-measured caption headroom inside a call, including its own overhead.
+measured caption headroom inside a call, including its own overhead. We enable
+it on our deployments; other installations default to off.
 
 ## Try it
 
 You need Nextcloud with Talk's High-performance backend, AppAPI, a deploy daemon
-and Linux with cgroup v2 and PSI pressure statistics. The image includes the models and runs offline after
-installation. An administrator must supply the HPB internal secret.
+and Linux with cgroup v2 and PSI pressure statistics. The image includes the
+models and runs offline after installation. An administrator must supply the
+HPB internal secret.
 
 Follow the [installation instructions](docs/install.md). There is no published
 App Store release. Talk currently fixes the caption provider ID to

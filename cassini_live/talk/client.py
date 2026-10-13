@@ -77,6 +77,7 @@ class SpreedClient:
 		leave_call_cb: Callable[[str], Awaitable[None]] | None,  # room_token
 	) -> None:
 		self.id = 0
+		self.backend_url: str | None = None
 		self.admission = None
 		self._track_leases = set()
 		self._accepting_offers = set()
@@ -455,6 +456,7 @@ class SpreedClient:
 			params={"url": ""},
 		)
 		nc_public_url = abs_url_res.get("absolute_url") or nc.app_cfg.endpoint
+		self.backend_url = nc_public_url
 
 		await self.send_message({
 			"type": "hello",

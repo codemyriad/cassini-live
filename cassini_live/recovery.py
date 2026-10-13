@@ -29,6 +29,8 @@ class RecoveryPolicy:
 def recovery_problem(data, workers):
     if problem := budget_problem(data, workers):
         return problem
+    if data.get("hostCpuPressure") is None or data["hostCpuPressure"] >= 20:
+        return "Waiting for readable, low host CPU pressure"
     if data["memoryFraction"] >= 0.6 or data["pidsFraction"] >= 0.6:
         return "Waiting for memory and process headroom"
     reserve = max(256 * MIB, data["hostMemoryBytes"] * 0.1)

@@ -107,9 +107,16 @@ def test_process_metrics_include_real_memory():
 async def test_pressure_stops_and_reaps_only_optional_child(monkeypatch, pressure, rss, state):
     import cassini_live.diagnostics as module
 
+    monkeypatch.setenv("NEXTCLOUD_URL", "http://internal-nextcloud")
+
     class Pipe:
         def write(self, data):
+            import json
+
             assert len(data) < 8192
+            config = json.loads(data)
+            if "backend" in config:
+                assert config["backend"] == "https://public.example"
 
         async def drain(self):
             pass
@@ -138,7 +145,7 @@ async def test_pressure_stops_and_reaps_only_optional_child(monkeypatch, pressur
     service = SimpleNamespace(
         settings=settings,
         admission=SimpleNamespace(state="ready"),
-        clients={"room": SimpleNamespace(defunct=asyncio.Event())},
+        clients={"room": SimpleNamespace(defunct=asyncio.Event(), backend_url="https://public.example")},
     )
     manager = DiagnosticVideo(service)
     monkeypatch.setattr(module.asyncio, "create_subprocess_exec", spawn)
