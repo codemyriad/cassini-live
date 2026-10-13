@@ -113,7 +113,7 @@ class WhistleTranscriber:
             self.lease_samples = 0
             await self.pool.release(worker, healthy=healthy)
 
-    async def _finish(self):
+    async def _finish(self, reason="flush"):
         if not self.worker:
             return
         await self.worker.send({"type": "end"})
@@ -125,6 +125,59 @@ class WhistleTranscriber:
                 raise RuntimeError("Unexpected Whistle response")
             await self._emit(message["result"])
         await self._release(healthy=True)
+        self.pool.stream_ends[reason] += 1
+
+    async def _decode_audio(self, chunk):
+        offset = 0
+        while offset < len(chunk.samples):
+            if self.worker is None:
+                self.worker = await self.pool.acquire_wait(timeout=2)
+                if time.monotonic() - chunk.created_at > 4:
+                    await self._release(healthy=True)
+                    self.pool.note_drop()
+                    return
+                await self.worker.send({"type": "start", "language": self.language})
+            cut = len(chunk.samples)
+            reason = None
+            total = self.lease_samples + cut - offset
+            if self.pool.waiting and total >= 32000 and not (chunk.end and total == 32000):
+                # Prefer a pause already in this chunk, with at least one
+                # second of useful work per lease. Never extend the 2s budget.
+                cut = offset + max(0, 32000 - self.lease_samples)
+                reason = "schedulingLimit"
+                pause = chunk.pause_cut
+                if (
+                    pause is not None
+                    and offset < pause <= cut
+                    and self.lease_samples + pause - offset >= 16000
+                ):
+                    cut = pause
+                    reason = "schedulingPause"
+            if cut > offset:
+                await self.worker.send(
+                    {
+                        "type": "audio",
+                        "pcm": base64.b64encode(chunk.samples[offset:cut].tobytes()).decode(),
+                    }
+                )
+                message = await self.worker.receive()
+                if message["type"] != "result":
+                    raise RuntimeError("Unexpected Whistle response")
+                await self._emit(message["result"])
+                self.lease_samples += cut - offset
+                offset = cut
+            # A waiter can arrive while native inference is running. Release
+            # immediately at the deadline rather than waiting for more audio.
+            if reason is None and self.pool.waiting and self.lease_samples >= 32000:
+                reason = "schedulingLimit"
+            if reason:
+                # A natural endpoint at exactly the deadline needs no extra
+                # reset and should be reported as the natural endpoint.
+                if offset == len(chunk.samples) and chunk.end:
+                    reason = chunk.end_reason
+                else:
+                    self.pool.scheduling_yields += 1
+                await self._finish(reason)
 
     async def _clear_preview(self):
         if self.pending:
@@ -141,37 +194,18 @@ class WhistleTranscriber:
                     return
                 if chunk.sequence != expected:
                     # Never splice audio across a lost interval in native state.
-                    await self._finish()
+                    await self._finish("audioGap")
                     await self._clear_preview()
                 expected = chunk.sequence + 1
                 if time.monotonic() - chunk.created_at > 4:
                     self.pool.note_drop()
-                    await self._finish()
+                    await self._finish("expiredAudio")
                     await self._clear_preview()
                     continue
                 if len(chunk.samples):
-                    if self.worker is None:
-                        self.worker = await self.pool.acquire_wait(timeout=2)
-                        if time.monotonic() - chunk.created_at > 4:
-                            await self._release(healthy=True)
-                            self.pool.note_drop()
-                            continue
-                        await self.worker.send({"type": "start", "language": self.language})
-                    await self.worker.send(
-                        {
-                            "type": "audio",
-                            "pcm": base64.b64encode(chunk.samples.tobytes()).decode(),
-                        }
-                    )
-                    message = await self.worker.receive()
-                    if message["type"] != "result":
-                        raise RuntimeError("Unexpected Whistle response")
-                    await self._emit(message["result"])
-                    self.lease_samples += len(chunk.samples)
-                if chunk.end or (self.lease_samples >= 32000 and self.pool.waiting):
-                    if not chunk.end:
-                        self.pool.scheduling_yields += 1
-                    await self._finish()
+                    await self._decode_audio(chunk)
+                if chunk.end:
+                    await self._finish(chunk.end_reason)
             except CapacityError:
                 # Bounded waiting per speaker; other speakers/rooms stay alive.
                 self.pool.capacity_waits += 1

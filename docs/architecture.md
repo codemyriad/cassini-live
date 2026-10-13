@@ -65,9 +65,13 @@ leased only for speech, with two-second bounded capacity waits; exhausting
 actual resource pressure closes caption rooms through the safety controller.
 Excess speaking demand drops audio without restarting the service. FIFO futures directly hand returning workers to
 waiting speakers, including safe return of leases if cancellation races handoff.
-After two seconds of supplied audio, a recognizer with waiters finishes and
-releases its lease. This bounds audio per turn under contention, not elapsed
-inference/finalization time. Uncontended segments last at most 15 seconds.
+With waiters, a recognizer prefers a VAD pause already buffered between one and
+two seconds of supplied audio, otherwise it cuts at two seconds. The remainder
+keeps its original age and waits its turn; no audio is replayed. This bounds
+audio per turn under contention, not elapsed inference/finalization time.
+Uncontended segments prefer a pause after 14 seconds and end at 15 seconds
+(within one VAD frame). `/status` reports `streamEnds` counters for natural
+pauses, duration limits, scheduling pauses, forced handoffs and audio gaps.
 Stop flushes partial audio and the recogniser's final words;
 transport teardown drains captions before sending `bye`, subject to timeouts.
 

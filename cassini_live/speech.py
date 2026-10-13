@@ -1,7 +1,8 @@
 """Cheap per-track speech gating before leasing an expensive recognizer.
 
 Keep 320 ms before speech and 608 ms after it. Cap a recognition segment at
-15 seconds so continuous speakers periodically release their worker to waiters.
+15 seconds, preferring a pause after 14 seconds. Mark shorter pauses in the
+existing one-second buffer for bounded worker handoffs under contention.
 No audio leaves memory. Silero consumes 32 ms of 16 kHz floating-point PCM.
 """
 
@@ -20,6 +21,8 @@ class SpeechChunk:
     end: bool = False
     sequence: int = 0
     created_at: float = field(default_factory=monotonic)
+    pause_cut: int | None = None
+    end_reason: str = "flush"
 
 
 class SpeechGate:
@@ -34,9 +37,19 @@ class SpeechGate:
         self.duration = 0
         self.buffer = np.empty(0, dtype="<f4")
         self.sequence = 0
+        self.pause_cut = None
 
-    def _chunk(self, samples, end=False):
-        chunk = SpeechChunk(samples, end, self.sequence)
+    def _chunk(self, samples, end=False, reason="flush"):
+        cut = self.pause_cut
+        chunk = SpeechChunk(
+            samples,
+            end,
+            self.sequence,
+            pause_cut=cut if cut is not None and 0 < cut < len(samples) else None,
+            end_reason=reason,
+        )
+        if cut is not None:
+            self.pause_cut = cut - len(samples) if cut > len(samples) else None
         self.sequence += 1
         return chunk
 
@@ -65,15 +78,27 @@ class SpeechGate:
                 self.buffer = np.concatenate((self.buffer, frame))
                 self.duration += len(frame)
             self.quiet = 0 if voiced else self.quiet + 1
-            end = self.quiet * self.frame_size >= 9600 or self.duration >= 15 * 16000
+            quiet_samples = self.quiet * self.frame_size
+            # A sustained VAD pause, not a single low-energy consonant. Keep
+            # its centre in the existing buffer; never add lookahead or replay.
+            if quiet_samples >= 2048:
+                self.pause_cut = len(self.buffer) - 1024
+            reason = None
+            if quiet_samples >= 9600:
+                reason = "silence"
+            elif self.duration >= 14 * 16000 and quiet_samples >= 2048:
+                reason = "durationPause"
+            elif self.duration >= 15 * 16000:
+                reason = "durationLimit"
             while len(self.buffer) > 16000:
                 chunks.append(self._chunk(self.buffer[:16000]))
                 self.buffer = self.buffer[16000:]
-            if end:
-                chunks.append(self._chunk(self.buffer, end=True))
+            if reason:
+                chunks.append(self._chunk(self.buffer, end=True, reason=reason))
                 self.buffer = np.empty(0, dtype="<f4")
                 self.active = False
                 self.quiet = 0
+                self.pause_cut = None
             elif len(self.buffer) >= 16000:
                 chunks.append(self._chunk(self.buffer[:16000]))
                 self.buffer = self.buffer[16000:]

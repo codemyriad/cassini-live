@@ -12,9 +12,10 @@ If the machine cannot keep up, Cassini Live should refuse to caption.
 
 ## Where it stands
 
-**0.5.0 is a development release.** The earlier 0.3.0 pipeline has produced
-captions in a real Nextcloud Talk browser call. This version adds automatic recovery after resource pressure. It has automated
-tests and still needs validation in real meetings.
+**0.5.1 is a development release.** The earlier 0.3.0 pipeline has produced
+captions in a real Nextcloud Talk browser call. This version includes automatic recovery after resource pressure and worker
+handoffs that prefer pauses in speech. It has automated tests and still needs
+validation in real meetings.
 
 * Whistle runs on the CPU. A GPU does not accelerate this engine.
 * Seven languages: English, German, French, Spanish, Italian, Dutch and Polish.
@@ -58,7 +59,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.5.0 .`.
+`docker build -t cassini-live:0.5.1 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

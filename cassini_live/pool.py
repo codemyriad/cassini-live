@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from contextlib import suppress
 
 LOGGER = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ class WorkerPool:
         self.dropped_chunks = 0
         self.waiters = deque()
         self.scheduling_yields = 0
+        self.stream_ends = Counter()
         self.last_pressure = 0.0
         self.admission_limit = size
         self.leased = set()
@@ -245,6 +246,7 @@ class WorkerPool:
             "speechDetector": "silero-v6.2.1",
             "waitingSpeakers": self.waiting,
             "schedulingYields": self.scheduling_yields,
+            "streamEnds": dict(self.stream_ends),
             "recentCapacityPressure": bool(
                 self.last_pressure and time.monotonic() - self.last_pressure < 60
             ),

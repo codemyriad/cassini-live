@@ -1,4 +1,29 @@
-# Verification for 0.5.0
+# Verification for 0.5.1
+
+## Pause-aware handoffs
+
+Release checks: 94 tests passed; Ruff and manifest validation passed.
+
+The boundary tests check sample preservation, FIFO speaker handoffs, rejection
+of brief dips and the two-second audio budget after partial-chunk handoffs.
+These checks establish scheduling behavior, not recognition accuracy.
+
+`scripts/benchmark_boundaries.py` compares fixed and pause-aware handoffs using
+one real Whistle worker and the bundled English recording at three timing
+offsets. Run locally with:
+
+```sh
+PYTHONPATH=. NEEDLE3_LIB_PATH="$PWD/models/libneedle3.so" HF_HUB_OFFLINE=1 \
+  uv run python scripts/benchmark_boundaries.py
+```
+
+The initial run produced identical transcripts for both policies: word error
+rates were 18.18%, 18.18% and 22.73% across the offsets. Only the last offset
+used a scheduling pause. No accuracy improvement is established by this sample.
+Contention is simulated; this is not a live latency or capacity test. Broader
+recordings, languages and speech around the 15-second limit still need evaluation.
+
+## Automatic recovery
 
 Local checks on Linux amd64, 13 October 2026:
 
