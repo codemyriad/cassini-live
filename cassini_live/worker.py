@@ -37,6 +37,12 @@ def audio_chunks():
 
 
 def main():
+    # Prefer sacrificing recognition to killing the lightweight supervisor.
+    try:
+        with open("/proc/self/oom_score_adj", "w") as handle:
+            handle.write("1000")
+    except OSError:
+        pass
     import needle
 
     model = needle.Whistle(weights=sys.argv[1] if len(sys.argv) > 1 else None)

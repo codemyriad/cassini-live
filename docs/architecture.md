@@ -62,7 +62,8 @@ discarded, including a second age check after waiting for a worker. Sequence
 numbers force recognition to flush across gaps rather than splice discontinuous
 audio. Capture continues while a failed recognizer is replaced. Workers are
 leased only for speech, with two-second bounded capacity waits; exhausting
-sustained capacity pressure closes caption rooms through the safety controller. FIFO futures directly hand returning workers to
+actual resource pressure closes caption rooms through the safety controller.
+Excess speaking demand drops audio without restarting the service. FIFO futures directly hand returning workers to
 waiting speakers, including safe return of leases if cancellation races handoff.
 After two seconds of supplied audio, a recognizer with waiters finishes and
 releases its lease. This bounds audio per turn under contention, not elapsed
@@ -104,10 +105,23 @@ This fixture bypasses WebRTC; it is not a substitute for a real Talk call.
 `cassini_live.capacity` exercises the actual gate, queues and preloaded worker
 pool using the bundled public-domain fixture. Startup runs the assessment in
 the background while `/status` and the page show `checking`. Caption requests receive HTTP 503 until the workload passes and the resource
-controller admits calls. Admission then uses the measured speaking budget. The internal recheck endpoint rejects browser users
-and active/in-flight caption rooms. Simulated counters do not contaminate live
+controller admits calls. Admission then uses the measured speaking budget. The compatibility wake endpoint rejects browser users
+and active/in-flight caption rooms; it cannot force a reload or bypass cooldowns. Simulated counters do not contaminate live
 call health. Results remain in memory and are remeasured after restart.
 
 The standalone CLI uses its own pool for testing an image before installation.
-The installed CLI requests the service's exclusive idle check instead of creating
-an additional competing pool. See [assessment criteria](capacity.md).
+The installed CLI reads status without creating an additional competing pool. See [assessment criteria](capacity.md).
+
+## Automatic recovery
+
+One supervisor owns model loading, calibration, ready-state monitoring and
+recovery. Cheap headroom checks precede any expensive retry; exponential backoff
+is persisted before loading models. Disable cancels this supervisor and awaits
+cleanup. Worker generations reject stale returns after a restart. Room close
+tasks remain tracked and shielded from caller cancellation, and pending joins
+recheck their room generation before accepting subscriptions.
+
+The design was reviewed with Claude before implementation. The review identified
+teardown leaks, stale worker returns, restart backoff loss and excess-demand
+flapping as prerequisites to automatic recovery. Tests cover those paths. See
+[the policy and operational limits](capacity.md).

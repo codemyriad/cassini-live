@@ -61,14 +61,26 @@
     if (safety.state === 'blocked') {
       capacityTitle.textContent = 'Captions are unavailable';
       capacitySummary.textContent = safety.reason;
-      capacityDetail.textContent = 'Ask your administrator to fix the resource limits or reduce load, then run the capacity check again.';
+      capacityDetail.textContent = 'An administrator needs to fix this configuration. The service detects corrections automatically.';
+    } else if (safety.state === 'recovering') {
+      state.textContent = 'Caption service is recovering';
+      explanation.textContent = 'The service will retry automatically when resources and connections permit.';
+      capacityTitle.textContent = 'Captions are recovering automatically';
+      capacitySummary.textContent = safety.reason;
+      capacityDetail.textContent = 'No administrator action is needed. The service waits for sustained headroom before testing again.';
+      if (safety.nextAttemptAt) capacityDetail.textContent += ` Next attempt no earlier than ${new Date(safety.nextAttemptAt * 1000).toLocaleTimeString()}.`;
+      capacityDetail.textContent += ' In an interrupted call, turn captions off and on once the service is ready.';
+    } else if (safety.state === 'disabled') {
+      capacityTitle.textContent = 'Captions are disabled';
+      capacitySummary.textContent = 'The service will stay stopped until it is enabled.';
+      capacityDetail.textContent = '';
     } else if (measured) {
       const n = check.testedSpeakers;
       capacityTitle.textContent = `Measured for ${n} simultaneous ${n === 1 ? 'speaker' : 'speakers'}`;
       capacitySummary.textContent = `Across all calls on this server. Tested with ${check.testedParticipants} open audio tracks, speech and simulated background noise, with throughput headroom.`;
       capacityDetail.textContent = 'This is a short English sample, not a guarantee. Microphones, network conditions, other languages and changing server load still affect captions.';
       if (check.checkedAt) capacityDetail.textContent += ` Checked ${new Date(check.checkedAt).toLocaleString()}.`;
-    } else if (check.state === 'checking') {
+    } else if (safety.state === 'checking') {
       capacityTitle.textContent = 'Measuring server capacity…';
       capacitySummary.textContent = 'Running a bundled recording locally. No call or microphone is needed. Captions stay unavailable until the check passes.';
       capacityDetail.textContent = 'Usually takes less than two minutes.';

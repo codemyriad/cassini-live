@@ -5,6 +5,7 @@ import weakref
 from contextlib import suppress
 
 from .config import websocket_url
+from .safety import ResourceRefused
 from .talk.client import SpreedClient
 from .talk.types import HPBSettings, SigConnectResult, SpreedClientException
 
@@ -18,6 +19,9 @@ class CaptionService:
         self.settings = None
         self.enabled = False
         self.admission = None
+        self.generation = 0
+        self.closing = {}
+        self.inflight = set()
 
     async def discover(self, nc):
         if not self.config.secret:
@@ -30,7 +34,18 @@ class CaptionService:
         return self.locks.setdefault(token, asyncio.Lock())
 
     async def request(self, req):
+        task = asyncio.current_task()
+        self.inflight.add(task)
+        try:
+            return await self._request(req)
+        finally:
+            self.inflight.discard(task)
+
+    async def _request(self, req):
+        generation = self.generation
         async with self._lock(req.roomToken):
+            if req.enable and self.admission:
+                self.admission.require_ready()
             client = self.clients.get(req.roomToken)
             if client and client.defunct.is_set():
                 self.clients.pop(req.roomToken, None)
@@ -41,7 +56,7 @@ class CaptionService:
                     # Stop promptly when nobody is receiving captions.
                     if not client.targets and not client._nc_sid_wait_stash:
                         self.clients.pop(req.roomToken, None)
-                        await client.close()
+                        await asyncio.shield(self._closing_task(client))
                 return
             if client:
                 await client.add_target(req.ncSessionId)
@@ -68,11 +83,18 @@ class CaptionService:
                     result = await client.connect()
                     if result != SigConnectResult.SUCCESS:
                         raise SpreedClientException("Could not connect to Talk's signalling server")
+                    if generation != self.generation:
+                        raise ResourceRefused("Caption service paused during connection")
+                    if self.admission:
+                        self.admission.require_ready()
                     await client.add_target(req.ncSessionId)
             except BaseException:
-                self.clients.pop(req.roomToken, None)
+                if self.clients.get(req.roomToken) is client:
+                    self.clients.pop(req.roomToken, None)
                 with suppress(Exception):
-                    await client.close()
+                    await asyncio.shield(self._closing_task(client))
+                if generation != self.generation:
+                    raise ResourceRefused("Caption service paused during connection") from None
                 raise
 
     async def set_language(self, req):
@@ -86,13 +108,36 @@ class CaptionService:
         async with self._lock(token):
             client = self.clients.pop(token, None)
             if client:
-                await client.close()
+                await asyncio.shield(self._closing_task(client))
 
     async def close(self):
         self.enabled = False
         await self.stop_rooms()
 
+    def _closing_task(self, client):
+        if client not in self.closing:
+            task = asyncio.create_task(client.close())
+            self.closing[client] = task
+
+            def finished(done):
+                if not done.cancelled() and done.exception() is None:
+                    self.closing.pop(client, None)
+
+            task.add_done_callback(finished)
+        return self.closing[client]
+
     async def stop_rooms(self):
+        self.generation += 1
         clients = list(self.clients.values())
         self.clients.clear()
-        await asyncio.gather(*(c.close() for c in clients), return_exceptions=True)
+        for client in clients:
+            self._closing_task(client)
+        pending = [task for task in self.inflight if task is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+        # Never discard a still-running close when the caller is cancelled.
+        if self.closing:
+            await asyncio.shield(asyncio.gather(*self.closing.values()))
+            self.closing.clear()

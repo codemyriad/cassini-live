@@ -13,6 +13,9 @@ from cassini_live.safety import ResourceRefused, SafetyController
 from tests.test_streaming import FakeWorker
 
 SAFE = {
+    "pressureAvailable": True,
+    "cpuPressure": 0,
+    "memoryPressure": 0,
     "monitoringAvailable": True,
     "cpuQuotaCpus": 4.0,
     "affinityCpus": 8,
@@ -57,7 +60,7 @@ async def test_unsafe_installation_never_loads_a_model(change):
     data = {**SAFE, **change}
     guard = SafetyController(pool, CapacityAssessment(pool), reader=lambda: data)
     await guard.start()
-    assert guard.state == "blocked"
+    assert guard.state in {"blocked", "recovering"}
     pool.start.assert_not_awaited()
     with pytest.raises(ResourceRefused):
         guard.require_ready()
@@ -105,7 +108,9 @@ async def test_measured_speaking_limit_is_enforced_even_with_idle_workers(monkey
         ({"oomKills": 1}, "memory limit"),
     ],
 )
-async def test_pressure_stops_rooms_and_workers_and_requires_recheck(monkeypatch, change, reason):
+async def test_pressure_stops_rooms_and_workers_and_waits_before_recovery(
+    monkeypatch, change, reason
+):
     async def scenario(pool, count):
         return {"passed": True, "speakers": count}
 
@@ -122,15 +127,13 @@ async def test_pressure_stops_rooms_and_workers_and_requires_recheck(monkeypatch
     async with asyncio.timeout(2):
         while pool.workers or not service.stop_rooms.await_count:
             await asyncio.sleep(0.01)
-    assert guard.state == "blocked" and reason in guard.reason
+    assert guard.state == "recovering" and reason in guard.reason
     assert not pool.workers
     await asyncio.sleep(0.01)
     service.stop_rooms.assert_awaited_once()
     data.update(SAFE)
     await asyncio.sleep(0.02)
-    assert guard.state == "blocked"  # No restart storm when pressure fluctuates.
-    await guard.start()
-    assert guard.state == "checking"
+    assert guard.state == "recovering"  # Cooldown still holds after pressure clears.
     await guard.close()
 
 
@@ -205,7 +208,7 @@ async def test_invalid_offer_releases_reserved_track():
     assert not client._accepting_offers
 
 
-@pytest.mark.parametrize("cause", ["dropped", "throttled", "failures"])
+@pytest.mark.parametrize("cause", ["throttled", "failures"])
 async def test_sustained_overload_trips_circuit(monkeypatch, cause):
     async def scenario(pool, count):
         return {"passed": True, "speakers": count}
@@ -230,7 +233,7 @@ async def test_sustained_overload_trips_circuit(monkeypatch, cause):
                     data["cpuPeriods"] += 10
                     data["throttledPeriods"] += 10
                 await asyncio.sleep(0.1)
-        assert guard.state == "blocked"
+        assert guard.state == "recovering"
     finally:
         await guard.close()
 

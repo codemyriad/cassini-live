@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import socket
+import time
 from contextlib import suppress
 from datetime import UTC, datetime
 
@@ -130,16 +131,18 @@ def installed_request(method, path):
 
 async def main(args):
     if args.installed:
-        installed_request("POST", "/capacity/check")
-        async with asyncio.timeout(150):
-            while True:
-                status = installed_request("GET", "/status")
-                result = status["capacityAssessment"]
-                safety = status["resourceSafety"]
-                if safety["state"] != "checking":
-                    result = {**result, "resourceSafety": safety}
-                    break
-                await asyncio.sleep(1)
+        started = time.monotonic()
+        while True:
+            status = installed_request("GET", "/status")
+            safety = status["resourceSafety"]
+            result = {**status["capacityAssessment"], "resourceSafety": safety}
+            state = safety["state"]
+            budget = max(150, args.wait) if state == "checking" else args.wait
+            if state in {"ready", "blocked", "disabled"}:
+                break
+            if time.monotonic() - started >= budget:
+                break  # Report current recovery state rather than a timeout traceback.
+            await asyncio.sleep(1)
     else:
         config = Config.from_env()
         pool = WorkerPool(args.workers or config.workers, args.weights or config.weights)
@@ -160,7 +163,14 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--installed", action="store_true", help="Assess the running idle service")
+    parser.add_argument(
+        "--installed",
+        action="store_true",
+        help="Report the running service capacity and automatic recovery status",
+    )
+    parser.add_argument(
+        "--wait", type=int, default=0, help="Seconds to wait through installed recovery"
+    )
     parser.add_argument("--workers", type=int, choices=range(1, 33))
     parser.add_argument("--weights")
     raise SystemExit(asyncio.run(main(parser.parse_args())))

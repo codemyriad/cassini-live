@@ -1,6 +1,6 @@
 # Check caption capacity without a call
 
-Cassini Live 0.4.0 measures capacity automatically after startup, using the actual
+Cassini Live 0.5.0 measures capacity automatically after startup, using the actual
 installed recognition workers. Open **Cassini Live** in Nextcloud to see the
 result. No microphone, Talk room, private recording, model download or network
 speech service is used. The small public-domain fixture is included in the image.
@@ -28,12 +28,44 @@ captions blocked. There is no environment switch to bypass the check.
 The limits are enforced by Linux, outside the application. The service checks
 pressure every second and stops workers and caption rooms at 80% of the memory
 or PID budget, low host memory, an OOM kill, changed limits, or three consecutive
-seconds of heavy CPU throttling/event-loop delay. Three dropped speech chunks
-within a 15-second monitoring window or three worker failures within a minute
-also stop captions. Audio queues, wait times, input tracks and rooms are bounded.
+seconds of heavy CPU throttling/event-loop delay. Three worker failures within a minute also stop captions. Excess speaking
+demand drops audio locally and reports load; it does not restart the service.
+Audio queues, wait times, input tracks and rooms are bounded.
 
-Refusal stays in place until an administrator reruns the check. A restart always
-checks again. This protects resources allocated to this container; it cannot
+Recovery is automatic. The supervisor waits at least two minutes after failure,
+with exponential backoff up to an hour plus 0–20% jitter. A failed capacity
+assessment waits at least 15 minutes. Before reloading models, it requires three
+continuous minutes with memory/PIDs below 60%, spare host memory for workers,
+and readable, low host/container pressure (PSI `some avg60`: CPU below 20%, memory below
+1%). Missing PSI is reported as a configuration problem (enable PSI in the
+kernel and expose its host and cgroup counters). A pressure spike restarts that healthy window. Recovery attempts use the
+same bounded capacity test; failure counts reset only after 30 minutes ready.
+
+A small recovery journal records the retry deadline before model loading. It
+survives process/container restarts, preventing an OOM restart from bypassing
+the cooldown. The app uses `APP_PERSISTENT_STORAGE`, or
+`/home/cassini/.local/state` when unset. Preserve that directory across container
+recreation if your deploy daemon does not provide persistent storage. An
+unwritable or corrupt journal blocks model loading and is reported as a
+configuration problem. The journal contains no call identifiers or audio.
+
+Missing limits remain blocked, with cheap checks every 15 seconds. Corrected
+limits are detected automatically, and default worker counts are recalculated.
+Explicit worker overrides must still fit the budget. Disabling the app cancels
+loading, calibration and recovery; a disabled app starts no workers. If Nextcloud
+or Talk is still starting, connection discovery retries with a 15–60 second
+backoff without loading models until the connection and enabled state are known.
+
+After recovery, new caption requests work without administrator intervention.
+Existing caption rooms are closed on overload and are not automatically rejoined;
+participants may need to turn captions off and on. This avoids immediately
+recreating the same meeting load. No call subscriptions are saved to disk.
+
+Room teardown must finish before workers reopen. If it cannot finish within
+30 seconds, the caption process exits so the container supervisor can reap its
+remaining processes. Its persisted cooldown still applies on restart.
+
+This protects resources allocated to this container; it cannot
 reserve the rest of the host against unrelated applications. Operators must also
 bound Docker logs, as described in [installation](install.md).
 
@@ -74,24 +106,25 @@ real calls for end-to-end quality and leave resources for other applications.
 - **Check did not pass:** even one speaker failed a criterion. Inspect `/status`
   → `capacityAssessment.scenarios[].reasons`; this can be timing, noise or sample
   recognition failure, rather than simply insufficient CPU.
-- **Not established / interrupted / error:** no capacity claim is made. Captions remain unavailable. Rerun after resolving the reported problem.
+- **Not established / interrupted / error:** no capacity claim is made. Captions remain unavailable. Transient failures retry automatically; configuration problems report the required correction.
 
 The status page separately warns about recently dropped live audio. The measured speaker count limits concurrent recognition leases.
 A historical passing result never overrides a current resource refusal. Results are
 kept in memory and remeasured on service restart. No call content is stored.
 
-## Rerun on an installed service
+## Inspect recovery
 
-When no caption rooms are active:
+To see the current assessment and recovery status:
 
 ```sh
 docker exec nc_app_live_transcription python -m cassini_live.capacity --installed
 ```
 
-This authenticated internal command refuses to start while rooms are active.
-It rebuilds the bounded worker pool, prints a JSON report without credentials or call
-content, and updates the page. Only container-level access can initiate it;
-ordinary browser users cannot start repeated resource-intensive checks.
+This command only reads status. It does not restart workers, recalibrate or
+change the retry budget, and it works while calls are active. By default it
+reports pending recovery immediately; add `--wait 600` to wait up to ten minutes.
+A check already in progress is awaited for up to 150 seconds. The JSON contains
+no credentials or call content. Exit status is zero when the service is ready.
 
 The startup check is mandatory, including after an upgrade. The old
 `CASSINI_CAPACITY_CHECK` setting no longer disables it.
@@ -104,7 +137,7 @@ when the additional workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.4.0 \
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.5.0 \
   -m cassini_live.capacity --workers 2
 ```
 

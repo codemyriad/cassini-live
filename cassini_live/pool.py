@@ -94,6 +94,7 @@ class WorkerPool:
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
         self.resource_check = None
+        self.generation = 0
 
     @property
     def available(self):
@@ -121,6 +122,7 @@ class WorkerPool:
     async def _new(self):
         if self.resource_check and self.resource_check():
             raise CapacityError("Insufficient resource headroom for a recognition worker")
+        generation = self.generation
         worker = self.worker_factory(self.weights)
         self.workers.add(worker)
         try:
@@ -132,7 +134,7 @@ class WorkerPool:
             await worker.close()
             self.workers.discard(worker)
             raise
-        if self.closed:
+        if self.closed or generation != self.generation:
             await worker.close()
             self.workers.discard(worker)
             return
@@ -168,14 +170,19 @@ class WorkerPool:
             ) from None
 
     async def release(self, worker, healthy=True):
+        if worker not in self.workers or worker not in self.leased:
+            return
         self.leased.discard(worker)
         if self.closed:
             return
         if healthy and worker.process.returncode is None:
             self._offer(worker)
             return
+        generation = self.generation
         self.failures += 1
         await worker.close()
+        if generation != self.generation:
+            return
         self.workers.discard(worker)
         self.failure_times.append(time.monotonic())
         if len(self.failure_times) == 3 and self.failure_times[-1] - self.failure_times[0] < 60:
@@ -206,13 +213,14 @@ class WorkerPool:
             if not future.done():
                 future.cancel()
             elif not acquired and not future.cancelled() and future.exception() is None:
-                if not self.closed:
+                if not self.closed and future.result() in self.workers:
                     self.leased.discard(future.result())
                     self._offer(future.result())
             if future in self.waiters:
                 self.waiters.remove(future)
 
     async def close(self):
+        self.generation += 1
         self.closed = True
         for future in self.waiters:
             if not future.done():

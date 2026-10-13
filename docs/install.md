@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.4.0`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.5.0`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.4.0 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.5.0 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry
@@ -53,7 +53,11 @@ publish to GHCR or the Nextcloud App Store.
    host; [the safety policy](capacity.md) reserves at least half its CPU and RAM.
    Persist CPU and memory limits in the AppAPI daemon's deployment options.
    AppAPI may not preserve PID and swap limits across container recreation;
-   reapply them after upgrades. Until then, captions refuse to start.
+   reapply them after upgrades. Until then, captions refuse to start. Corrections
+   are detected automatically; no manual capacity check is needed.
+
+   Keep the recovery journal on persistent storage across container recreation
+   (see [recovery policy](capacity.md)). Give the app user write access.
 
    Configure Docker log rotation on the deployment host before container creation
    (for example, the `local` logging driver with `max-size=10m`, `max-file=3`).
@@ -61,7 +65,7 @@ publish to GHCR or the Nextcloud App Store.
    Do not use an unbounded log driver on a shared server.
 
 7. Open **Cassini Live** in Nextcloud. Wait for its measured-capacity result (usually under two minutes).
-   See [capacity assessment](capacity.md) if it reports insufficient or unknown capacity. Join a Talk
+   See [capacity assessment](capacity.md) for automatic recovery and configuration errors. Join a Talk
    call with another participant, enable captions from the call menu, and speak.
    Test your languages, a late joiner, microphone mute/unmute and stop/start.
 

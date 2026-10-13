@@ -656,8 +656,7 @@ class SpreedClient:
 				"room_token": self.room_token,
 				"tag": "transcriber",
 			})
-			for transcriber in self.transcribers.values():
-				await transcriber.shutdown()
+			await asyncio.gather(*(transcriber.shutdown() for transcriber in list(self.transcribers.values())))
 			async with self.transcriber_lock:
 				self.transcribers.clear()
 
@@ -1116,7 +1115,7 @@ class SpreedClient:
 		spkr_sid = message["message"]["sender"]["sessionid"]
 		async with self.peer_connection_lock:
 			self._offer_requested.pop(spkr_sid, None)
-			if self._close_task or spkr_sid in self._accepting_offers:
+			if self._closing or self.defunct.is_set() or self._close_task or spkr_sid in self._accepting_offers:
 				return
 			if (
 				spkr_sid in self.peer_connections

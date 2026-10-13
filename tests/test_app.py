@@ -125,3 +125,69 @@ async def test_restart_restores_enabled_state_and_preloads_workers():
         assert pool.idle.qsize() == 1
         service.discover.assert_awaited_once()
     assert pool.closed and not service.enabled
+
+
+async def test_disabled_startup_never_loads_workers():
+    class Nextcloud:
+        @property
+        def enabled_state(self):
+            async def disabled():
+                return False
+
+            return disabled()
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    pool.start = AsyncMock()
+    from tests.test_safety import safe_factory
+
+    app = create_app(
+        Config(None, 1, "secret", ""), pool, nc_factory=Nextcloud, safety_factory=safe_factory
+    )
+    async with app.router.lifespan_context(app):
+        pool.start.assert_not_awaited()
+        assert not app.state.safety.desired_enabled
+
+
+async def test_startup_connection_failure_recovers_without_admin(monkeypatch):
+    import asyncio
+
+    from cassini_live import capacity
+    from tests.test_safety import safe_factory
+
+    class Nextcloud:
+        attempts = 0
+
+        @property
+        def enabled_state(self):
+            async def enabled():
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise OSError("Nextcloud is still starting")
+                return True
+
+            return enabled()
+
+    async def scenario(pool, count):
+        return {"passed": True, "speakers": count}
+
+    monkeypatch.setattr(capacity, "scenario", scenario)
+    nc = Nextcloud()
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    config = Config(None, 1, "secret", "")
+    service = CaptionService(config)
+    service.discover = AsyncMock(side_effect=[OSError("Talk is still starting"), None])
+    app = create_app(
+        config,
+        pool,
+        service,
+        nc_factory=lambda: nc,
+        safety_factory=safe_factory,
+        discovery_delay=0.005,
+    )
+    async with app.router.lifespan_context(app):
+        async with asyncio.timeout(2):
+            while app.state.safety.state != "ready":
+                await asyncio.sleep(0.005)
+        assert service.enabled and len(pool.workers) == 1
+        assert service.discover.await_count == 2
+    assert pool.closed

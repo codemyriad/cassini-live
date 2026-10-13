@@ -12,10 +12,9 @@ If the machine cannot keep up, Cassini Live should refuse to caption.
 
 ## Where it stands
 
-**0.4.0 is a development release.** The earlier 0.3.0 pipeline has produced
-captions in a real Nextcloud Talk browser call. This version adds mandatory
-resource checks and overload shutdown; those changes have automated tests
-and still need validation in real meetings.
+**0.5.0 is a development release.** The earlier 0.3.0 pipeline has produced
+captions in a real Nextcloud Talk browser call. This version adds automatic recovery after resource pressure. It has automated
+tests and still needs validation in real meetings.
 
 * Whistle runs on the CPU. A GPU does not accelerate this engine.
 * Seven languages: English, German, French, Spanish, Italian, Dutch and Polish.
@@ -29,14 +28,16 @@ and still need validation in real meetings.
 
 The service requires enforced CPU, memory and process limits, with swap disabled.
 It refuses unsafe configurations before loading recognition workers. During use,
-resource pressure or repeated failures stop captions until an administrator
-reruns the check. The operating system enforces the limits even if the application
-misbehaves. See [the safety policy and capacity test](docs/capacity.md).
+resource pressure or repeated failures stop captions. After resources recover,
+it waits, retests and becomes available automatically. Repeated failures make
+retries less frequent; container restarts preserve that delay. The operating
+system enforces the limits even if the application misbehaves. An interrupted call may need captions toggled back on once the
+service is ready. See [the safety policy and capacity test](docs/capacity.md).
 
 ## Try it
 
 You need Nextcloud with Talk's High-performance backend, AppAPI, a deploy daemon
-and Linux with cgroup v2. The image includes the models and runs offline after
+and Linux with cgroup v2 and PSI pressure statistics. The image includes the models and runs offline after
 installation. An administrator must supply the HPB internal secret.
 
 Follow the [installation instructions](docs/install.md). There is no published
@@ -57,7 +58,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.4.0 .`.
+`docker build -t cassini-live:0.5.0 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

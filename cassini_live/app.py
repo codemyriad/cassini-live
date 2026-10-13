@@ -1,8 +1,9 @@
 """Authenticated Nextcloud ExApp and native Talk caption provider."""
 
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +18,7 @@ from .auth import SafeAppAPIAuthMiddleware
 from .capacity import CapacityAssessment
 from .config import LANGUAGES, Config
 from .pool import WorkerPool
+from .recovery import RecoveryJournal
 from .safety import ResourceRefused, SafetyController
 from .service import CaptionService
 from .talk.types import SpreedClientException, VoskException
@@ -49,16 +51,63 @@ def create_app(
     service=None,
     nc_factory=AsyncNextcloudApp,
     safety_factory=SafetyController,
+    discovery_delay=15,
 ):
     config = config or Config.from_env()
     pool = pool or WorkerPool(config.workers, config.weights)
     service = service or CaptionService(config)
     assessment = CapacityAssessment(pool)
     safety = safety_factory(pool, assessment, service)
+    if safety_factory is SafetyController:
+        storage = Path(os.environ.get("APP_PERSISTENT_STORAGE", "/home/cassini/.local/state"))
+        safety.journal = RecoveryJournal(storage / "cassini-live-recovery.json")
+        safety.auto_size = not bool(os.environ.get("CASSINI_LIVE_WORKERS"))
     service.admission = safety
     call_starts = 0
+    discovery_task = None
+    enable_generation = 0
+
+    async def restore_connection(nc, force=False):
+        async with asyncio.timeout(10):
+            if not force and not await nc.enabled_state:
+                safety.state, safety.phase = "disabled", "disabled"
+                safety.reason = "Caption service stopped"
+                return
+            await service.discover(nc)
+        service.enabled = True
+        await safety.start()
+
+    async def retry_connection(force=False):
+        delay = discovery_delay
+        while True:
+            safety.state, safety.phase = "recovering", "waiting_talk"
+            safety.reason = "Waiting for Nextcloud and Talk; connection will retry automatically"
+            if not config.secret:
+                safety.state, safety.phase = "blocked", "configuration"
+                safety.reason = "Configure the Talk HPB internal secret in deploy options"
+                safety.admin_action = True
+            await asyncio.sleep(delay)
+            try:
+                await restore_connection(nc_factory(), force)
+                return
+            except Exception:
+                service.enabled = False
+                service.settings = None
+                delay = min(60, delay * 2)
+
+    async def stop_discovery():
+        nonlocal discovery_task
+        if discovery_task:
+            discovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await discovery_task
+            discovery_task = None
 
     async def enabled_handler(enabled, nc):
+        nonlocal discovery_task, enable_generation
+        enable_generation += 1
+        generation = enable_generation
+        await stop_discovery()
         if not enabled:
             await safety.close()
             await service.close()
@@ -84,34 +133,38 @@ def create_app(
                     "path": "ui/live",
                 },
             )
+            if generation != enable_generation:
+                return ""
             service.enabled = True
-            if safety.reason == "Caption service stopped":
+            if not safety.desired_enabled:
                 await safety.start()
             return ""
         except Exception:
+            if generation != enable_generation:
+                return ""
             service.enabled = False
             service.settings = None
-            LOGGER.warning("Cassini Live could not enable; check Talk and the HPB internal secret")
-            return "Check Talk's HPB and CASSINI_TALK_SIGNALING_INTERNAL_SECRET in deploy options"
+            LOGGER.warning("Talk is not ready; connection will retry automatically")
+            discovery_task = asyncio.create_task(retry_connection(force=True))
+            return ""
 
     @asynccontextmanager
     async def lifespan(app):
+        nonlocal discovery_task
         if not os.environ.get("APP_SECRET"):
             raise RuntimeError("APP_SECRET is required; register Cassini Live through AppAPI")
         if os.environ.get("APP_ID") != "live_transcription":
             raise RuntimeError("Talk requires APP_ID=live_transcription")
         transcriber.POOL = pool
         try:
-            nc = nc_factory()
             try:
-                if await nc.enabled_state:
-                    await service.discover(nc)
-                    service.enabled = True
+                await restore_connection(nc_factory())
             except Exception:
-                LOGGER.warning("Talk is not ready on startup; the app can be enabled again")
-            await safety.start()
+                LOGGER.warning("Talk is not ready on startup; retrying automatically")
+                discovery_task = asyncio.create_task(retry_connection())
             yield
         finally:
+            await stop_discovery()
             await safety.close()
             await service.close()
             await pool.close()
@@ -164,7 +217,11 @@ def create_app(
             finally:
                 call_starts -= 1
         except ResourceRefused as error:
-            raise HTTPException(503, str(error), headers={"Retry-After": "30"}) from error
+            raise HTTPException(
+                503,
+                str(error),
+                headers={"Retry-After": str(safety.status()["retryAfterSeconds"] or 30)},
+            ) from error
         except (SpreedClientException, TimeoutError) as error:
             raise HTTPException(
                 503, "Could not connect captions to Talk; please try again"
@@ -191,6 +248,9 @@ def create_app(
 
     @app.get("/status")
     async def status():
+        resource_status = safety.status()
+        if discovery_task and not discovery_task.done():
+            resource_status["automaticRecovery"] = True
         return {
             "name": "Cassini Live",
             "version": __version__,
@@ -201,7 +261,7 @@ def create_app(
             "signallingConfigured": service.settings is not None,
             "activeRooms": len(service.clients),
             "capacityAssessment": assessment.result,
-            "resourceSafety": safety.status(),
+            "resourceSafety": resource_status,
             **pool.status(),
         }
 
@@ -215,7 +275,10 @@ def create_app(
             raise HTTPException(409, "Capacity check requires no active caption rooms")
         if safety.lock.locked() or safety.state == "checking":
             return {"state": safety.state}
-        await safety.start()
+        try:
+            await safety.recheck()
+        except ResourceRefused as error:
+            raise HTTPException(503, str(error)) from error
         return {"state": safety.state}
 
     @app.get("/ui/live.js")

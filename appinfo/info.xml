@@ -16,7 +16,7 @@ secret once in deploy options; its URL is discovered from Talk. Whistle is bundl
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -30,7 +30,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.4.0</image-tag>
+      <image-tag>0.5.0</image-tag>
     </docker-install>
     <environment-variables>
       <variable>

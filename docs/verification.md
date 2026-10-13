@@ -1,4 +1,29 @@
-# Verification for 0.4.0
+# Verification for 0.5.0
+
+Local checks on Linux amd64, 13 October 2026:
+
+* 88 tests passed. New checks cover cooldown and continuous headroom, failed
+  calibration, process-restart persistence, stale worker returns, cancellation
+  during preload, configuration correction, missing PSI and delayed Nextcloud/Talk
+  startup. Excess demand no longer restarts captions.
+* A constrained container ran the real Whistle capacity check, stopped and reaped
+  its worker under simulated memory pressure, then automatically loaded a new
+  worker and passed the real capacity check again. Only the test's retry timings
+  were shortened; the production defaults remain two-minute initial backoff and
+  three-minute sustained headroom. CPU/RAM/PID limits stayed enforced throughout.
+* Desktop/mobile status-page checks covered automatic recovery and disabled states,
+  as well as refusing to show an old passing measurement as current readiness.
+* Claude reviewed the design before implementation and reviewed the code again.
+  The implementation addresses its teardown, stale-worker, retry, configuration
+  and startup-discovery findings.
+
+These changes have not been deployed to the live Nextcloud installation. Recovery
+makes new requests available automatically; interrupted calls may need captions
+toggled back on. End-to-end recovery behavior in real Talk meetings still needs
+validation.
+
+## Earlier 0.4.0 checks
+
 
 Local checks on Linux amd64, 13 October 2026:
 

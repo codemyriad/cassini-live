@@ -1,5 +1,6 @@
 """Read cgroup v2 budgets and pressure. Missing enforcement is not a safe budget."""
 
+import math
 import os
 from pathlib import Path
 
@@ -25,6 +26,17 @@ def _paths(root):
     except OSError:
         pass
     return list(dict.fromkeys(paths))
+
+
+def _pressure(path):
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("some "):
+                value = float(dict(item.split("=") for item in line.split()[1:])["avg60"])
+                return value if math.isfinite(value) and 0 <= value <= 100 else None
+    except (OSError, ValueError, KeyError):
+        pass
+    return None
 
 
 def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
@@ -76,8 +88,14 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     except (OSError, ValueError, IndexError):
         pass
     cpu = min(quotas) if quotas else None
+    cpu_pressure = [_pressure(proc / "pressure/cpu"), _pressure(root / "cpu.pressure")]
+    memory_pressure = [_pressure(proc / "pressure/memory"), _pressure(root / "memory.pressure")]
+    psi_available = all(value is not None for value in cpu_pressure + memory_pressure)
     return {
         "monitoringAvailable": monitored and not unreadable,
+        "pressureAvailable": psi_available,
+        "cpuPressure": max(cpu_pressure) if psi_available else None,
+        "memoryPressure": max(memory_pressure) if psi_available else None,
         "effectiveCpus": min(affinity, cpu) if cpu else float(affinity),
         "cpuQuotaCpus": cpu,
         "affinityCpus": affinity,

@@ -62,3 +62,53 @@ async def test_failed_join_cleans_room_and_reports_failure():
         await service.request(TranscribeRequest(roomToken="room", ncSessionId="a"))
     assert not service.clients
     assert client.defunct.is_set()
+
+
+async def test_connect_crossing_pause_cannot_revive_old_room():
+    from cassini_live.safety import ResourceRefused
+
+    connected = asyncio.Event()
+    finish = asyncio.Event()
+    client = FakeClient("room")
+
+    async def connect():
+        connected.set()
+        await finish.wait()
+        return SigConnectResult.SUCCESS
+
+    client.connect = connect
+    service = CaptionService(Config(None, 1, "secret", ""), lambda *_: client)
+    service.settings = object()
+    request = asyncio.create_task(
+        service.request(TranscribeRequest(roomToken="room", ncSessionId="a"))
+    )
+    await connected.wait()
+    await service.stop_rooms()
+    finish.set()
+    with pytest.raises(ResourceRefused):
+        await request
+    assert not service.clients and not client.targets
+    assert client.defunct.is_set()
+
+
+async def test_cancelled_teardown_remains_tracked_until_it_finishes():
+    started, finish = asyncio.Event(), asyncio.Event()
+    client = FakeClient("room")
+
+    async def close():
+        started.set()
+        await finish.wait()
+        client.defunct.set()
+
+    client.close = close
+    service = CaptionService(Config(None, 1, "secret", ""))
+    service.clients["room"] = client
+    task = asyncio.create_task(service.stop_rooms())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client in service.closing and not service.closing[client].cancelled()
+    finish.set()
+    await service.stop_rooms()
+    assert not service.closing and client.defunct.is_set()
