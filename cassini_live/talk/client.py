@@ -1019,6 +1019,10 @@ class SpreedClient:
 						await self.send_offer_request(user_desc["sessionId"])
 						continue
 
+				# Optional internal publishers are not human participants. Keep our
+				# own session for the existing last-user-left comparison.
+				users_update = [user for user in users_update
+					if not user.get("internal", False) or user.get("sessionId") == self.sessionid]
 				# the last user just left the call, live_transcription is the only one left
 				if (len(users_update) == 2):
 					if (

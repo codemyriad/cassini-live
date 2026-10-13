@@ -1,6 +1,6 @@
 # Check caption capacity without a call
 
-Cassini Live 0.5.1 measures capacity automatically after startup, using the actual
+Cassini Live 0.6.0 measures capacity automatically after startup, using the actual
 installed recognition workers. Open **Cassini Live** in Nextcloud to see the
 result. No microphone, Talk room, private recording, model download or network
 speech service is used. The small public-domain fixture is included in the image.
@@ -28,7 +28,11 @@ captions blocked. There is no environment switch to bypass the check.
 The limits are enforced by Linux, outside the application. The service checks
 pressure every second and stops workers and caption rooms at 80% of the memory
 or PID budget, low host memory, an OOM kill, changed limits, or three consecutive
-seconds of heavy CPU throttling/event-loop delay. Three worker failures within a minute also stop captions. Excess speaking
+seconds of heavy CPU throttling, event-loop delay or host CPU pressure.
+The CPU check distinguishes frequent brief quota enforcement from substantial
+stalls: at least 80% of periods throttled and 200 ms throttled time per elapsed
+second. Missing severity counters retain frequency-only refusal. Event-loop
+lag above 500 ms and host CPU PSI `some avg10` at least 20% are separate triggers. Three worker failures within a minute also stop captions. Excess speaking
 demand drops audio locally and reports load; it does not restart the service.
 Audio queues, wait times, input tracks and rooms are bounded.
 
@@ -137,7 +141,7 @@ when the additional workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.5.1 \
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.6.0 \
   -m cassini_live.capacity --workers 2
 ```
 

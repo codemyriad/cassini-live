@@ -25,6 +25,7 @@ def main():
         "CASSINI_TALK_SIGNALING_INTERNAL_SECRET",
         "CASSINI_TALK_HPB_URL",
         "CASSINI_LIVE_WORKERS",
+        "CASSINI_LIVE_DEBUG_VIDEO",
     }
     routes = info.findall("external-app/routes/route")
     assert routes and all(r.findtext("access_level") == "USER" for r in routes)

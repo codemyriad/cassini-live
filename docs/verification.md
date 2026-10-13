@@ -1,4 +1,19 @@
-# Verification for 0.5.1
+# Verification for 0.6.0
+
+## Diagnostic video
+
+Local checks include a real WebRTC sender/receiver, bounded VP8 packets at
+realistic timestamps, one-publisher admission, cancellation during process
+reaping, memory refusal, and last-human departure with an extra internal
+publisher. Staging browser tests decoded the 960×540 dashboard in Talk.
+The isolated publisher measured roughly 2–5% of one CPU, 98–99 MiB RSS and
+92 kbit/s payload uplink. Those numbers exclude SFU fan-out and viewer decoding.
+
+Live speech exposed a false positive in the old CPU guard: 90–100% of quota
+periods were throttled, but for only 70–104 ms per second. The revised guard
+uses throttled duration and separately checks host CPU pressure and event-loop
+lag. Hard CPU, memory, no-swap and PID limits are unchanged. Claude reviewed
+the design and the correction; the diagnostic lifecycle findings were addressed.
 
 ## Pause-aware handoffs
 

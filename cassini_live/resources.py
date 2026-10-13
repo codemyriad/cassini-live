@@ -28,11 +28,11 @@ def _paths(root):
     return list(dict.fromkeys(paths))
 
 
-def _pressure(path):
+def _pressure(path, window="avg60"):
     try:
         for line in path.read_text().splitlines():
             if line.startswith("some "):
-                value = float(dict(item.split("=") for item in line.split()[1:])["avg60"])
+                value = float(dict(item.split("=") for item in line.split()[1:])[window])
                 return value if math.isfinite(value) and 0 <= value <= 100 else None
     except (OSError, ValueError, KeyError):
         pass
@@ -46,6 +46,8 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     quotas, memory, swap, pids = [], [], [], []
     memory_ratio = pids_ratio = 0.0
     throttled = periods = oom = 0
+    throttled_usec = 0
+    severity_available = True
     monitored = False
     unreadable = False
     for path in _paths(root):
@@ -70,6 +72,10 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         try:
             stats = dict(line.split() for line in (path / "cpu.stat").read_text().splitlines())
             throttled += int(stats.get("nr_throttled", 0))
+            if "throttled_usec" in stats:
+                throttled_usec += int(stats["throttled_usec"])
+            elif path == root:
+                severity_available = False
             periods += int(stats.get("nr_periods", 0))
             events = dict(
                 line.split() for line in (path / "memory.events").read_text().splitlines()
@@ -95,6 +101,7 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         "monitoringAvailable": monitored and not unreadable,
         "pressureAvailable": psi_available,
         "cpuPressure": max(cpu_pressure) if psi_available else None,
+        "hostCpuPressure": _pressure(proc / "pressure/cpu", "avg10"),
         "memoryPressure": max(memory_pressure) if psi_available else None,
         "effectiveCpus": min(affinity, cpu) if cpu else float(affinity),
         "cpuQuotaCpus": cpu,
@@ -107,6 +114,7 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         "hostMemoryBytes": meminfo.get("MemTotal"),
         "hostAvailableBytes": meminfo.get("MemAvailable"),
         "throttledPeriods": throttled,
+        "throttledUsec": throttled_usec if severity_available else None,
         "cpuPeriods": periods,
         "oomKills": oom,
     }

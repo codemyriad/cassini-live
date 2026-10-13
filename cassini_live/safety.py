@@ -10,6 +10,26 @@ from .recovery import RecoveryJournal, RecoveryPolicy, recovery_problem
 from .resources import budget_problem, pressure_problem, signature, snapshot
 
 
+def cpu_pressure_reason(previous, current, elapsed, lag):
+    """Quota frequency alone cannot distinguish tiny stalls from overload."""
+    if lag > 0.5:
+        return "Caption event loop is falling behind"
+    host = current.get("hostCpuPressure")
+    if host is None:
+        return "Host CPU pressure monitoring is unavailable"
+    if host >= 20:
+        return "Host CPU pressure is sustained"
+    periods = current["cpuPeriods"] - previous["cpuPeriods"]
+    throttled = current["throttledPeriods"] - previous["throttledPeriods"]
+    if periods > 0 and throttled / periods >= 0.8:
+        before, after = previous.get("throttledUsec"), current.get("throttledUsec")
+        if before is None or after is None or after < before:
+            return "Caption CPU quota pressure (severity unavailable)"
+        if (after - before) / 1e6 / max(0.001, elapsed) >= 0.2:
+            return "Caption CPU quota stalls are sustained"
+    return None
+
+
 class ResourceRefused(RuntimeError):
     pass
 
@@ -48,6 +68,7 @@ class SafetyController:
         self.state, self.reason = "blocked", "Capacity has not been established"
         self.phase = "idle"
         self.last_refusal = None
+        self.cpu_health = {}
         self.tracks = set()
         self.monitor = None
         self.lock = asyncio.Lock()
@@ -86,6 +107,7 @@ class SafetyController:
             "retryAfterSeconds": max(1, int(retry)) if self.state != "ready" else 0,
             "nextAttemptAt": self.wall_clock() + retry if retry else None,
             "closingRooms": len(getattr(self.service, "closing", {})),
+            "cpuHealth": self.cpu_health,
         }
 
     def require_ready(self):
@@ -247,6 +269,7 @@ class SafetyController:
 
     async def _watch(self):
         previous = self.initial
+        previous_now = self.clock()
         pressure_ticks = 0
         expected = self.clock() + self.policy.monitor
         ready_since = None
@@ -262,14 +285,23 @@ class SafetyController:
             if current["oomKills"] > previous["oomKills"]:
                 await self.trip("The caption memory limit was exceeded")
                 return
-            periods = current["cpuPeriods"] - previous["cpuPeriods"]
-            throttled = current["throttledPeriods"] - previous["throttledPeriods"]
-            strained = lag > 0.5 or (periods > 0 and throttled / periods >= 0.8)
-            pressure_ticks = pressure_ticks + 1 if strained else 0
+            elapsed = max(0.001, now - previous_now)
+            cpu_problem = cpu_pressure_reason(previous, current, elapsed, lag)
+            before, after = previous.get("throttledUsec"), current.get("throttledUsec")
+            self.cpu_health = {
+                "eventLoopLagMs": round(lag * 1000, 1),
+                "hostPressureAvg10": current.get("hostCpuPressure"),
+                "throttledMsPerSecond": (
+                    round(max(0, after - before) / 1000 / elapsed, 1)
+                    if before is not None and after is not None
+                    else None
+                ),
+            }
+            pressure_ticks = pressure_ticks + 1 if cpu_problem else 0
             if problem or pressure_ticks >= 3 or self.pool.failure_circuit_open:
-                await self.trip(problem or "Caption resource pressure is sustained")
+                await self.trip(problem or cpu_problem or "Repeated recognition worker failures")
                 return
-            previous = current
+            previous, previous_now = current, now
             if self.state == "checking" and self.assessment.task.done():
                 report = self.assessment.result
                 if report["state"] not in {"passed", "limited"} or not report["testedSpeakers"]:

@@ -262,6 +262,7 @@ def create_app(
             "activeRooms": len(service.clients),
             "capacityAssessment": assessment.result,
             "resourceSafety": resource_status,
+            "diagnosticVideo": service.diagnostics.status(),
             **pool.status(),
         }
 

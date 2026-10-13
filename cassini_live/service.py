@@ -5,6 +5,7 @@ import weakref
 from contextlib import suppress
 
 from .config import websocket_url
+from .diagnostics import DiagnosticVideo
 from .safety import ResourceRefused
 from .talk.client import SpreedClient
 from .talk.types import HPBSettings, SigConnectResult, SpreedClientException
@@ -22,6 +23,7 @@ class CaptionService:
         self.generation = 0
         self.closing = {}
         self.inflight = set()
+        self.diagnostics = DiagnosticVideo(self)
 
     async def discover(self, nc):
         if not self.config.secret:
@@ -74,6 +76,7 @@ class CaptionService:
             # Transport close can call back while request() holds the room lock.
             # A synchronous dictionary removal here needs no second lock.
             async def closed(_token):
+                await self.diagnostics.stop(_token)
                 if self.clients.get(req.roomToken) is client:
                     self.clients.pop(req.roomToken, None)
 
@@ -88,6 +91,7 @@ class CaptionService:
                     if self.admission:
                         self.admission.require_ready()
                     await client.add_target(req.ncSessionId)
+                    self.diagnostics.start(req.roomToken)
             except BaseException:
                 if self.clients.get(req.roomToken) is client:
                     self.clients.pop(req.roomToken, None)
@@ -128,6 +132,7 @@ class CaptionService:
 
     async def stop_rooms(self):
         self.generation += 1
+        await self.diagnostics.stop()
         clients = list(self.clients.values())
         self.clients.clear()
         for client in clients:

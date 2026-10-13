@@ -16,7 +16,7 @@ secret once in deploy options; its URL is discovered from Talk. Whistle is bundl
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -30,7 +30,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.5.1</image-tag>
+      <image-tag>0.6.0</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -48,6 +48,11 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
         <name>CASSINI_LIVE_WORKERS</name>
         <display-name>Concurrent speaking segments (optional)</display-name>
         <description>Leave empty for CPU quota sizing, up to four recognition workers. The installation check measures usable simultaneous speakers. Silent tracks do not reserve workers. Range: 1 to 32.</description>
+      </variable>
+      <variable>
+        <name>CASSINI_LIVE_DEBUG_VIDEO</name>
+        <display-name>Diagnostic video (optional)</display-name>
+        <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 0.5 fps; stops under resource pressure. Default off.</description>
       </variable>
     </environment-variables>
     <!-- Native caption endpoints are server-to-server, never browser-proxied. -->

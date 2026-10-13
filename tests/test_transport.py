@@ -112,3 +112,30 @@ async def test_handshake_targeting_reconnect_and_final_before_bye(monkeypatch):
             assert messages[-1]["type"] == "bye"
         finally:
             await client.close()
+
+
+async def test_last_human_leaving_closes_captions_with_internal_video_present():
+    settings = HPBSettings(server="ws://example.test/spreed", stunservers=[], turnservers=[])
+    client = transport.SpreedClient("room", settings, "en", None)
+    client.sessionid = "captions"
+    client.close = AsyncMock()
+    client.remove_target_hpb_sid = AsyncMock()
+    client.receive = AsyncMock(
+        return_value={
+            "type": "event",
+            "event": {
+                "target": "participants",
+                "type": "update",
+                "update": {
+                    "users": [
+                        {"sessionId": "human", "inCall": 0},
+                        {"sessionId": "captions", "inCall": 1, "internal": True},
+                        {"sessionId": "diagnostic", "inCall": 5, "internal": True},
+                    ]
+                },
+            },
+        }
+    )
+    await asyncio.wait_for(client.signalling_monitor(), 1)
+    await client._close_task
+    client.close.assert_awaited_once()

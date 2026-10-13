@@ -1,6 +1,6 @@
 [project]
 name = "cassini-live"
-version = "0.5.1"
+version = "0.6.0"
 description = "Local Whistle captions for Nextcloud Talk"
 requires-python = ">=3.12,<3.14"
 license = "AGPL-3.0-or-later"
@@ -12,6 +12,7 @@ dependencies = [
   "numpy>=2,<3",
   "websockets>=15,<16",
   "onnxruntime>=1.20,<2",
+  "pillow>=11,<13",
 ]
 
 [dependency-groups]

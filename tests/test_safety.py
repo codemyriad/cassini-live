@@ -15,6 +15,7 @@ from tests.test_streaming import FakeWorker
 SAFE = {
     "pressureAvailable": True,
     "cpuPressure": 0,
+    "hostCpuPressure": 0,
     "memoryPressure": 0,
     "monitoringAvailable": True,
     "cpuQuotaCpus": 4.0,
@@ -257,3 +258,41 @@ async def test_monitor_read_failure_during_preload_reaps_worker():
         await pool.start()
     assert workers[0].process.returncode is not None
     assert not pool.workers and pool.closed
+
+
+@pytest.mark.parametrize(
+    "usec,host,lag,expected",
+    [
+        (80000, 1, 0.01, None),
+        (210000, 1, 0.01, "quota stalls"),
+        (None, 1, 0.01, "severity unavailable"),
+        (80000, 21, 0.01, "Host CPU pressure"),
+        (80000, None, 0.01, "monitoring is unavailable"),
+        (80000, 1, 0.6, "event loop"),
+    ],
+)
+def test_cpu_guard_distinguishes_brief_quota_enforcement_from_pressure(usec, host, lag, expected):
+    from cassini_live.safety import cpu_pressure_reason
+
+    before = {"cpuPeriods": 0, "throttledPeriods": 0, "throttledUsec": 0}
+    after = {
+        "cpuPeriods": 10,
+        "throttledPeriods": 10,
+        "throttledUsec": usec,
+        "hostCpuPressure": host,
+    }
+    result = cpu_pressure_reason(before, after, 1, lag)
+    assert result is None if expected is None else expected in result
+
+
+def test_throttle_severity_uses_actual_elapsed_time():
+    from cassini_live.safety import cpu_pressure_reason
+
+    before = {"cpuPeriods": 0, "throttledPeriods": 0, "throttledUsec": 0}
+    after = {
+        "cpuPeriods": 20,
+        "throttledPeriods": 20,
+        "throttledUsec": 300000,
+        "hostCpuPressure": 0,
+    }
+    assert cpu_pressure_reason(before, after, 2, 0) is None
