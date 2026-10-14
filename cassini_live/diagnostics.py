@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import weakref
 from contextlib import suppress
 from pathlib import Path
 
@@ -30,6 +31,40 @@ class DiagnosticVideo:
         self.state = "idle" if self.enabled else "disabled"
         self.metrics = {}
         self._stop_task = None
+        # Anonymous, process-local lane numbers; never session or participant ids.
+        self._lanes = weakref.WeakKeyDictionary()
+        self._next_lane = 0
+        self._scribes = {}
+
+    def _lane(self, transcriber):
+        if transcriber not in self._lanes:
+            self._next_lane += 1
+            self._lanes[transcriber] = self._next_lane
+        return self._lanes[transcriber]
+
+    def _scribe(self, pool, worker):
+        if worker is None:
+            return 0
+        for known in [w for w in self._scribes if w not in pool.workers]:
+            del self._scribes[known]
+        if worker not in self._scribes:
+            used = set(self._scribes.values())
+            self._scribes[worker] = next(n for n in range(1, len(used) + 2) if n not in used)
+        return self._scribes[worker]
+
+    def _lane_sample(self, pool, transcriber):
+        gate = transcriber.gate
+        held = getattr(transcriber, "worker", None)
+        active = bool(getattr(gate, "active", False))
+        queued = transcriber.queue.qsize() if hasattr(transcriber, "queue") else 0
+        return {
+            "id": self._lane(transcriber),
+            "active": active,
+            "speech": getattr(gate, "chunks_emitted", 0),
+            "lost": getattr(transcriber, "lost_chunks", 0),
+            "scribe": self._scribe(pool, held),
+            "waiting": held is None and queued > 0 and bool(pool.waiting),
+        }
 
     def start(self, token):
         if not self.enabled or self.task is not None:
@@ -183,6 +218,7 @@ class DiagnosticVideo:
                     "waiting": pool.waiting,
                     "diagnosticCpu": round(used * 100, 2),
                     "diagnosticMiB": round(rss / 1024**2, 1),
+                    "lanes": [self._lane_sample(pool, t) for t in transcribers[:10]],
                     "samplerMs": round((time.thread_time() - started) * 1000, 2),
                 }
                 process.stdin.write((json.dumps(sample) + "\n").encode())

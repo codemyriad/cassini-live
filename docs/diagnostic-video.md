@@ -6,10 +6,15 @@ in that room can see aggregate server metrics. It never shows audio, transcripts
 participant names or room names. Codemyriad deployments enable this option;
 other installations default to off.
 
-The dashboard shows the three live caption stages—Silero VAD speech gating and
-chunk emission, Whistle STT worker leases and fair-share scheduling, and stream
-segmentation/caption counts—alongside host and container CPU/RAM against their
-limits. Spare speaker slots come from the installation's actual calibration,
+The dashboard leads with three numbers: voices heard now, how many more voices
+fit now, and captions per minute. Below them, one anonymous lane per open
+microphone scrolls two minutes of history: speech that was captioned, speech
+waiting for a recognizer ("scribe"), and speech discarded. A tag beside each
+lane shows which scribe it holds now, and a strip under the lanes marks every
+caption line sent. The footer shows the tile's own cost and the caption
+container's memory and CPU against their limits, with the memory level at which
+captions pause. Lane numbers are assigned inside the caption process and never
+derived from sessions or participants. Spare voices come from the installation's actual calibration,
 minus current worker leases. They are instantaneous headroom, not a promise of
 more meetings: participants can start speaking at any time, and all rooms share
 the ten-track limit. We don't extrapolate additional capacity from idle CPUs.

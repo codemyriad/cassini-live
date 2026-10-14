@@ -12,7 +12,7 @@ If the machine cannot keep up, Cassini Live should refuse to caption.
 
 ## Where it stands
 
-**0.6.0 is a development release.** It includes automatic recovery after resource
+**0.6.1 is a development release.** It includes automatic recovery after resource
 pressure, worker handoffs that prefer pauses in speech, and an optional dashboard
 inside the call. Captions and the dashboard have run in a real Talk browser call
 with recorded speech. Validation in everyday meetings is still needed.
@@ -65,7 +65,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.6.0 .`.
+`docker build -t cassini-live:0.6.1 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

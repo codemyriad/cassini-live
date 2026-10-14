@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && cp /tmp/frp_0.61.1_linux_${TARGETARCH}/frpc /usr/local/bin/frpc
 
 FROM python:3.12-slim-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini fonts-dejavu-core \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini fonts-dejavu-core fonts-dejavu-extra \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home cassini
 WORKDIR /app

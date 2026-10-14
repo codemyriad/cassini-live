@@ -8,7 +8,7 @@ import av
 import pytest
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
-from cassini_live.diagnostic_video import HEIGHT, WIDTH, DashboardTrack
+from cassini_live.diagnostic_video import HEIGHT, WIDTH, DashboardTrack, history_column, render
 from cassini_live.diagnostics import DiagnosticVideo, process_usage
 
 
@@ -145,7 +145,9 @@ async def test_pressure_stops_and_reaps_only_optional_child(monkeypatch, pressur
     service = SimpleNamespace(
         settings=settings,
         admission=SimpleNamespace(state="ready"),
-        clients={"room": SimpleNamespace(defunct=asyncio.Event(), backend_url="https://public.example")},
+        clients={
+            "room": SimpleNamespace(defunct=asyncio.Event(), backend_url="https://public.example")
+        },
     )
     manager = DiagnosticVideo(service)
     monkeypatch.setattr(module.asyncio, "create_subprocess_exec", spawn)
@@ -262,3 +264,68 @@ async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
     assert incalls == [5, 0]
     assert received[-1]["type"] == "bye"
     assert proc.returncode == 0
+
+
+def test_history_columns_turn_counters_into_lane_states():
+    previous = {
+        "finals": 4,
+        "drops": 1,
+        "lanes": [
+            {"id": 1, "speech": 10, "lost": 0},
+            {"id": 2, "speech": 5, "lost": 1},
+            {"id": 3, "speech": 7, "lost": 0},
+            {"id": 4, "speech": 9, "lost": 0},
+        ],
+    }
+    data = {
+        "finals": 6,
+        "drops": 2,
+        "lanes": [
+            {"id": 1, "speech": 12, "lost": 0},
+            {"id": 2, "speech": 6, "lost": 2, "waiting": True},
+            {"id": 3, "speech": 7, "lost": 0, "waiting": True},
+            {"id": 4, "speech": 1, "lost": 0},  # gate rebuilt after a language change
+            {"id": 5, "speech": 0, "lost": 0},
+        ],
+    }
+    column = history_column(previous, data, 10.0)
+    assert column == {
+        "t": 10.0,
+        "lanes": {1: "speech", 2: "lost", 3: "waiting", 4: "speech"},
+        "finals": 2,
+        "drops": 1,
+    }
+
+
+def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    video = DiagnosticVideo(SimpleNamespace())
+    workers = [object(), object()]
+    pool = SimpleNamespace(workers=set(workers), waiting=1)
+
+    class Transcriber:  # Real transcribers are weakly referenced.
+        def __init__(self, worker, queued=0):
+            self.session_id = "secret-session"
+            self.gate = SimpleNamespace(active=True, chunks_emitted=3)
+            self.lost_chunks = 0
+            self.worker = worker
+            self.queue = SimpleNamespace(qsize=lambda: queued)
+
+    transcriber = Transcriber
+    first, second, waiter = transcriber(workers[0]), transcriber(workers[1]), transcriber(None, 2)
+    samples = [video._lane_sample(pool, t) for t in (first, second, waiter)]
+    assert [s["scribe"] for s in samples] == [1, 2, 0]
+    assert [s["waiting"] for s in samples] == [False, False, True]
+    assert set(samples[0]) == {"id", "active", "speech", "lost", "scribe", "waiting"}
+    assert "secret-session" not in str(samples)
+    # A replaced worker frees its number for the next one.
+    pool.workers = {workers[1], replacement := object()}
+    assert video._lane_sample(pool, transcriber(replacement))["scribe"] == 1
+    assert video._lane_sample(pool, first)["id"] == samples[0]["id"]
+
+
+def test_lanes_render_with_history_and_without_data():
+    data = {"capacity": 2, "spare": 1, "busy": 1, "vadActive": 1, "lanes": [{"id": 1, "scribe": 1}]}
+    history = [{"t": time.monotonic(), "lanes": {1: "speech"}, "finals": 1, "drops": 0}]
+    assert render(data, history).size == (WIDTH, HEIGHT)
+    assert render({}).size == (WIDTH, HEIGHT)

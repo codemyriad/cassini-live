@@ -30,6 +30,7 @@ class WhistleTranscriber:
         self.queue = asyncio.Queue(maxsize=6)
         self.gate = SpeechGate()
         self.dropped_chunks = 0
+        self.lost_chunks = 0  # Every discarded chunk, for the diagnostic lanes.
         self.pending = ""
         self.stream = None
         self.stopping = False
@@ -59,10 +60,14 @@ class WhistleTranscriber:
         if self.queue.full():
             self.queue.get_nowait()
             self.dropped_chunks += 1
-            self.pool.note_drop()
+            self._note_drop()
             if self.dropped_chunks == 1 or self.dropped_chunks % 30 == 0:
                 LOGGER.warning("Caption backlog: discarded %s speech chunks", self.dropped_chunks)
         self.queue.put_nowait(chunk)
+
+    def _note_drop(self):
+        self.lost_chunks += 1
+        self.pool.note_drop()
 
     async def _put_audio(self, samples):
         for chunk in self.gate.feed(samples):
@@ -138,7 +143,7 @@ class WhistleTranscriber:
                 self.worker = await self.pool.acquire_wait(timeout=2)
                 if time.monotonic() - chunk.created_at > 4:
                     await self._release(healthy=True)
-                    self.pool.note_drop()
+                    self._note_drop()
                     return
                 await self.worker.send({"type": "start", "language": self.language})
             cut = len(chunk.samples)
@@ -207,7 +212,7 @@ class WhistleTranscriber:
                     await self._clear_preview()
                 expected = chunk.sequence + 1
                 if time.monotonic() - chunk.created_at > 4:
-                    self.pool.note_drop()
+                    self._note_drop()
                     await self._finish("expiredAudio")
                     await self._clear_preview()
                     continue
@@ -218,7 +223,7 @@ class WhistleTranscriber:
             except CapacityError:
                 # Bounded waiting per speaker; other speakers/rooms stay alive.
                 self.pool.capacity_waits += 1
-                self.pool.note_drop()
+                self._note_drop()
                 await self._clear_preview()
             except Exception as error:
                 LOGGER.warning(
