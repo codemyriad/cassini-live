@@ -102,10 +102,14 @@ class WhistleTranscriber:
         if text := result.get("text", "").strip():
             await self.transcripts.put(Transcript(True, language, text, self.session_id))
             self.pending = ""
+            if self.pool is not None:
+                self.pool.finals_emitted = getattr(self.pool, "finals_emitted", 0) + 1
         pending = result.get("pending", "").strip()
         if pending != self.pending:
             await self.transcripts.put(Transcript(False, language, pending, self.session_id))
             self.pending = pending
+            if pending and self.pool is not None:
+                self.pool.partials_emitted = getattr(self.pool, "partials_emitted", 0) + 1
 
     async def _release(self, healthy):
         if self.worker:
@@ -165,6 +169,11 @@ class WhistleTranscriber:
                     raise RuntimeError("Unexpected Whistle response")
                 await self._emit(message["result"])
                 self.lease_samples += cut - offset
+                if self.pool is not None:
+                    self.pool.chunks_processed = getattr(self.pool, "chunks_processed", 0) + 1
+                    self.pool.audio_seconds = (
+                        getattr(self.pool, "audio_seconds", 0.0) + (cut - offset) / 16000
+                    )
                 offset = cut
             # A waiter can arrive while native inference is running. Release
             # immediately at the deadline rather than waiting for more audio.

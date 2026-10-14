@@ -920,6 +920,39 @@ class SpreedClient:
 				return
 
 			if (
+				message.get("type") == "event"
+				and message["event"].get("target") == "room"
+				and message["event"].get("type") == "leave"
+			):
+				had_participant = False
+				for left_sid in message["event"].get("leave", []):
+					async with self.transcriber_lock:
+						transcriber = self.transcribers.pop(left_sid, None)
+					if transcriber is not None:
+						had_participant = True
+						await transcriber.shutdown()
+					if left_sid in self.targets:
+						had_participant = True
+					await self.remove_target_hpb_sid(left_sid)
+					async with self.peer_connection_lock:
+						peer = self.peer_connections.pop(left_sid, None)
+						self._offer_requested.pop(left_sid, None)
+					if peer is not None:
+						had_participant = True
+						with suppress(Exception):
+							await peer.pc.close()
+					async with self.target_lock:
+						for nc_sid, sid in list(self.nc_sid_map.items()):
+							if sid == left_sid:
+								had_participant = True
+								del self.nc_sid_map[nc_sid]
+				if had_participant and not self.peer_connections and not self.targets:
+					if not self._close_task:
+						self._close_task = asyncio.create_task(self.close(), name=f"close-{self.room_token}")
+					return
+				continue
+
+			if (
 				message["type"] == "event"
 				and message["event"]["target"] == "participants"
 				and message["event"]["type"] == "update"
@@ -962,7 +995,11 @@ class SpreedClient:
 								del self.transcribers[user_desc["sessionId"]]
 						await self.remove_target_hpb_sid(user_desc["sessionId"])
 						async with self.peer_connection_lock:
+							peer = self.peer_connections.pop(user_desc["sessionId"], None)
 							self._offer_requested.pop(user_desc["sessionId"], None)
+						if peer is not None:
+							with suppress(Exception):
+								await peer.pc.close()
 						async with self.target_lock:
 							# "nextcloudSessionId" may not be present in the user_desc in call disconnects
 							self.nc_sid_map.pop(user_desc.get("nextcloudSessionId", ""), None)
@@ -1183,7 +1220,7 @@ class SpreedClient:
 
 		@pc.on("connectionstatechange")
 		async def on_connectionstatechange():
-			if lease and pc.connectionState == "closed":
+			if lease and pc.connectionState in ("closed", "failed"):
 				lease.release()
 				if weakself():
 					weakself()._track_leases.discard(lease)
@@ -1194,7 +1231,8 @@ class SpreedClient:
 				"tag": "peer_connection",
 			})
 
-			if not weakself():
+			client = weakself()
+			if not client:
 				LOGGER.error("SpreedClient instance is gone, cannot handle connection state change", extra={
 					"session_id": spkr_sid,
 					"connection_state": pc.connectionState,
@@ -1203,18 +1241,26 @@ class SpreedClient:
 				})
 				return
 
-			if pc.connectionState == "failed":
-				await pc.close()
-				LOGGER.warning("Peer connection state for '%s' is '%s'", spkr_sid, pc.connectionState, extra={
-					"session_id": spkr_sid,
-					"connection_state": pc.connectionState,
-					"room_token": weakself().room_token,
-					"tag": "peer_connection",
-				})
-				async with weakself().peer_connection_lock:
-					if spkr_sid in weakself().peer_connections:
-						del weakself().peer_connections[spkr_sid]
-					weakself()._offer_requested.pop(spkr_sid, None)
+			if pc.connectionState in ("failed", "closed"):
+				if pc.connectionState == "failed":
+					await pc.close()
+					LOGGER.warning("Peer connection state for '%s' is '%s'", spkr_sid, pc.connectionState, extra={
+						"session_id": spkr_sid,
+						"connection_state": pc.connectionState,
+						"room_token": client.room_token,
+						"tag": "peer_connection",
+					})
+				if not client._closing:
+					async with client.peer_connection_lock:
+						current = client.peer_connections.get(spkr_sid)
+						if current is not None and current.pc is pc:
+							del client.peer_connections[spkr_sid]
+						client._offer_requested.pop(spkr_sid, None)
+					async with client.transcriber_lock:
+						transcriber = client.transcribers.pop(spkr_sid, None)
+					if transcriber is not None:
+						with suppress(Exception):
+							await transcriber.shutdown()
 
 		pc.addTransceiver("audio", direction="recvonly")
 		@pc.on("track")

@@ -89,6 +89,10 @@ class WorkerPool:
         self.waiters = deque()
         self.scheduling_yields = 0
         self.stream_ends = Counter()
+        self.chunks_processed = 0
+        self.audio_seconds = 0.0
+        self.finals_emitted = 0
+        self.partials_emitted = 0
         self.last_pressure = 0.0
         self.admission_limit = size
         self.leased = set()

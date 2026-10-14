@@ -38,6 +38,8 @@ class SpeechGate:
         self.buffer = np.empty(0, dtype="<f4")
         self.sequence = 0
         self.pause_cut = None
+        self.last_probability = 0.0
+        self.chunks_emitted = 0
 
     def _chunk(self, samples, end=False, reason="flush"):
         cut = self.pause_cut
@@ -51,6 +53,7 @@ class SpeechGate:
         if cut is not None:
             self.pause_cut = cut - len(samples) if cut > len(samples) else None
         self.sequence += 1
+        self.chunks_emitted += 1
         return chunk
 
     def feed(self, samples):
@@ -60,10 +63,12 @@ class SpeechGate:
             frame, self.tail = self.tail[: self.frame_size].copy(), self.tail[self.frame_size :]
             if hasattr(self.detector, "probability"):
                 probability = self.detector.probability(frame)
+                self.last_probability = float(probability)
                 voiced = probability >= (0.35 if self.active else 0.5)
             else:  # Deterministic detector injection for transport tests.
                 pcm = (np.clip(frame, -1, 1) * 32767).astype("<i2").tobytes()
                 voiced = self.detector.is_speech(pcm, 16000)
+                self.last_probability = 1.0 if voiced else 0.0
             if not self.active:
                 self.pre.append(frame)
                 self.votes.append(voiced)
@@ -114,8 +119,10 @@ class SpeechGate:
                 samples = samples[16000:]
             chunks.append(self._chunk(samples, end=True))
         sequence = self.sequence
+        chunks_emitted = self.chunks_emitted
         if hasattr(self.detector, "reset"):
             self.detector.reset()
         self.__init__(self.detector)
         self.sequence = sequence
+        self.chunks_emitted = chunks_emitted
         return chunks

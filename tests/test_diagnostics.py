@@ -199,3 +199,66 @@ async def test_cancelled_stop_keeps_reaping_and_blocks_a_second_publisher(monkey
     release.set()
     await manager.stop()
     assert manager.task is None and manager._stop_task is None
+
+
+async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
+    import json
+    import os
+    import sys
+
+    from websockets.asyncio.server import serve
+
+    received = []
+    offered = asyncio.Event()
+    byed = asyncio.Event()
+
+    async def hpb(socket):
+        async for raw in socket:
+            msg = json.loads(raw)
+            received.append(msg)
+            if msg.get("type") == "hello":
+                await socket.send(json.dumps({"type": "hello", "hello": {"sessionid": "diag-sid"}}))
+            elif msg.get("type") == "message" and msg["message"]["data"].get("type") == "offer":
+                offered.set()
+            elif msg.get("type") == "bye":
+                byed.set()
+
+    async with serve(hpb, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "cassini_live.diagnostic_video",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={
+                **os.environ,
+                "CASSINI_TALK_SIGNALING_INTERNAL_SECRET": "test-hpb",
+                "OPENBLAS_NUM_THREADS": "1",
+                "OMP_NUM_THREADS": "1",
+            },
+        )
+        config = {
+            "room": "room-1",
+            "backend": "https://cloud.example",
+            "server": f"ws://127.0.0.1:{port}/spreed",
+            "stunservers": [],
+            "turnservers": [],
+        }
+        proc.stdin.write((json.dumps(config) + "\n").encode())
+        await proc.stdin.drain()
+        await asyncio.wait_for(offered.wait(), 10)
+        proc.stdin.close()
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), 5)
+        await asyncio.wait_for(byed.wait(), 2)
+
+    incalls = [
+        m["internal"]["incall"]["incall"]
+        for m in received
+        if m.get("type") == "internal" and m.get("internal", {}).get("type") == "incall"
+    ]
+    assert incalls == [5, 0]
+    assert received[-1]["type"] == "bye"
+    assert proc.returncode == 0

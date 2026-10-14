@@ -131,14 +131,45 @@ class DiagnosticVideo:
                 pool = safety.pool
                 busy = len(pool.leased)
                 remaining = max(0, pool.admission_limit - busy)
+                clients = list(self.service.clients.values())
+                transcribers = [
+                    t for c in clients for t in list(getattr(c, "transcribers", {}).values())
+                ]
+                ends = getattr(pool, "stream_ends", {})
                 sample = {
                     "state": safety.state,
-                    "rooms": len(self.service.clients),
+                    "rooms": len(clients),
                     "tracks": len(safety.tracks),
                     "maxTracks": safety.max_tracks,
                     "busy": busy,
                     "capacity": pool.admission_limit,
                     "spare": remaining,
+                    "vadActive": sum(1 for t in transcribers if getattr(t.gate, "active", False)),
+                    "vadPeak": round(
+                        max(
+                            (getattr(t.gate, "last_probability", 0.0) for t in transcribers),
+                            default=0.0,
+                        ),
+                        2,
+                    ),
+                    "vadChunks": sum(getattr(t.gate, "chunks_emitted", 0) for t in transcribers),
+                    "queuedChunks": sum(
+                        t.queue.qsize() for t in transcribers if hasattr(t, "queue")
+                    ),
+                    "sttChunks": getattr(pool, "chunks_processed", 0),
+                    "sttAudioSec": round(getattr(pool, "audio_seconds", 0.0), 1),
+                    "leasedSec": round(
+                        sum(getattr(t, "lease_samples", 0) for t in transcribers) / 16000, 1
+                    ),
+                    "yields": getattr(pool, "scheduling_yields", 0),
+                    "endSilence": ends.get("silence", 0),
+                    "endDuration": ends.get("durationPause", 0) + ends.get("durationLimit", 0),
+                    "endSched": ends.get("schedulingPause", 0) + ends.get("schedulingLimit", 0),
+                    "endFlush": ends.get("flush", 0),
+                    "targets": sum(len(getattr(c, "targets", {})) for c in clients),
+                    "previewing": sum(1 for t in transcribers if getattr(t, "pending", "")),
+                    "finals": getattr(pool, "finals_emitted", 0),
+                    "partials": getattr(pool, "partials_emitted", 0),
                     "hostCpu": round(max(0, min(100, host_pct)), 1),
                     "hostAvailableGiB": round(data["hostAvailableBytes"] / 1024**3, 1),
                     "hostGiB": round(data["hostMemoryBytes"] / 1024**3, 1),
@@ -179,6 +210,9 @@ class DiagnosticVideo:
             self.state = "unavailable: " + type(error).__name__
         finally:
             if process and process.returncode is None:
+                if process.stdin and hasattr(process.stdin, "close"):
+                    with suppress(Exception):
+                        process.stdin.close()
                 with suppress(ProcessLookupError):
                     process.terminate()
                 try:

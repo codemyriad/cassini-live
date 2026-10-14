@@ -139,3 +139,37 @@ async def test_last_human_leaving_closes_captions_with_internal_video_present():
     await asyncio.wait_for(client.signalling_monitor(), 1)
     await client._close_task
     client.close.assert_awaited_once()
+
+
+async def test_room_leave_event_closes_when_last_human_leaves():
+    settings = HPBSettings(server="ws://example.test/spreed", stunservers=[], turnservers=[])
+    client = transport.SpreedClient("room", settings, "en", None)
+    client.sessionid = "captions"
+    client.targets["human"] = transport.Target()
+    client.nc_sid_map["human-nc"] = "human"
+    transcriber = SimpleNamespace(shutdown=AsyncMock())
+    client.transcribers["human"] = transcriber
+    client.close = AsyncMock()
+    events = iter(
+        [
+            {
+                "type": "event",
+                "event": {"target": "room", "type": "leave", "leave": ["diagnostic"]},
+            },
+            {
+                "type": "event",
+                "event": {"target": "room", "type": "leave", "leave": ["human"]},
+            },
+        ]
+    )
+
+    async def recv():
+        return next(events)
+
+    client.receive = recv
+    await asyncio.wait_for(client.signalling_monitor(), 1)
+    await client._close_task
+    transcriber.shutdown.assert_awaited_once()
+    assert "human" not in client.targets
+    assert "human-nc" not in client.nc_sid_map
+    client.close.assert_awaited_once()

@@ -6,9 +6,10 @@ in that room can see aggregate server metrics. It never shows audio, transcripts
 participant names or room names. Codemyriad deployments enable this option;
 other installations default to off.
 
-The dashboard shows host CPU and available RAM, container CPU and RAM against
-their limits, active caption rooms and tracks, waiting speakers and discarded
-chunks. Spare speaker slots come from the installation's actual calibration,
+The dashboard shows the three live caption stages—Silero VAD speech gating and
+chunk emission, Whistle STT worker leases and fair-share scheduling, and stream
+segmentation/caption counts—alongside host and container CPU/RAM against their
+limits. Spare speaker slots come from the installation's actual calibration,
 minus current worker leases. They are instantaneous headroom, not a promise of
 more meetings: participants can start speaking at any time, and all rooms share
 the ten-track limit. We don't extrapolate additional capacity from idle CPUs.
