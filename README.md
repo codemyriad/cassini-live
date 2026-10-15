@@ -19,7 +19,7 @@ speech, and an optional dashboard inside the call. Captions and the dashboard ha
 with recorded speech. Validation in everyday meetings is still needed.
 
 * One speech engine serves the whole server. Administrators choose it under
-  **Administration settings → Artificial intelligence → Cassini Live**. There is
+  **Administration settings → Assistant → Cassini Live**. There is
   no separate Cassini Live page in Nextcloud any more.
 * Whistle is the bundled default. It runs on the CPU and needs about 2 GiB of
   container memory. It supports seven languages: English, German, French,

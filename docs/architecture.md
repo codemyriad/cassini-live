@@ -78,7 +78,7 @@ transport teardown drains captions before sending `bye`, subject to timeouts.
 ## Speech engines
 
 An administrator chooses one engine for the whole server in **Administration
-settings → Artificial intelligence → Cassini Live**. The form is an AppAPI
+settings → Assistant → Cassini Live**. The form is an AppAPI
 declarative settings form. AppAPI sends the app no event when an administrator
 saves it, so `settings_sync.py` reads the stored value every three seconds and
 drives `engine_switch.py`. Nextcloud cannot grey out an option or refresh the

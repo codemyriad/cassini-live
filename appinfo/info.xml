@@ -11,9 +11,8 @@ end-user configuration is needed.
 
 Whistle is bundled: it recognises English, German, French, Spanish, Italian, Dutch and Polish
 on your CPU, with automatic language detection. Administrators can switch the whole server to
-an optional, more accurate Nemotron engine in Administration settings > Artificial
-intelligence: Nemotron English (NVIDIA Open Model License) or Nemotron Multilingual
-(OpenMDW-1.1). Their models are downloaded on request, not shipped in the image, and need
+an optional, more accurate Nemotron engine in Administration settings > Assistant:
+Nemotron English (NVIDIA Open Model License) or Nemotron Multilingual (OpenMDW-1.1). Their models are downloaded on request, not shipped in the image, and need
 at least 2.25 GiB of container memory (3 GiB recommended) and twice that of host memory.
 
 Requires Talk's high-performance backend, AppAPI and a deploy daemon. Supply the HPB internal

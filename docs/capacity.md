@@ -2,7 +2,7 @@
 
 Cassini Live 0.7.0 measures capacity automatically after startup, using the actual
 installed speech engine. Administrators see the result in **Administration
-settings → Artificial intelligence → Cassini Live**; the
+settings → Assistant → Cassini Live**; the
 `cassini_live.capacity --installed` command below shows the details. No microphone, Talk room, private recording, model download or network
 speech service is used. The small public-domain fixture is included in the image.
 

@@ -65,7 +65,7 @@ publish to GHCR or the Nextcloud App Store.
    Do not use an unbounded log driver on a shared server.
 
 7. Wait for the measured-capacity result (usually under two minutes). As an
-   administrator, open **Administration settings → Artificial intelligence →
+   administrator, open **Administration settings → Assistant →
    Cassini Live** and reload the page until it shows "Captions are ready.", or run
    the `cassini_live.capacity --installed` command from step 6.
    See [capacity assessment](capacity.md) for automatic recovery and configuration errors. Join a Talk
@@ -104,9 +104,9 @@ They need less CPU than Whistle: about half a CPU per simultaneous speaker,
 against about two. The memory figures are measured; the CPU figures are
 estimates until confirmed by a capacity check on Nemotron.
 
-The settings live in **Administration settings → Artificial intelligence →
-Cassini Live** (`/settings/admin/ai`). Only Nextcloud administrators see this
-form. The form does not update by itself: **reload the page** to see download
+The settings live in **Administration settings → Assistant →
+Cassini Live** (`/settings/admin/ai`; Nextcloud 33 and earlier label this
+section "Artificial intelligence"). Only Nextcloud administrators see this form. The form does not update by itself: **reload the page** to see download
 progress, the capacity check and the result of a change.
 
 * Each option label says whether the engine is active, ready, available, or
