@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.7.1`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.7.2`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.7.1 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.7.2 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry
@@ -144,6 +144,14 @@ the capacity check result and the caption status. The page refreshes itself.
 Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes for the settings page.
 Update with `occ app_api:app:update live_transcription` (or reinstall); AppAPI
 re-reads routes only on a version change.
+
+An AppAPI update recreates the container without its swap and PID limits until
+you re-apply them. If Cassini Live starts in that state, it runs Whistle and
+says why, but keeps a selected Nemotron engine: it returns by itself at the next
+start with suitable limits. Until then its files cannot be removed. To stay on
+Whistle instead, choose Whistle in Administration settings or click "Keep using
+Whistle" on the settings page. A missing or damaged model, by contrast, switches
+the choice back to Whistle for good.
 
 Raise the limits before you choose a Nemotron engine. For example, on a host
 with at least 6 GiB RAM and eight CPUs:

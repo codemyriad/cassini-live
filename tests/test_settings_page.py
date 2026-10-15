@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from cassini_live import __version__, settings_page
 from cassini_live.eligibility import Reason
 from cassini_live.engine_switch import SwitchRefused, SwitchStatus
+from cassini_live.settings import EngineSettings
 from tests.test_app import make_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +87,6 @@ def test_index_is_versioned(page):
     html = client.get(PAGE, headers=headers).text
     assert f"app.js?v={__version__}" in html and f"app.css?v={__version__}" in html
     assert "{{VERSION}}" not in html
-    assert __version__ == "0.7.1"
 
 
 class Hygiene(HTMLParser):
@@ -350,6 +350,22 @@ def test_real_manager_refuses_unknown_and_active_engines(page):
     error(post_engine(client, same_origin(headers), {"engine": "vosk"}), 400, "unknown_engine")
     error(post_engine(client, same_origin(headers), {"engine": "whistle"}), 400, "active")
     assert manager.last_refusal is None and not manager.busy
+
+
+def test_keep_the_running_engine_while_another_is_deferred(page):
+    manager, client, headers = page
+    manager.saved = EngineSettings(engine="nemotron-en", last_error={
+        "code": "restore_deferred", "message": "x", "engine": "nemotron-en", "at": 0})
+    panel = client.get("/settings/api/state", headers=headers).json()["panel"]
+    cards = {c["id"]: c for c in panel["engines"]}
+    assert panel["selected"] == "nemotron-en" and cards["nemotron-en"]["deferred"]
+    error(delete(client, same_origin(headers), "nemotron-en"), 409, "selected")
+    response = post_engine(client, same_origin(headers), {"engine": "whistle"})
+    assert response.status_code == 202, response.text
+    panel = response.json()["panel"]
+    assert panel["selected"] == "whistle" and panel["lastError"] is None
+    assert not any(c["deferred"] for c in panel["engines"]) and not manager.busy
+    error(post_engine(client, same_origin(headers), {"engine": "whistle"}), 400, "active")
 
 
 def test_other_methods_are_not_allowed(page):

@@ -188,7 +188,9 @@ class SettingsSync:
             # Never act on a choice saved while the ExApp was down or left by a rollback.
             self.first, self.seen = False, selection.engine
             if selection.engine is not None and selection.engine != manager.desired:
-                if selection.engine in catalog.ENGINES:
+                last_error = getattr(getattr(manager, "saved", None), "last_error", None) or {}
+                explained = last_error.get("engine") == selection.engine  # e.g. restore_failed
+                if selection.engine in catalog.ENGINES and not explained:
                     manager.note_refusal(SwitchRefused(409, "not_running", NOT_RUNNING),
                                          selection.engine)
                 await self._write(manager.desired)
@@ -204,8 +206,8 @@ class SettingsSync:
             await self._write(status.target)
         if not manager.busy:
             self._note(self._busy_note(), False)
-            if self.stored is not None and self.stored != manager.active:
-                await self._write(manager.active)
+            if self.stored is not None and self.stored != manager.desired:
+                await self._write(manager.desired)
 
     def _busy_note(self, target=None):
         target = target or self.manager.status.target
@@ -229,7 +231,9 @@ class SettingsSync:
             else:
                 self._note(self._busy_note(status.target))
                 await self._write(status.target)
-        elif engine != manager.active:
+        elif engine != manager.desired:
+            # Choosing the running engine while another one waits for suitable limits drops
+            # that choice (request_switch confirms the active engine).
             await self._request(engine)
 
     async def _request(self, engine):

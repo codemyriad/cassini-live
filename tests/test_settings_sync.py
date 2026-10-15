@@ -350,3 +350,59 @@ async def test_status_changes_outside_the_manager_are_republished(h):
         assert h.nc.forms[-1].to_dict()["captions"] == "ready"
     finally:
         task.cancel()
+
+
+async def test_a_deferred_choice_is_neither_refused_nor_overwritten(h, monkeypatch):
+    # The saved choice waits for a restart with suitable limits; Whistle runs meanwhile.
+    monkeypatch.setattr(type(h.manager), "desired", property(lambda self: "nemotron-en"))
+    h.nc.values[ENGINE] = "nemotron-en"
+    await h.sync.poll_once()
+    await h.sync.poll_once()
+    assert h.nc.values[ENGINE] == "nemotron-en"
+    assert h.manager.refusals == [] and h.manager.requests == []
+
+
+async def deferred_sync(tmp_path, monkeypatch, value="nemotron-en"):
+    """A real EngineManager whose Nemotron English waits for suitable limits."""
+    from cassini_live.resources import MIB
+    from cassini_live.settings import EngineSettings
+    from tests.test_engine_switch import DATA, make
+
+    e = make(tmp_path, monkeypatch, data={**DATA, "memoryLimitBytes": 2048 * MIB},
+             ready=("nemotron-en",), settings=EngineSettings(engine="nemotron-en"))
+    await e.manager.restore()
+    nc = Nextcloud({ENGINE: value})
+    sync = SettingsSync(e.manager, lambda: nc, dict)
+    return e, nc, sync
+
+
+async def test_choosing_the_running_engine_drops_a_deferred_choice(tmp_path, monkeypatch):
+    e, nc, sync = await deferred_sync(tmp_path, monkeypatch)
+    await sync.poll_once()
+    assert nc.values[ENGINE] == "nemotron-en"
+    nc.values[ENGINE] = "whistle"
+    await sync.poll_once()
+    assert nc.values[ENGINE] == "whistle" and e.settings.read().engine == "whistle"
+    assert e.manager.last_refusal is None and e.manager.deferred is None
+
+
+async def test_deferred_form_text_and_labels(tmp_path, monkeypatch):
+    e, nc, sync = await deferred_sync(tmp_path, monkeypatch)
+    await sync.poll_once()
+    await sync.publish(force=True)
+    form = nc.forms[-1].to_dict()
+    assert form["description"].count("Using Whistle.") == 1
+    assert "stays selected" in form["description"]
+    field = form["fields"][0]
+    labels = {o["value"]: o["name"] for o in field["options"]}
+    assert labels["nemotron-en"].startswith("Nemotron English — selected;")
+    assert labels["whistle"].startswith("Whistle — in use meanwhile (select to keep it)")
+    assert field["default"] == "nemotron-en"
+
+
+async def test_a_restore_failure_is_not_also_reported_as_chosen_while_down(h):
+    failed = {"code": "restore_failed", "engine": "nemotron-en"}
+    h.manager.saved = SimpleNamespace(last_error=failed)
+    h.nc.values[ENGINE] = "nemotron-en"
+    await h.sync.poll_once()
+    assert h.manager.refusals == [] and h.nc.values[ENGINE] == "whistle"

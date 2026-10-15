@@ -1,6 +1,6 @@
 # Check caption capacity without a call
 
-Cassini Live 0.7.1 measures capacity automatically after startup, using the actual
+Cassini Live 0.7.2 measures capacity automatically after startup, using the actual
 installed speech engine. Administrators see the result in **Administration
 settings → Assistant → Cassini Live**; the
 `cassini_live.capacity --installed` command below shows the details. No microphone, Talk room, private recording, model download or network
@@ -197,7 +197,7 @@ when the additional workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.7.1 \
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.7.2 \
   -m cassini_live.capacity --workers 2
 ```
 

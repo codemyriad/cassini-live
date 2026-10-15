@@ -121,7 +121,18 @@ class EngineManager:
 
     @property
     def desired(self) -> str:
-        return self.status.target if self.busy and self.status.target else self.active
+        """What the settings form shows: the change in progress, else the admin's choice.
+        The choice differs from the active engine only while a restore is deferred."""
+        if self.busy and self.status.target:
+            return self.status.target
+        saved = getattr(self.saved, "engine", None)
+        return saved if saved in catalog.ENGINES else self.active
+
+    @property
+    def deferred(self) -> str | None:
+        """The admin's choice while a restore waits for suitable limits, else None."""
+        engine = self.desired
+        return engine if not self.busy and engine != self.active else None
 
     # Notifications and persistence
 
@@ -216,11 +227,26 @@ class EngineManager:
             engine = saved.engine
             if engine != catalog.DEFAULT_ENGINE:
                 if problem := await self._restore_problem(engine):
-                    saved.engine = catalog.DEFAULT_ENGINE
-                    saved.last_error = self._error("restore_failed", problem, engine)
+                    host_limits, message = problem
+                    if host_limits:
+                        # AppAPI starts each new container before the hardening step sets its
+                        # limits: keep the choice and restore it at the next suitable start.
+                        saved.last_error = self._error(
+                            "restore_deferred",
+                            f"{message} {_name(engine)} stays selected and returns when Cassini "
+                            "Live restarts with suitable limits.",
+                            engine,
+                        )
+                    else:
+                        saved.engine = catalog.DEFAULT_ENGINE
+                        saved.last_error = self._error(
+                            "restore_failed", f"{message} Choose it again to download it.", engine
+                        )
+                    engine = catalog.DEFAULT_ENGINE
+                elif (saved.last_error or {}).get("code") == "restore_deferred":
+                    saved.last_error = None  # The deferred engine is back.
             self.saved = saved
             self._save()
-            engine = saved.engine
             if engine != self.safety.engine_id:
                 self.safety.replace_pool(self._backend(engine))
             self.active = engine
@@ -235,15 +261,15 @@ class EngineManager:
             LOGGER.warning("Could not verify the %s model (%s)", engine, type(error).__name__)
             state = None
         if state is None or state.state != "ready":
-            return f"The {name} model files are missing or damaged; using Whistle"
+            return False, f"The {name} model files are missing or damaged."
         try:
             result = self._assess(engine, self._host_facts(fresh=True))
         except Exception as error:
             LOGGER.warning("Could not assess %s (%s)", engine, type(error).__name__)
-            return f"Could not check whether {name} can run here; using Whistle"
+            return True, f"Could not check whether {name} can run here."
         reasons = [r for r in result.reasons if r.code not in DOWNLOAD_REASONS]
         if reasons:
-            return f"{name} can no longer run here: {reasons[0].message} Using Whistle."
+            return True, f"{name} cannot run here yet: {reasons[0].message}"
         return None
 
     async def start_safety(self) -> None:
@@ -307,6 +333,10 @@ class EngineManager:
             if not self.service.enabled:
                 raise SwitchRefused(409, "disabled", "Cassini Live is not enabled")
             if engine == self.active:
+                if self.saved.engine != engine:
+                    # Confirming the running fallback drops a deferred choice for good.
+                    self._save(engine=engine, last_error=None)
+                    return self.status
                 raise SwitchRefused(400, "active", f"{_name(engine)} is already active")
             before, self.last_refusal = self.status, None
             self.cancel_reason = None
@@ -521,6 +551,12 @@ class EngineManager:
         async with self.lock:
             if engine == self.active or (self.busy and engine == self.status.target):
                 raise SwitchRefused(409, "active", f"{_name(engine)} is in use")
+            if engine == self.deferred:
+                raise SwitchRefused(
+                    409, "selected",
+                    f"{_name(engine)} is selected and returns when Cassini Live restarts with "
+                    f"suitable limits. Keep using {_name(self.active)} first to remove its files.",
+                )
             if self.store.busy == engine:
                 raise SwitchRefused(409, "busy", f"{_name(engine)} is downloading")
             if catalog.get(engine).asset is not None:
@@ -532,7 +568,8 @@ class EngineManager:
         # No lock: a running switch may hold it for minutes, and its models are kept.
         removed = []
         for engine, spec in catalog.ENGINES.items():
-            keep = {self.active, self.status.target if self.busy else None, self.store.busy}
+            keep = {self.active, self.status.target if self.busy else None, self.store.busy,
+                    self.deferred}
             if spec.asset is None or engine in keep:
                 continue
             if self.store.state(engine).state not in REMOVABLE:
@@ -604,6 +641,8 @@ class EngineManager:
             "id": engine.id,
             "name": engine.name,
             "active": engine_id == self.active,
+            # Selected but waiting for a restart with suitable limits; counts as in use.
+            "deferred": engine_id == self.deferred,
             "summary": engine.summary,
             "accuracy": {"meetingWer": engine.meeting_wer, "note": engine.accuracy_note},
             "languages": list(engine.languages),
@@ -650,6 +689,7 @@ class EngineManager:
         }
         return {
             "active": self.active,
+            "selected": self.desired,
             "activeCalls": len(getattr(self.service, "clients", ())),
             "measurements": {
                 "measuredOn": catalog.MEASURED_ON, "estimates": list(catalog.ESTIMATED)

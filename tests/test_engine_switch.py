@@ -422,7 +422,37 @@ async def test_restore_falls_back_to_whistle(tmp_path, monkeypatch, problem):
     await h.manager.restore()
     assert h.manager.active == "whistle" and h.safety.engine_id == "whistle"
     stored = h.settings.read()
-    assert stored.engine == "whistle" and stored.last_error["engine"] == "nemotron-en"
+    assert stored.last_error["engine"] == "nemotron-en"
+    if problem == "ineligible":
+        # A host-limit problem keeps the choice for the next suitable start.
+        assert stored.engine == "nemotron-en" and stored.last_error["code"] == "restore_deferred"
+    else:
+        assert stored.engine == "whistle" and stored.last_error["code"] == "restore_failed"
+
+
+async def test_deferred_engine_returns_once_the_limits_allow_it(tmp_path, monkeypatch):
+    unhardened = {**DATA, "memoryLimitBytes": 2048 * MIB}
+    h = make(tmp_path, monkeypatch, data=unhardened, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    assert h.manager.active == "whistle" and h.manager.desired == "nemotron-en"
+    hardened = make(tmp_path, monkeypatch, ready=("nemotron-en",))
+    await hardened.manager.restore()
+    assert hardened.manager.active == "nemotron-en"
+    assert hardened.safety.engine_id == "nemotron-en"
+    assert hardened.manager.panel()["lastError"] is None
+
+
+async def test_choosing_the_fallback_drops_a_deferred_choice(tmp_path, monkeypatch):
+    unhardened = {**DATA, "memoryLimitBytes": 2048 * MIB}
+    h = make(tmp_path, monkeypatch, data=unhardened, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    await h.manager.request_switch("whistle")
+    stored = h.settings.read()
+    assert stored.engine == "whistle" and stored.last_error is None
+    with pytest.raises(SwitchRefused):
+        await h.manager.request_switch("whistle")
 
 
 def test_unreadable_settings_fall_back(tmp_path, monkeypatch):
@@ -592,3 +622,31 @@ async def test_switch_times_the_check_from_the_attempt_not_the_headroom_wait(h, 
     async with asyncio.timeout(5):
         status = await finished(h)
     assert status.state == "succeeded" and h.manager.active == "nemotron-en"
+
+
+async def test_a_deferred_engine_counts_as_in_use(tmp_path, monkeypatch):
+    unhardened = {**DATA, "memoryLimitBytes": 2048 * MIB}
+    h = make(tmp_path, monkeypatch, data=unhardened, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    panel = h.manager.panel()
+    cards = {c["id"]: c for c in panel["engines"]}
+    assert panel["active"] == "whistle" and panel["selected"] == "nemotron-en"
+    assert cards["nemotron-en"]["deferred"] and not cards["whistle"]["deferred"]
+    assert "Using Whistle" not in panel["lastError"]["message"]
+    with pytest.raises(SwitchRefused) as refused:
+        await h.manager.delete_model("nemotron-en")
+    assert refused.value.code == "selected" and "Keep using Whistle" in str(refused.value)
+    assert await h.manager.delete_unused_models() == [] and h.store.deleted == []
+    # Keeping Whistle drops the choice; then the files are unused like any others.
+    await h.manager.request_switch("whistle")
+    assert h.manager.panel()["selected"] == "whistle" and h.manager.deferred is None
+    assert await h.manager.delete_unused_models() == ["nemotron-en"]
+
+
+async def test_restore_failed_message_names_the_fallback_once(tmp_path, monkeypatch):
+    h = make(tmp_path, monkeypatch, settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    message = h.settings.read().last_error["message"]
+    assert message == ("The Nemotron English model files are missing or damaged. "
+                       "Choose it again to download it.")

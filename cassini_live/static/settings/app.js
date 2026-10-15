@@ -599,6 +599,7 @@
     c.badges = el("p", { className: "badges" });
     c.badge = {
       active: el("span", { className: "badge active" }, "In use"),
+      selected: el("span", { className: "badge" }, "Selected"),
       ready: el("span", { className: "badge" }, "Downloaded"),
       ineligible: el("span", { className: "badge error" }, "Unavailable"),
       advisory: el("span", { className: "badge warning" }, "Warning"),
@@ -736,9 +737,13 @@
       var model = engine.model || {};
       var ineligible = !engine.eligible && !engine.advisory;
       var target = busy && sw.target === engine.id;
+      // Another engine is selected but waits for a restart with suitable limits.
+      var deferred = !busy && (panel.engines || []).some(function (e) { return e.deferred; });
+      var keep = !!engine.active && deferred;
 
       setText(c.title, engine.name);
       show(c.badge.active, engine.active);
+      show(c.badge.selected, !!engine.deferred);
       show(c.badge.ready, !engine.active && model.state === "ready");
       show(c.badge.ineligible, ineligible);
       show(c.badge.advisory, !!engine.advisory);
@@ -780,13 +785,22 @@
 
       // Use button
       var why = "";
-      if (engine.active) { why = ""; }
+      if (engine.deferred) {
+        why = "Selected, but this server does not meet the requirements listed above yet. " +
+          "It returns by itself when Cassini Live restarts with suitable limits.";
+      } else if (keep) {
+        why = "Using " + engine.name + " meanwhile. Keep it to drop the choice of " +
+          engineName(panel.selected) + ".";
+      } else if (engine.active) { why = ""; }
       else if (status.enabled === false) { why = "Cassini Live is not enabled."; }
       else if (busy) { why = target ? "This change is in progress." : "Another change is in progress."; }
       else if (ineligible) { why = "This server does not meet the requirements listed above."; }
-      var disabled = !!engine.active || !!why || c.pending === "use";
+      var disabled = keep ? status.enabled === false || c.pending === "use"
+        : !!engine.active || !!why || c.pending === "use";
       var needsDownload = model.state !== "ready" && model.state !== "bundled";
-      var useText = engine.active ? engine.name + " is in use"
+      var useText = keep ? "Keep using " + engine.name
+        : engine.deferred ? engine.name + " is selected"
+        : engine.active ? engine.name + " is in use"
         : (needsDownload ? "Download and use " : "Use ") + engine.name;
       var useFocused = document.activeElement === c.use;
       setButton(c.use, useText, c.pending === "use");
@@ -800,7 +814,8 @@
       if (disabled && c.confirmFor === "use") { closeConfirm(c, false); }
 
       // Delete button
-      var removable = REMOVABLE.indexOf(model.state) >= 0 && !engine.active && !target;
+      var removable = REMOVABLE.indexOf(model.state) >= 0 && !engine.active && !engine.deferred &&
+        !target;
       var delFocused = document.activeElement === c.del;
       var size = model.state === "partial" && model.bytesDone ? " (" + mib(model.bytesDone) + ")" : "";
       setButton(c.del, "Remove downloaded files" + size, c.pending === "delete");
@@ -845,7 +860,8 @@
     if (isInert(c.use)) { return; }
     clearActionNotice();
     var calls = (state && state.panel.activeCalls) || 0;
-    if (calls > 0) {
+    var keep = !!state && state.panel.active === c.id;  // keeps captions running
+    if (calls > 0 && !keep) {
       openConfirm(c, "use", (calls === 1 ? "1 call has" : calls + " calls have") +
         " captions on. They stop for a few minutes while the engine changes.", "Change engine");
       return;
@@ -872,10 +888,17 @@
     setButton(c.use, c.use.querySelector(".label").textContent, true);
     setControl(c.use, true, true);
     c.use.focus();
+    var keep = !!state && state.panel.active === c.id;
+    var dropped = keep ? engineName(state.panel.selected) : "";
     request("POST", "api/engine", { engine: c.id }).then(function (data) {
       c.pending = null;
       clearActionNotice();
       if (data && data.panel && state) { state.panel = data.panel; render(); }
+      if (keep) {
+        showActionResult("Keeping " + engineName(c.id) + ". " + dropped + " is no longer selected.");
+        c.title.focus();
+        return;
+      }
       focusChangeTitle();
     }, function (error) {
       c.pending = null;

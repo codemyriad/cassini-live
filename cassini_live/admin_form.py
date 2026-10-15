@@ -155,10 +155,14 @@ def option_label(card: dict, panel: dict) -> str:
         else:
             state = "in use until the switch finishes (select to cancel)"
         return _cut(f"{card['name']} — {state}", MAX_LABEL)
+    if card.get("deferred"):
+        return _cut(f"{card['name']} — selected; returns after a restart with suitable limits",
+                    MAX_LABEL)
     if not card.get("active") and not card.get("eligible") and not card.get("advisory"):
         return _cut(f"{card['name']} — unavailable: {_reason_phrase(reasons)}", MAX_LABEL)
     if card.get("active"):
-        state = "in use"
+        deferred = panel.get("selected") not in (None, card["id"])
+        state = "in use meanwhile (select to keep it)" if deferred else "in use"
     else:
         state = "ready" if card["model"]["state"] == "ready" else "available"
     parts = [f"{card['name']} — {state}", _fact(card)]
@@ -245,7 +249,10 @@ def _engine_field(panel):
         id=ENGINE_FIELD,
         title="Speech engine",
         type=SettingsFieldType.RADIO,
-        default=switch["target"] if _busy(panel) and switch.get("target") else panel["active"],
+        default=(
+            switch["target"] if _busy(panel) and switch.get("target")
+            else panel.get("selected") or panel["active"]
+        ),
         options=options,
         description=description,
     )
