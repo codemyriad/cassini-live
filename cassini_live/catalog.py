@@ -15,7 +15,10 @@ MAX_STREAMS = 12  # safety.max_tracks (10) plus a margin of 2
 # Memory is measured (local/stt-eval/resources/specs.md, 2026-10-15): resident 944-947 MiB
 # after load (en), 957-965 MiB (multilingual), peak about 1.47 GiB with 6 streams. CPU comes
 # from a harness at 1.3x speed, not yet from a Cassini capacity run, so it stays provisional.
-MEASUREMENTS = "measured: 2026-10-15 specs.md (CPU provisional)"
+# Shown on the settings page: when the requirements were measured and which figures are
+# still estimates (engine cards mark the affected engines with requirements.provisional).
+MEASURED_ON = "2026-10-15"
+ESTIMATED = ("cpu",)
 
 RELEASE_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
@@ -47,7 +50,7 @@ class License:
     id: str
     name: str
     url: str
-    version: str  # an acknowledgment is bound to this value
+    version: str  # license text version shown to administrators
     text_file: str  # relative to the repository root
     notice: str | None  # exact notice text that must travel with the weights
     requires_acknowledgement: bool
@@ -146,11 +149,10 @@ NVIDIA_OML = License(
     version="2025-10-24",
     text_file="LICENSES/NVIDIA-Open-Model-License.txt",
     notice=NVIDIA_NOTICE,
-    requires_acknowledgement=True,
+    requires_acknowledgement=False,
     summary=(
         "Free for commercial and non-commercial use.",
-        "NVIDIA may update the license at any time; you must accept the update or stop "
-        "using the model.",
+        "NVIDIA may update the license; later versions apply to continued use.",
         "It ends if you bypass the model's safety guardrails or sue over the model.",
         "You are responsible for the captions it produces.",
         "Use must follow NVIDIA's Trustworthy AI terms and export rules.",

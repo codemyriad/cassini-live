@@ -12,15 +12,17 @@ If the machine cannot keep up, Cassini Live should refuse to caption.
 
 ## Where it stands
 
-**0.7.0 is a development release.** It adds a choice of speech engine, including
+**0.7.1 is a development release.** It adds a choice of speech engine, including
 two optional, more accurate NVIDIA Nemotron engines downloaded on demand, on top of
 automatic recovery after resource pressure, worker handoffs that prefer pauses in
 speech, and an optional dashboard inside the call. Captions and the dashboard have run in a real Talk browser call
 with recorded speech. Validation in everyday meetings is still needed.
 
 * One speech engine serves the whole server. Administrators choose it under
-  **Administration settings → Assistant → Cassini Live**. There is
-  no separate Cassini Live page in Nextcloud any more.
+  **Administration settings → Assistant → Cassini Live**. The **?** next to the
+  section title opens an admin-only settings page with every engine's details,
+  live download and switch progress, cancel, model removal, licenses and the
+  capacity check.
 * Whistle is the bundled default. It runs on the CPU and needs about 2 GiB of
   container memory. It supports seven languages: English, German, French,
   Spanish, Italian, Dutch and Polish. Broad accuracy testing across these
@@ -33,8 +35,12 @@ with recorded speech. Validation in everyday meetings is still needed.
   when an administrator chooses it, and rolls back if it does not pass the
   capacity check. See [choose a speech engine](docs/install.md#choose-a-speech-engine).
 * The Nemotron model weights have their own licenses, separate from Cassini
-  Live's AGPL: the NVIDIA Open Model License for Nemotron English, which an
-  administrator must accept, and OpenMDW-1.1 for Nemotron Multilingual.
+  Live's AGPL: the NVIDIA Open Model License for Nemotron English and
+  OpenMDW-1.1 for Nemotron Multilingual. The settings page shows each license
+  and its full text; there is no acceptance step.
+* Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes. Update with
+  `occ app_api:app:update live_transcription` (or reinstall); AppAPI re-reads
+  routes only on a version change.
 * Speech detection filters silent and noisy tracks before recognition.
   Ten unmuted microphones do not reserve ten recognizers, though receiving and
   checking their audio still costs resources.
@@ -81,7 +87,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.7.0 .`.
+`docker build -t cassini-live:0.7.1 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

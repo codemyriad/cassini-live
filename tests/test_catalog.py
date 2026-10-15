@@ -80,7 +80,9 @@ def test_license_files_and_exact_notices():
         assert engine.license.summary
     nvidia = catalog.get("nemotron-en").license
     exact = "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"
-    assert nvidia.notice == exact and nvidia.requires_acknowledgement
+    assert nvidia.notice == exact
+    # Licenses are shown, never accepted.
+    assert not any(e.license.requires_acknowledgement for e in catalog.ENGINES.values())
     assert (ROOT / "LICENSES/NVIDIA-Open-Model-License-NOTICE.txt").read_text() == exact + "\n"
     assert "Last Modified: October 24, 2025" in (ROOT / nvidia.text_file).read_text()
     openmdw = catalog.get("nemotron-multilingual").license

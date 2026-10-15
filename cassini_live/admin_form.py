@@ -1,12 +1,13 @@
 """The "Cassini Live" administration settings form, built from the engine panel dict.
 
-Declarative forms cannot disable an option or update live, so the option labels carry
-eligibility and status, and the ExApp re-registers the form when they change. The output
-is deterministic (no timestamps, progress in 5% steps) so identical publishes are skipped.
-Pure: no I/O, no manager or app imports.
+The form is the short version: a status line and the engine radio. Declarative forms
+cannot disable an option or update live, so the option labels carry eligibility and state,
+and the ExApp re-registers the form when they change. Details, live progress, cancel,
+model removal and licenses live on the admin-only settings page that the form's "?" link
+opens. The output is deterministic (no timestamps, progress in 5% steps) so identical
+publishes are skipped. Pure: no I/O, no manager or app imports.
 """
 
-import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -18,16 +19,13 @@ FORM_ID = "cassini_live_engine"
 SECTION_ID = "ai"
 SECTION_TYPE = "admin"
 ENGINE_FIELD = "speech_engine"
-LICENSE_FIELD = (
-    "nvidia_oml_" + catalog.get("nemotron-en").license.version.replace("-", "_") + "_accepted"
-)
-CLEANUP_FIELD = "remove_unused_models"
-DOC_URL = (
-    "https://github.com/codemyriad/cassini-live/blob/main/docs/install.md#choose-a-speech-engine"
-)
-TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-MAX_LABEL = 200
-MAX_TEXT = 1000
+# Root-relative path of the settings page through the AppAPI proxy; settings_page prefixes
+# the Nextcloud web root.
+PAGE_PATH = "/index.php/apps/app_api/proxy/live_transcription/settings/index.html"
+DEFAULT_PAGE_URL = PAGE_PATH
+PAGE_HINT = "Full settings and progress: click ? next to the title."
+MAX_LABEL = 90
+MAX_TEXT = 400
 PROGRESS_STEP = 5
 
 ACTIVE_STATES = frozenset(
@@ -50,16 +48,29 @@ LANGUAGE_NAMES = {
     "nl": "Dutch",
     "pl": "Polish",
 }
+# States in which selecting the previous engine cancels; the settings page offers Cancel in
+# the same ones (validating has no task to cancel yet, a rollback cannot be stopped).
+CANCELLABLE = frozenset({"downloading", "verifying", "stopping", "loading", "checking"})
+# One short phrase per eligibility reason; the full sentence is on the settings page.
+REASON_PHRASES = {
+    "limits_missing": "container limits not set",
+    "memory_limit": "needs more container memory",
+    "host_memory": "needs more host memory",
+    "cpu_quota": "needs more CPU",
+    "cpu_instructions": "CPU lacks {required}",
+    "architecture": "unsupported processor",
+    "storage": "no app storage",
+    "disk_space": "not enough disk space",
+    "network": "download site unreachable",
+}
 CAPTIONS_OFF = frozenset({"stopping", "loading", "checking", "rolling_back"})
-REMOVABLE = frozenset({"ready", "partial", "corrupt"})
+ON_DISK = frozenset({"ready", "bundled"})
 GIB = 1024 * catalog.MIB
 
 
 @dataclass(frozen=True)
 class Selection:
     engine: str | None
-    accept_license: bool
-    cleanup: bool
 
 
 def _busy(panel):
@@ -76,10 +87,6 @@ def _name(panel, engine_id):
 def _sentence(text):
     text = str(text).strip()
     return text if not text or text[-1] in ".!?" else text + "."
-
-
-def _number(value, digits=1):
-    return f"{round(value, digits):g}"
 
 
 def _cut(text, limit):
@@ -104,79 +111,83 @@ def _step(switch):
     return phase if percent is None else f"{phase} {percent}%"
 
 
-def _facts(card):
+def _fact(card):
+    """One key fact; accuracy, license and requirements are on the settings page."""
     languages = card["languages"]
     if len(languages) == 1:
-        facts = [LANGUAGE_NAMES.get(languages[0], languages[0]) + " only"]
+        fact = LANGUAGE_NAMES.get(languages[0], languages[0]) + " only"
     else:
-        facts = [
-            f"{len(languages)} languages"
-            + (", auto-detect" if card.get("automaticLanguage") else "")
-        ]
-    if card["model"]["state"] == "bundled":
-        return facts + ["bundled, light"]
-    wer = (card.get("accuracy") or {}).get("meetingWer")
-    if wer is not None:
-        facts.append(f"{_number(wer * 100)}% word errors on our meetings")
-    if card.get("license"):
-        facts.append(card["license"]["id"])
-    need = card["requirements"]
-    cpus = need["cpuQuota"]
-    resources = (
-        f"needs {_number(math.ceil(need['memoryLimitMiB'] / 102.4 - 1e-9) / 10)} GiB memory "
-        f"({_number(need['recommendedMemoryLimitMiB'] / 1024)} recommended), "
-        f"{_number(cpus)} CPU{'' if cpus == 1 else 's'}"
-    )
-    if card["model"]["state"] != "ready" and need.get("downloadBytes"):
-        resources = f"{_number(need['downloadBytes'] / GIB, 2)} GiB download, " + resources
-    return facts + [resources]
+        fact = f"{len(languages)} languages"
+    download = (card.get("requirements") or {}).get("downloadBytes")
+    if card["model"]["state"] not in ON_DISK and download:
+        fact += f", {download / GIB:.2f} GiB download"
+    return fact
+
+
+def _reason_phrase(reasons):
+    """The first reason as a short phrase, never a cut sentence; "see ?" for unknown codes."""
+    if not reasons:
+        return "requirements not met (see ?)"
+    phrase = REASON_PHRASES.get(reasons[0].get("code"))
+    if phrase is None:
+        return "requirements not met (see ?)"
+    required = str(reasons[0].get("required") or "").upper().replace(",", ", ")
+    if "{required}" in phrase and not required:
+        return "CPU lacks required instructions"
+    phrase = phrase.format(required=required)
+    return phrase + (" and more" if len(reasons) > 1 else "")
 
 
 def option_label(card: dict, panel: dict) -> str:
     switch = panel.get("switch") or {}
     reasons = card.get("reasons") or []
-    nemotron = card["model"]["state"] != "bundled"
-    tail = []
     if _busy(panel) and card["id"] == switch.get("target"):
-        return _cut(
-            f"{card['name']} — "
-            + (
-                _step(switch) if switch["state"] == "downloading" else "switching: " + _step(switch)
-            ),
-            MAX_LABEL,
-        )
+        step = _step(switch)
+        state = step if switch["state"] == "downloading" else "switching: " + step
+        return _cut(f"{card['name']} — {state}", MAX_LABEL)
     if _busy(panel) and card["id"] == switch.get("previous"):
         if switch["state"] == "rolling_back":
             state = "being restored; captions are off until then"
+        elif switch["state"] not in CANCELLABLE:
+            state = "in use; checking the requirements"
         elif switch["state"] in CAPTIONS_OFF:
-            state = "captions stopped during the change"
+            state = "captions stopped during the change (select to cancel)"
         else:
-            state = "active until the switch finishes"
-        if switch["state"] != "rolling_back":
-            state += " (select to cancel)"
+            state = "in use until the switch finishes (select to cancel)"
         return _cut(f"{card['name']} — {state}", MAX_LABEL)
+    if not card.get("active") and not card.get("eligible") and not card.get("advisory"):
+        return _cut(f"{card['name']} — unavailable: {_reason_phrase(reasons)}", MAX_LABEL)
     if card.get("active"):
-        state, facts = "active", _facts(card)
-    elif not card.get("eligible") and not card.get("advisory"):
-        more = f" (+{len(reasons) - 1} more)" if len(reasons) > 1 else ""
-        first = reasons[0]["message"] if reasons else "requirements not met"
-        state, facts = f"unavailable: {first}{more}", []
+        state = "in use"
     else:
         state = "ready" if card["model"]["state"] == "ready" else "available"
-        facts = _facts(card)
-        license = card.get("license") or {}
-        if license.get("requiresAcknowledgement") and not _accepted(panel, card):
-            tail.append("accept license first")
+    parts = [f"{card['name']} — {state}", _fact(card)]
     if card.get("advisory") and reasons:
-        tail.append("warning: " + reasons[0]["message"])
-    if nemotron and (card.get("requirements") or {}).get("provisional"):
-        tail.append("CPU estimate")
-    return _cut(" · ".join([f"{card['name']} — {state}", *facts, *tail]), MAX_LABEL)
+        parts.append("warning")
+    return _cut(" · ".join(parts), MAX_LABEL)
 
 
-def _result(panel):
+def _refusal(panel):
+    """A choice made in the form and refused: shown first, so a silent revert is explained."""
+    refusal = panel.get("lastRefusal")
+    if not refusal:
+        return []
+    parts = [f"Not applied: {_name(panel, refusal.get('engine'))}.",
+             _sentence(refusal.get("message", ""))]
+    reasons = refusal.get("reasons") or []
+    if reasons:
+        parts.append(_sentence(reasons[0].get("message", "")))
+    return parts
+
+
+def _state(panel):
     switch = panel.get("switch") or {}
     state, parts = switch.get("state"), []
+    if _busy(panel) and switch.get("target"):
+        parts.append(f"Changing to {_name(panel, switch['target'])}: {_step(switch)}.")
+        if state in CAPTIONS_OFF:
+            parts.append("Captions are off until it finishes.")
+        return parts
     target = _name(panel, switch["target"]) if switch.get("target") else None
     if state == "succeeded" and target:
         parts.append(f"Now using {target}.")
@@ -189,13 +200,8 @@ def _result(panel):
             parts.append("Captions will recover automatically.")
     elif state == "cancelled" and target:
         parts.append(f"The change to {target} was cancelled.")
-    refusal = panel.get("lastRefusal")
-    if refusal:
-        parts.append(
-            f"Your choice of {_name(panel, refusal.get('engine'))} was not applied: "
-            + _sentence(refusal.get("message", ""))
-        )
-        parts += [_sentence(r["message"]) for r in (refusal.get("reasons") or [])[:3]]
+    else:
+        parts.append(f"Using {_name(panel, panel['active'])}.")
     error = (panel.get("lastError") or {}).get("message")
     if error and error != (switch.get("error") or {}).get("message"):
         parts.append(_sentence(error))
@@ -215,52 +221,13 @@ def _captions(status):
     return parts
 
 
-def _capacity(status):
-    check = status.get("capacityAssessment") or {}
-    state, speakers = check.get("state", "not_tested"), check.get("testedSpeakers", 0)
-    if state in {"passed", "limited"} and speakers:
-        noun = "speaker" if speakers == 1 else "speakers"
-        return f"Capacity check: {speakers} simultaneous {noun} passed."
-    if state == "checking":
-        return "Capacity check running."
-    if state == "not_tested":
-        return "Capacity check not run yet."
-    if state == "insufficient":
-        failed = [s for s in check.get("scenarios", ()) if not s.get("passed")]
-        reasons = failed[-1].get("reasons", ()) if failed else ()
-        why = ", ".join(r.replace("_", " ") for r in reasons)
-        return "Capacity check did not pass even for one speaker" + (f" ({why})." if why else ".")
-    if state == "interrupted":
-        return "Capacity check was interrupted."
-    return "Capacity check did not complete" + (
-        f" ({check['error']})." if check.get("error") else "."
-    )
-
-
 def status_text(panel: dict, status: dict, notes: tuple[str, ...] = ()) -> str:
-    switch = panel.get("switch") or {}
-    parts = []
-    if _busy(panel):
-        parts.append("Reload this page to see progress.")
-    parts.append(f"Active engine: {_name(panel, panel['active'])}.")
-    if _busy(panel) and switch.get("target"):
-        parts.append(f"Changing to {_name(panel, switch['target'])}: {_step(switch)}.")
-        if switch["state"] in CAPTIONS_OFF:
-            parts.append("Captions are off until the change finishes.")
-    parts += _result(panel)
-    # Notes tell the admin what to do, so they come before anything the length cap may cut.
+    parts = _refusal(panel)
     parts += [_sentence(note) for note in notes]
+    parts += _state(panel)
     parts += _captions(status)
-    parts.append(_capacity(status))
-    shown = (panel["active"], switch.get("target") if _busy(panel) else None)
-    for engine_id in dict.fromkeys(e for e in shown if e and e != "whistle"):
-        if engine_id in catalog.ENGINES:
-            license = catalog.get(engine_id).license
-            parts.append(f"{_name(panel, engine_id)} is licensed under {license.name}: "
-                         f"{license.url}. {_sentence(license.notice or '')}")
-    if panel.get("measurements") == "provisional":
-        parts.append("Requirements are provisional estimates.")
-    return _cut(" ".join(p for p in parts if p), MAX_TEXT)
+    text = _cut(" ".join(p for p in parts if p), MAX_TEXT - len(PAGE_HINT) - 1)
+    return f"{text} {PAGE_HINT}" if text else PAGE_HINT
 
 
 def _engine_field(panel):
@@ -268,8 +235,8 @@ def _engine_field(panel):
     cards = {card["id"]: card for card in panel.get("engines", ())}
     options = {option_label(cards[e], panel): e for e in catalog.ENGINES if e in cards}
     description = (
-        "One engine serves the whole server. Changing it ends captions in active calls for a "
-        "few minutes; participants turn captions on again afterwards."
+        "One engine serves the whole server. Changing it stops captions in active calls for a "
+        "few minutes."
     )
     calls = panel.get("activeCalls", 0)
     if calls:
@@ -284,89 +251,27 @@ def _engine_field(panel):
     )
 
 
-def _license_field(panel):
-    license = catalog.get("nemotron-en").license
-    card = next((c for c in panel.get("engines", ()) if c["id"] == "nemotron-en"), {})
-    accepted = _accepted(panel, card)
-    description = (
-        ("Accepted. " if accepted else "")
-        + "Required before switching to Nemotron English. "
-        + " ".join(license.summary)
-        + f" Full text: {license.url}"
-    )
-    return SettingsField(
-        id=LICENSE_FIELD,
-        title="NVIDIA model license",
-        type=SettingsFieldType.CHECKBOX,
-        default=False,
-        label="I have read and accept the NVIDIA Open Model License for this server.",
-        description=description,
-    )
-
-
-def _accepted(panel, card):
-    """Saved with a switch, or ticked in the form and not yet used by one."""
-    license = card.get("license") or {}
-    return bool(license.get("acknowledged") or (
-        card.get("id") == "nemotron-en" and panel.get("licenseBoxTicked")
-    ))
-
-
-def _removable_bytes(card):
-    model = card["model"]
-    if model["state"] == "partial":
-        return model.get("bytesDone", 0)
-    asset = catalog.get(card["id"]).asset
-    return asset.extracted_bytes if asset else 0
-
-
-def _cleanup_field(panel):
-    switch = panel.get("switch") or {}
-    keep = {panel["active"], switch.get("target") if _busy(panel) else None}
-    removable = [
-        c
-        for c in panel.get("engines", ())
-        if c["id"] not in keep and c["model"]["state"] in REMOVABLE
-    ]
-    if not removable:
-        return None
-    size = sum(_removable_bytes(c) for c in removable) / GIB
-    return SettingsField(
-        id=CLEANUP_FIELD,
-        title="Downloaded models",
-        type=SettingsFieldType.CHECKBOX,
-        default=False,
-        label=f"Remove downloaded models that are not in use (frees {size:.1f} GiB)",
-    )
-
-
-def build_form(panel: dict, status: dict, notes: tuple[str, ...] = ()) -> SettingsForm:
-    fields = [_engine_field(panel), _license_field(panel), _cleanup_field(panel)]
+def build_form(
+    panel: dict, status: dict, notes: tuple[str, ...] = (), page_url: str = DEFAULT_PAGE_URL
+) -> SettingsForm:
     return SettingsForm(
         id=FORM_ID,
         section_id=SECTION_ID,
         section_type=SECTION_TYPE,
         title="Cassini Live",
         description=status_text(panel, status, notes),
-        doc_url=DOC_URL,
+        doc_url=page_url,
         priority=50,
-        fields=[f for f in fields if f is not None],
+        fields=[_engine_field(panel)],
     )
 
 
-def _flag(value):
-    return value is True or (isinstance(value, str) and value.strip().lower() in TRUE_VALUES)
-
-
 def parse_values(records: Iterable) -> Selection:
+    """Only the engine choice; keys left by 0.7.0 (license, cleanup) are ignored."""
     values = {}
     for record in records:
         key, value = (record.key, record.value) if hasattr(record, "key") else record
         values[key] = value
     engine = values.get(ENGINE_FIELD)
     engine = engine.strip() if isinstance(engine, str) else None
-    return Selection(
-        engine=engine or None,
-        accept_license=_flag(values.get(LICENSE_FIELD)),
-        cleanup=_flag(values.get(CLEANUP_FIELD)),
-    )
+    return Selection(engine=engine or None)

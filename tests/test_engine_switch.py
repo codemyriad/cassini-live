@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from dataclasses import replace
 from functools import partial
@@ -151,9 +152,10 @@ async def finished(h):
 
 
 async def test_switch_downloads_loads_checks_and_persists(h):
+    # No license step: the license is shown on the settings page, not accepted.
     states = []
     h.manager.on_change = lambda: states.append(h.manager.status.state)
-    status = await h.manager.request_switch("nemotron-en", True)
+    status = await h.manager.request_switch("nemotron-en")
     assert status.target == "nemotron-en" and status.previous == "whistle"
     status = await finished(h)
     assert status.state == "succeeded" and not status.error
@@ -163,8 +165,7 @@ async def test_switch_downloads_loads_checks_and_persists(h):
     h.service.stop_rooms.assert_awaited()
     saved = h.settings.read()
     assert saved.engine == "nemotron-en" and saved.pending is None
-    assert saved.acknowledgements["nemotron-en"].version == "2025-10-24"
-    assert saved.acknowledgements["nemotron-en"].user == ""
+    assert "acknowledgements" not in json.loads(h.settings.path.read_text())
     order = [s for i, s in enumerate(states) if i == 0 or states[i - 1] != s]
     assert order == [
         "validating", "downloading", "verifying", "stopping", "loading", "checking", "succeeded"
@@ -175,36 +176,33 @@ async def test_switch_downloads_loads_checks_and_persists(h):
 
 
 async def test_refusals_leave_the_state_unchanged(h, tmp_path):
-    with pytest.raises(SwitchRefused) as refused:
-        await h.manager.request_switch("nemotron-en", False)
-    assert refused.value.code == "license_required" and refused.value.status == 400
     assert h.manager.status.state == "idle"
     with pytest.raises(SwitchRefused) as refused:
-        await h.manager.request_switch("whistle", False)
+        await h.manager.request_switch("whistle")
     assert refused.value.code == "active"
     with pytest.raises(SwitchRefused) as refused:
-        await h.manager.request_switch("vosk", False)
+        await h.manager.request_switch("vosk")
     assert refused.value.code == "unknown_engine"
     h.data["memoryLimitBytes"] = 2048 * MIB
     with pytest.raises(SwitchRefused) as refused:
-        await h.manager.request_switch("nemotron-multilingual", False)
+        await h.manager.request_switch("nemotron-multilingual")
     assert refused.value.code == "not_eligible"
     assert [r.code for r in refused.value.reasons] == ["memory_limit"]
     h.manager.note_refusal(refused.value, "nemotron-multilingual")
     assert h.manager.panel()["lastRefusal"]["reasons"][0]["code"] == "memory_limit"
     h.service.enabled = False
     with pytest.raises(SwitchRefused) as refused:
-        await h.manager.request_switch("nemotron-multilingual", False)
+        await h.manager.request_switch("nemotron-multilingual")
     assert refused.value.code == "disabled" and refused.value.status == 409
     assert h.manager.active == "whistle" and h.safety.state == "ready"
 
 
 async def test_busy_switch_is_refused(h):
     h.store.gate = asyncio.Event()
-    await h.manager.request_switch("nemotron-multilingual", False)
+    await h.manager.request_switch("nemotron-multilingual")
     await until(lambda: h.manager.status.state == "downloading")
     with pytest.raises(SwitchRefused) as refused:
-        await h.manager.request_switch("nemotron-en", True)
+        await h.manager.request_switch("nemotron-en")
     assert refused.value.code == "busy" and refused.value.status == 409
     assert h.manager.desired == "nemotron-multilingual"
     assert h.manager.panel()["switch"]["progress"]["bytesTotal"] == 100
@@ -214,7 +212,7 @@ async def test_busy_switch_is_refused(h):
 
 async def test_download_failure_never_stops_the_old_engine(h):
     h.store.fail = ModelError("network", "Cannot reach github.com")
-    await h.manager.request_switch("nemotron-multilingual", False)
+    await h.manager.request_switch("nemotron-multilingual")
     status = await finished(h)
     assert status.state == "failed" and status.error["code"] == "network"
     assert h.safety.pool is h.pool and h.safety.state == "ready"
@@ -224,14 +222,14 @@ async def test_download_failure_never_stops_the_old_engine(h):
 async def test_corrupt_download_fails_verification(h):
     h.store.corrupt.add("nemotron-multilingual")
     h.store.ready.add("nemotron-multilingual")
-    await h.manager.request_switch("nemotron-multilingual", False)
+    await h.manager.request_switch("nemotron-multilingual")
     status = await finished(h)
     assert status.error["code"] == "hash_mismatch" and h.manager.active == "whistle"
 
 
 async def test_capacity_failure_rolls_back(h):
     h.passes["nemotron-en"] = False
-    await h.manager.request_switch("nemotron-en", True)
+    await h.manager.request_switch("nemotron-en")
     status = await finished(h)
     assert status.state == "failed" and status.rolled_back
     assert status.error["code"] == "capacity_failed"
@@ -245,7 +243,7 @@ async def test_capacity_failure_rolls_back(h):
 async def test_load_failure_with_failed_rollback(h):
     h.start_errors["nemotron-en"] = RuntimeError("boom")
     h.passes["whistle"] = False
-    await h.manager.request_switch("nemotron-en", True)
+    await h.manager.request_switch("nemotron-en")
     status = await finished(h)
     assert status.state == "failed" and not status.rolled_back
     assert h.manager.active == "whistle" and h.settings.read().engine == "whistle"
@@ -253,7 +251,7 @@ async def test_load_failure_with_failed_rollback(h):
 
 async def test_cancel_while_downloading_keeps_captions(h):
     h.store.gate = asyncio.Event()
-    await h.manager.request_switch("nemotron-multilingual", False)
+    await h.manager.request_switch("nemotron-multilingual")
     await until(lambda: h.manager.status.state == "downloading")
     await h.manager.cancel("Cancelled in the administration settings")
     status = await finished(h)
@@ -274,7 +272,7 @@ async def test_cancel_while_checking_rolls_back(h):
 
     h.manager.backend_factory = gated
     h.store.ready.add("nemotron-multilingual")
-    await h.manager.request_switch("nemotron-multilingual", False)
+    await h.manager.request_switch("nemotron-multilingual")
     await until(lambda: h.manager.status.state == "checking")
     await h.manager.cancel()
     status = await finished(h)
@@ -283,6 +281,61 @@ async def test_cancel_while_checking_rolls_back(h):
     with pytest.raises(SwitchRefused) as refused:
         await h.manager.cancel()
     assert refused.value.code == "idle"
+
+
+async def test_switch_and_delete_during_the_critical_section_are_refused_at_once(h):
+    """Never queued behind the lock: a queued switch would start, unconfirmed, afterwards."""
+    gate = asyncio.Event()
+    original = h.manager.backend_factory
+
+    def gated(engine_id, **kwargs):
+        backend = original(engine_id, **kwargs)
+        if engine_id != "whistle":
+            backend.start_gate = gate
+        return backend
+
+    h.manager.backend_factory = gated
+    h.store.ready.update({"nemotron-multilingual", "nemotron-en"})
+    await h.manager.request_switch("nemotron-multilingual")
+    await until(lambda: h.manager.status.state == "checking")
+    for call in (h.manager.request_switch("nemotron-en"), h.manager.delete_model("nemotron-en")):
+        with pytest.raises(SwitchRefused) as refused:
+            await asyncio.wait_for(call, 0.5)
+        assert refused.value.code == "busy" and refused.value.status == 409
+    gate.set()
+    status = await finished(h)
+    assert status.state == "succeeded" and status.target == "nemotron-multilingual"
+    await asyncio.sleep(0.05)
+    assert h.manager.active == "nemotron-multilingual" and not h.manager.busy
+    assert "nemotron-en" not in h.store.deleted
+
+
+async def test_held_lock_refuses_instead_of_waiting(h):
+    h.store.ready.add("nemotron-en")
+    await h.manager.lock.acquire()  # e.g. a restore watch rolling back
+    try:
+        for call in (h.manager.request_switch("nemotron-en"),
+                     h.manager.delete_model("nemotron-en")):
+            with pytest.raises(SwitchRefused) as refused:
+                await asyncio.wait_for(call, 0.5)
+            assert refused.value.code == "busy"
+    finally:
+        h.manager.lock.release()
+    assert h.manager.status.state == "idle" and h.store.deleted == []
+
+
+async def test_refusal_noted_during_a_switch_ends_with_it(h):
+    h.store.gate = asyncio.Event()
+    await h.manager.request_switch("nemotron-multilingual")
+    await until(lambda: h.manager.status.state == "downloading")
+    h.manager.note_refusal(SwitchRefused(409, "busy", "Try again"), "whistle")
+    assert h.manager.panel()["lastRefusal"]["engine"] == "whistle"
+    h.store.gate.set()
+    assert (await finished(h)).state == "succeeded"
+    assert h.manager.panel()["lastRefusal"] is None
+    # A refusal while idle stays until the next change.
+    h.manager.note_refusal(SwitchRefused(400, "unknown_engine", "Unknown"), "vosk")
+    assert h.manager.panel()["lastRefusal"]["engine"] == "vosk"
 
 
 async def test_cancel_during_rollback_is_refused(h):
@@ -305,7 +358,7 @@ async def test_disable_during_checking_restores_previous_without_restart(h):
 
     h.manager.backend_factory = gated
     h.store.ready.add("nemotron-multilingual")
-    await h.manager.request_switch("nemotron-multilingual", False)
+    await h.manager.request_switch("nemotron-multilingual")
     await until(lambda: h.manager.status.state == "checking")
     await h.manager.stop()
     assert h.manager.status.state == "cancelled"
@@ -341,11 +394,12 @@ def test_panel_shape(tmp_path, monkeypatch):
     assert cards["whistle"]["requirements"]["downloadBytes"] == 0
     en = cards["nemotron-en"]
     assert not en["eligible"] and en["reasons"][0]["code"] == "memory_limit"
-    assert en["license"]["requiresAcknowledgement"] and not en["license"]["acknowledged"]
+    assert set(en["license"]) == {"id", "name", "url", "version", "notice", "summary"}
     assert en["requirements"]["memoryLimitMiB"] == 2304
     assert en["model"]["bytesTotal"] == catalog.get("nemotron-en").asset.archive_bytes
     assert panel["host"]["cpuFlags"] == ["avx2"]
     assert panel["switch"]["state"] == "idle"
+    assert panel["measurements"] == {"measuredOn": catalog.MEASURED_ON, "estimates": ["cpu"]}
 
 
 async def test_restore_with_interrupted_switch(tmp_path, monkeypatch):
@@ -444,7 +498,7 @@ async def test_cancel_while_waiting_for_the_lock_is_honoured(tmp_path, monkeypat
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",))
     await h.manager.start_safety()
     await until(lambda: h.safety.state == "ready")
-    await h.manager.request_switch("nemotron-en", True)
+    await h.manager.request_switch("nemotron-en")
     await h.manager.lock.acquire()  # e.g. delete_model / restore-watch holding the lock
     await until(lambda: h.manager.status.state == "verifying" and h.manager.step is None)
     await h.manager.cancel("admin cancel")
@@ -468,7 +522,7 @@ async def test_cancel_during_validating_is_refused(tmp_path, monkeypatch):
     h.manager.probe = Probe()
     h.manager.task = asyncio.create_task(asyncio.sleep(0))  # a previous, finished switch
     await asyncio.sleep(0)
-    t = asyncio.create_task(h.manager.request_switch("nemotron-en", True))
+    t = asyncio.create_task(h.manager.request_switch("nemotron-en"))
     await until(lambda: h.manager.status.state == "validating")
     with pytest.raises(SwitchRefused):
         await h.manager.cancel("admin cancel")
@@ -531,7 +585,7 @@ async def test_switch_times_the_check_from_the_attempt_not_the_headroom_wait(h, 
     h.safety.policy = replace(h.safety.policy, headroom_window=1.2)
     h.data["cpuPressureRecent"] = 30  # Pressure left by the engine that just stopped.
     slow_calibration(monkeypatch, 0.3)
-    await h.manager.request_switch("nemotron-en", True)
+    await h.manager.request_switch("nemotron-en")
     await until(lambda: h.manager.status.state == "checking")
     await asyncio.sleep(0.1)
     h.data["cpuPressureRecent"] = 0

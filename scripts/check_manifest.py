@@ -28,14 +28,45 @@ def main():
         "CASSINI_LIVE_DEBUG_VIDEO",
     }
     routes = info.findall("external-app/routes/route")
-    assert routes and all(r.findtext("access_level") == "USER" for r in routes)
-    patterns = [r.findtext("url").replace(r"\/", "/") for r in routes]
-    for private in ("api/v1/call/transcribe", "api/v1/call/leave", "enabled", "init"):
-        assert not any(re.fullmatch(pattern, private) for pattern in patterns)
-    # The engine choice lives in AppAPI declarative admin settings, not a proxied page.
-    for hidden in ("ui/live.js", "ui/live.css", "img/app.svg", "api/v1/call/set-language"):
-        assert not any(re.fullmatch(pattern, hidden) for pattern in patterns)
-    assert patterns == ["^status$"], "status is the only public route"
+    assert routes
+    table = [
+        (r.findtext("url").replace(r"\/", "/"), r.findtext("verb"), r.findtext("access_level"))
+        for r in routes
+    ]
+    for pattern, _, level in table:
+        if pattern == "^/?status$":
+            assert level == "USER", "status is the only user route"
+        else:
+            assert level == "ADMIN" and pattern.startswith("^/?settings/"), pattern
+    assert [p for p, _, level in table if level == "USER"] == ["^/?status$"]
+
+    # AppAPI matches "/" + path (and the bare path, deprecated); HaRP matches "/" + path.
+    def matches(path, verb=None):
+        return [
+            p for p, v, _ in table
+            if (verb is None or verb in v.split(","))
+            and any(re.fullmatch(p, candidate) for candidate in (path, "/" + path))
+        ]
+
+    private = (
+        "api/v1/call/transcribe", "api/v1/call/leave", "api/v1/call/set-language", "enabled",
+        "init", "capacity/check", "ui/live.js", "ui/live.css", "img/app.svg", "heartbeat",
+    )
+    for path in private:
+        assert not matches(path), f"{path} must stay server-to-server"
+    public = {
+        "status": "GET",
+        "settings/index.html": "GET",
+        "settings/app.js": "GET",
+        "settings/app.css": "GET",
+        "settings/api/state": "GET",
+        "settings/api/engine": "POST",
+        "settings/api/cancel": "POST",
+        "settings/api/models/nemotron-en": "DELETE",
+        "settings/licenses/NVIDIA-OML.txt": "GET",
+    }
+    for path, verb in public.items():
+        assert matches(path, verb), f"{verb} {path} is not routed"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 
 

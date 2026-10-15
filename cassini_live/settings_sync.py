@@ -20,27 +20,30 @@ POLL_S = 3.0  # appconfig_ex poll while enabled
 BACKOFF_S = 30.0  # after a failed OCS call; reset on success
 PUBLISH_MIN_S = 3.0  # at most one register_form per 3 s (trailing publish guaranteed)
 PROGRESS_STEP = 5  # percent; admin_form rounds progress down to this step
-LICENSE_GRACE_S = 30.0  # Nextcloud saves each field on its own: wait for the license box
 OCS_TIMEOUT_S = 10.0
-LICENSE_NOTE = "Tick the NVIDIA Open Model License box to continue."
+# Form fields of 0.7.0 (license tick box, cleanup checkbox), removed once from app config.
+LEGACY_KEYS = ["nvidia_oml_2025_10_24_accepted", "remove_unused_models"]
+LEGACY_ATTEMPTS = 3
 NOT_RUNNING = "It was chosen while Cassini Live was not running. Choose it again."
 
 
 class SettingsSync:
     def __init__(self, manager: EngineManager, nc_factory, status: Callable[[], dict], *,
                  build=admin_form.build_form, parse=admin_form.parse_values,
-                 clock=time.monotonic, poll_s=POLL_S, publish_min_s=PUBLISH_MIN_S):
+                 clock=time.monotonic, poll_s=POLL_S, publish_min_s=PUBLISH_MIN_S,
+                 page_url: str = admin_form.DEFAULT_PAGE_URL):
         self.manager, self.nc_factory, self.status = manager, nc_factory, status
         self.build, self.parse, self.clock = build, parse, clock
         self.poll_s, self.publish_min_s = poll_s, publish_min_s
+        self.page_url = page_url
         self.delay = poll_s
         self.notes: list[str] = []
         self.nc = None
         self.first = True
         self.seen: str | None = None
         self.stored: str | None = None
-        self.license_ticked = False
-        self.pending: tuple[str, float] | None = None
+        self.legacy_attempts = 0
+        self.legacy_cleared = False
         self.sent: dict | None = None
         self.published_at = -float("inf")
         self.publish_failed = False
@@ -88,7 +91,7 @@ class SettingsSync:
         if self.poller and not self.poller.done():
             return
         self.manager.on_change = self.notify
-        self.first, self.pending, self.sent, self.delay = True, None, None, self.poll_s
+        self.first, self.sent, self.delay = True, None, self.poll_s
         self.poller = asyncio.create_task(self._poll_loop())
         self.publisher = asyncio.create_task(self._publish_loop())
 
@@ -106,13 +109,13 @@ class SettingsSync:
         if final:
             try:
                 async with asyncio.timeout(5):
-                    form = self.build(self._panel(), self.status(), (final,))
+                    form = self._build((final,))
                     await self._ocs(lambda nc: nc.ui.settings.register_form(form))
             except Exception as error:
                 self._log("final publish", error)
 
-    def _panel(self) -> dict:
-        return {**self.manager.panel(), "licenseBoxTicked": self.license_ticked}
+    def _build(self, notes):
+        return self.build(self.manager.panel(), self.status(), notes, page_url=self.page_url)
 
     def notify(self) -> None:
         self.dirty.set()
@@ -140,7 +143,7 @@ class SettingsSync:
 
     async def publish(self, *, force: bool = False) -> None:
         try:
-            form = self.build(self._panel(), self.status(), tuple(self.notes))
+            form = self._build(tuple(self.notes))
             data = form.to_dict()
             if data == self.sent and not force:
                 return
@@ -154,9 +157,10 @@ class SettingsSync:
     # Polling
 
     async def poll_once(self) -> None:
-        fields = [admin_form.ENGINE_FIELD, admin_form.LICENSE_FIELD, admin_form.CLEANUP_FIELD]
+        fields = [admin_form.ENGINE_FIELD]
         try:
             records = await self._ocs(lambda nc: nc.appconfig_ex.get_values(fields))
+            await self._clear_legacy()
             await self._decide(self.parse(records))
             self.delay = self.poll_s
         except Exception as error:
@@ -166,12 +170,20 @@ class SettingsSync:
         # skipped without an OCS call, so this republishes only when the text changed.
         self.notify()
 
+    async def _clear_legacy(self):
+        """Best effort: a failure only leaves two unused app config values behind."""
+        if self.legacy_cleared or self.legacy_attempts >= LEGACY_ATTEMPTS:
+            return
+        self.legacy_attempts += 1
+        try:
+            await self._ocs(lambda nc: nc.appconfig_ex.delete(LEGACY_KEYS))
+            self.legacy_cleared = True
+        except Exception as error:
+            self._log("legacy cleanup", error)
+
     async def _decide(self, selection):
         manager = self.manager
         self.stored = selection.engine
-        if selection.accept_license != self.license_ticked:
-            self.license_ticked = selection.accept_license
-            self.notify()
         if self.first:
             # Never act on a choice saved while the ExApp was down or left by a rollback.
             self.first, self.seen = False, selection.engine
@@ -181,18 +193,18 @@ class SettingsSync:
                                          selection.engine)
                 await self._write(manager.desired)
         elif selection.engine is not None and selection.engine != self.seen:
-            self.seen, self.pending = selection.engine, None
-            self._note(LICENSE_NOTE, False)
-            await self._choose(selection)
-        elif self.pending:
-            await self._request(self.pending[0], selection.accept_license)
-        if selection.cleanup:
-            await manager.delete_unused_models()
-            await self._ocs(lambda nc: nc.appconfig_ex.delete(admin_form.CLEANUP_FIELD))
-            self.notify()
+            self.seen = selection.engine
+            await self._choose(selection.engine)
+        status = manager.status
+        cancelling = getattr(manager, "cancel_reason", None)
+        if manager.busy and status.target and self.stored != status.target and not cancelling:
+            # A change started on the settings page: show it as if chosen here, with the
+            # previous engine as "select to cancel". Not while it is being cancelled: the
+            # admin's choice of the previous engine stays until the change has ended.
+            await self._write(status.target)
         if not manager.busy:
             self._note(self._busy_note(), False)
-            if not self.pending and self.stored is not None and self.stored != manager.active:
+            if self.stored is not None and self.stored != manager.active:
                 await self._write(manager.active)
 
     def _busy_note(self, target=None):
@@ -200,8 +212,8 @@ class SettingsSync:
         name = catalog.get(target).name if target in catalog.ENGINES else "another engine"
         return f"A change to {name} is in progress. Wait for it to finish."
 
-    async def _choose(self, selection):
-        manager, engine = self.manager, selection.engine
+    async def _choose(self, engine):
+        manager = self.manager
         if engine not in catalog.ENGINES:
             manager.note_refusal(
                 SwitchRefused(400, "unknown_engine", "Unknown speech engine"), engine
@@ -209,7 +221,7 @@ class SettingsSync:
             await self._write(manager.desired)
         elif manager.busy:
             status = manager.status
-            if engine == status.previous and status.state != "rolling_back":
+            if engine == status.previous and status.state in admin_form.CANCELLABLE:
                 try:
                     await manager.cancel("Cancelled in the administration settings")
                 except SwitchRefused as refused:
@@ -218,24 +230,12 @@ class SettingsSync:
                 self._note(self._busy_note(status.target))
                 await self._write(status.target)
         elif engine != manager.active:
-            await self._request(engine, selection.accept_license)
+            await self._request(engine)
 
-    async def _request(self, engine, accept_license):
+    async def _request(self, engine):
         manager = self.manager
         try:
-            await manager.request_switch(engine, accept_license, user="")
+            await manager.request_switch(engine)
         except SwitchRefused as refused:
-            if refused.code == "license_required":
-                if self.pending is None:
-                    self.pending = (engine, self.clock())
-                if self.clock() - self.pending[1] < LICENSE_GRACE_S:
-                    self._note(LICENSE_NOTE)
-                    return
-            # Any other refusal ends the wait, or the poll would retry it until it succeeds.
-            self.pending = None
-            self._note(LICENSE_NOTE, False)
             manager.note_refusal(refused, engine)
             await self._write(manager.desired)
-            return
-        self.pending = None
-        self._note(LICENSE_NOTE, False)

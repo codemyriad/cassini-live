@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.7.0`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.7.1`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.7.0 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.7.1 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry
@@ -106,25 +106,31 @@ estimates until confirmed by a capacity check on Nemotron.
 
 The settings live in **Administration settings → Assistant →
 Cassini Live** (`/settings/admin/ai`; Nextcloud 33 and earlier label this
-section "Artificial intelligence"). Only Nextcloud administrators see this form. The form does not update by itself: **reload the page** to see download
-progress, the capacity check and the result of a change.
+section "Artificial intelligence"). Only Nextcloud administrators see it. The
+form shows a short status line and the engine choice. The **?** next to the
+"Cassini Live" title opens the full settings page (admin-only, served by the app
+through AppAPI): a card per engine with accuracy, languages, requirements and
+license, live download and switch progress, cancel, removal of downloaded models,
+the capacity check result and the caption status. The page refreshes itself.
 
-* Each option label says whether the engine is active, ready, available, or
-  "unavailable:" followed by the reason, for example a memory limit that is too
-  small. Nextcloud cannot grey out an option. If you choose an unavailable
-  engine, Cassini Live puts the previous choice back within a few seconds and
-  explains why in the status text at the top of the form.
-* Nemotron English is licensed under the NVIDIA Open Model License. Tick the
-  license box before you choose it, or within 30 seconds after. Otherwise the
-  choice is reverted. Nemotron Multilingual is licensed under OpenMDW-1.1 and
-  needs no acceptance. Both license texts and notices are stored next to the
-  downloaded model files. See [third-party notices](../NOTICE.md).
+* Each option label in the form says whether the engine is in use, ready,
+  available, or "unavailable:" followed by a short form of the first reason, for
+  example "needs more container memory". Nextcloud cannot grey out an option; the
+  settings page disables the button and lists every reason. If you choose an
+  unavailable engine in the form, Cassini Live puts the previous choice back
+  within a few seconds and says why at the start of the status line.
+* Nemotron English is licensed under the NVIDIA Open Model License and Nemotron
+  Multilingual under OpenMDW-1.1. The settings page names each license, links its
+  full text and shows the required notice. There is no acceptance step: using an
+  engine means its license applies. Both license texts and notices are stored
+  next to the downloaded model files. See [third-party notices](../NOTICE.md).
 * The model downloads from the sherpa-onnx release on GitHub into
   `APP_PERSISTENT_STORAGE/models/<engine>/`, or
   `/home/cassini/.local/state/models/` when that variable is unset. Keep this
   directory on persistent storage, or the model downloads again after the
   container is recreated. Captions keep working with the old engine during the
-  download. Select the old engine again to cancel.
+  download. Cancel on the settings page, or select the old engine again in the
+  form.
 * After the download, Cassini Live checks the files, then **ends captions in all
   active calls**, loads the new engine and runs the capacity check. This takes a
   few minutes. Participants turn captions on again afterwards.
@@ -132,8 +138,12 @@ progress, the capacity check and the result of a change.
   back to the previous engine and shows the reason. At startup, a missing or
   damaged model falls back to Whistle. A failed engine is never retried
   automatically: choose it again after you fix the cause.
-* To free disk space, tick **Remove downloaded models that are not in use**. It
-  appears only when a model other than the active one is on disk.
+* To free disk space, remove a downloaded model that is not in use on the
+  settings page (**Remove downloaded files** on its card).
+
+Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes for the settings page.
+Update with `occ app_api:app:update live_transcription` (or reinstall); AppAPI
+re-reads routes only on a version change.
 
 Raise the limits before you choose a Nemotron engine. For example, on a host
 with at least 6 GiB RAM and eight CPUs:

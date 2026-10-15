@@ -1,6 +1,6 @@
 # Check caption capacity without a call
 
-Cassini Live 0.7.0 measures capacity automatically after startup, using the actual
+Cassini Live 0.7.1 measures capacity automatically after startup, using the actual
 installed speech engine. Administrators see the result in **Administration
 settings → Assistant → Cassini Live**; the
 `cassini_live.capacity --installed` command below shows the details. No microphone, Talk room, private recording, model download or network
@@ -56,8 +56,9 @@ streams, at 70% of the limit. A restart of the engine process briefly charges
 the model file's page cache too; that peak stays near 75%, below the 80% trip.
 While calls have captions, the model download is checked and unpacked at about
 a quarter of a CPU, so it does not starve the engine serving them. A Nemotron engine that fails
-one of these rules is shown as "unavailable:" with the reason in the settings
-form, and the service refuses to switch to it.
+one of these rules is shown as "unavailable:" with a short reason in the settings
+form (the full reason is on the Cassini Live settings page), and the service refuses
+to switch to it.
 
 Whistle hands a busy worker to a waiting speaker after two seconds of audio,
 preferring a pause in speech. Nemotron has no such handoff: a speaker keeps a
@@ -196,7 +197,7 @@ when the additional workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.7.0 \
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.7.1 \
   -m cassini_live.capacity --workers 2
 ```
 

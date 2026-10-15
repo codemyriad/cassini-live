@@ -36,10 +36,15 @@ is enabled and once when an administrator chooses an engine. Nothing else
 contacts GitHub at runtime.
 
 The engine settings are stored in the app's persistent storage. They record the
-chosen engine and, for the NVIDIA Open Model License, the accepted license
-version and the time of acceptance. They store no user id: AppAPI does not tell
-the app who saved the form. The app reads its own settings values from
-Nextcloud every 3 seconds while it is enabled, to notice a new choice.
+chosen engine, a change in progress and the last error only. The app reads its
+own settings values from Nextcloud every 3 seconds while it is enabled, to
+notice a new choice.
+
+The admin-only settings page is served by the app through AppAPI. With each of
+its requests AppAPI sends the administrator's user id, and forwards the
+browser's Nextcloud cookies. The app uses the id only to reject requests without
+a user, and neither stores nor logs the id or the cookies. While open, the page
+polls the app every 2 to 10 seconds.
 
 The Silero speech detector is bundled and runs locally. ONNX Runtime telemetry is
 disabled with `ORT_DISABLE_TELEMETRY=1` before its import and in the image, plus

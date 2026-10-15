@@ -17,7 +17,7 @@ from . import catalog, eligibility, engines
 from .config import LANGUAGE_NAMES, LANGUAGES
 from .eligibility import NetworkProbe, Reason
 from .model_store import ModelError, ModelStore
-from .settings import Acknowledgement, EngineSettings, SettingsStore
+from .settings import EngineSettings, SettingsStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ SwitchState = Literal[
 ACTIVE_STATES = {
     "validating", "downloading", "verifying", "stopping", "loading", "checking", "rolling_back"
 }
+ENDED_STATES = {"succeeded", "failed", "cancelled"}
 CRITICAL_STATES = {"stopping", "loading", "checking", "rolling_back"}
 REMOVABLE = {"ready", "partial", "corrupt"}
 # Present model files make these irrelevant when restoring a saved choice.
@@ -146,6 +147,10 @@ class EngineManager:
         return {"code": code, "message": message, "engine": engine, "at": round(self.clock())}
 
     def _set(self, state, message="", **changes):
+        if state in ENDED_STATES:
+            # A refusal noted during the change is older than its result; keeping it would
+            # put "Not applied" next to "Now using".
+            self.last_refusal = None
         self.status.state, self.status.message = state, message
         self.status.updated_at = self.clock()
         for key, value in changes.items():
@@ -284,9 +289,16 @@ class EngineManager:
 
     # Switching
 
-    async def request_switch(
-        self, engine: str, accept_license: bool, user: str = ""
-    ) -> SwitchStatus:
+    def _refuse_if_locked(self):
+        """Refuse at once instead of queueing behind a running switch: a queued request would
+        start a second change nobody confirmed once the first one finished."""
+        if self.busy:
+            raise SwitchRefused(409, "busy", "A speech engine change is already in progress")
+        if self.lock.locked():
+            raise SwitchRefused(409, "busy", "Cassini Live is busy; try again in a moment")
+
+    async def request_switch(self, engine: str) -> SwitchStatus:
+        self._refuse_if_locked()
         async with self.lock:
             if self.busy:
                 raise SwitchRefused(409, "busy", "A speech engine change is already in progress")
@@ -297,6 +309,7 @@ class EngineManager:
             if engine == self.active:
                 raise SwitchRefused(400, "active", f"{_name(engine)} is already active")
             before, self.last_refusal = self.status, None
+            self.cancel_reason = None
             now = self.clock()
             self.status = SwitchStatus(
                 "validating", engine, self.active, now, now, "Checking the requirements"
@@ -306,7 +319,7 @@ class EngineManager:
             if catalog.get(engine).asset and self.store.state(engine).state != "ready":
                 await self.refresh_network([engine])
             async with self.lock:
-                self._validate(engine, accept_license, user)
+                self._validate(engine)
                 self.cancel_reason = None
                 self._save(last_error=None)
                 self.task = asyncio.create_task(self._run(engine, self.status.previous))
@@ -316,24 +329,12 @@ class EngineManager:
             raise
         return self.status
 
-    def _validate(self, engine, accept_license, user):
+    def _validate(self, engine):
         result = self._assess(engine, self._host_facts(fresh=True))
         if not result.eligible:
             raise SwitchRefused(
                 400, "not_eligible", f"{_name(engine)} cannot run here.", result.reasons
             )
-        license = catalog.get(engine).license
-        ack = self.saved.acknowledgements.get(engine)
-        if license.requires_acknowledgement and not accept_license and not (
-            ack and ack.version == license.version
-        ):
-            raise SwitchRefused(
-                400, "license_required", f"Accept the {license.name} to use {_name(engine)}."
-            )
-        if accept_license and license.requires_acknowledgement:
-            acks = dict(self.saved.acknowledgements)
-            acks[engine] = Acknowledgement(license.version, user, self.clock())
-            self._save(acknowledgements=acks)
         if not self.service.enabled:
             raise SwitchRefused(409, "disabled", "Cassini Live is not enabled")
 
@@ -513,9 +514,11 @@ class EngineManager:
     # Models
 
     async def delete_model(self, engine: str) -> dict:
+        if engine not in catalog.ENGINES:
+            raise SwitchRefused(400, "unknown_engine", "Unknown speech engine")
+        if self.critical or self.lock.locked():
+            raise SwitchRefused(409, "busy", "Wait for the speech engine change to finish")
         async with self.lock:
-            if engine not in catalog.ENGINES:
-                raise SwitchRefused(400, "unknown_engine", "Unknown speech engine")
             if engine == self.active or (self.busy and engine == self.status.target):
                 raise SwitchRefused(409, "active", f"{_name(engine)} is in use")
             if self.store.busy == engine:
@@ -596,7 +599,6 @@ class EngineManager:
         model = self.store.state(engine_id)
         progress = self.store.progress(engine_id)
         result = self._assess(engine_id, facts)
-        ack = self.saved.acknowledgements.get(engine_id)
         memory = catalog.memory_floor_mib(engine_id, self._size(engine_id))
         return {
             "id": engine.id,
@@ -621,8 +623,6 @@ class EngineManager:
                 "name": license.name,
                 "url": license.url,
                 "version": license.version,
-                "requiresAcknowledgement": license.requires_acknowledgement,
-                "acknowledged": bool(ack and ack.version == license.version),
                 "notice": license.notice,
                 "summary": list(license.summary),
             },
@@ -651,7 +651,9 @@ class EngineManager:
         return {
             "active": self.active,
             "activeCalls": len(getattr(self.service, "clients", ())),
-            "measurements": catalog.MEASUREMENTS,
+            "measurements": {
+                "measuredOn": catalog.MEASURED_ON, "estimates": list(catalog.ESTIMATED)
+            },
             "switch": switch,
             "lastError": self.saved.last_error,
             "lastRefusal": self.last_refusal,

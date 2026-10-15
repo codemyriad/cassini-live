@@ -8,11 +8,10 @@ from nc_py_api.ex_app.ui.settings import SettingsForm
 
 from cassini_live import admin_form, catalog
 from cassini_live.admin_form import (
-    CLEANUP_FIELD,
     ENGINE_FIELD,
-    LICENSE_FIELD,
     MAX_LABEL,
     MAX_TEXT,
+    PAGE_HINT,
     build_form,
     option_label,
     parse_values,
@@ -54,8 +53,6 @@ def card(engine_id, **changes):
             "name": lic.name,
             "url": lic.url,
             "version": lic.version,
-            "requiresAcknowledgement": lic.requires_acknowledgement,
-            "acknowledged": False,
             "notice": lic.notice,
             "summary": list(lic.summary),
         },
@@ -150,32 +147,49 @@ def test_form_shape_round_trips():
     assert data["id"] == "cassini_live_engine"
     assert (data["section_id"], data["section_type"]) == ("ai", "admin")
     assert data["title"] == "Cassini Live"
-    assert data["doc_url"].endswith("docs/install.md#choose-a-speech-engine")
-    assert [f["id"] for f in data["fields"]] == [ENGINE_FIELD, LICENSE_FIELD, CLEANUP_FIELD]
-    assert [f["type"] for f in data["fields"]] == ["radio", "checkbox", "checkbox"]
+    assert data["doc_url"] == admin_form.PAGE_PATH == admin_form.DEFAULT_PAGE_URL
+    assert [f["id"] for f in data["fields"]] == [ENGINE_FIELD]
+    assert [f["type"] for f in data["fields"]] == ["radio"]
     assert SettingsForm.from_dict(data).to_dict() == data
     values = [o["value"] for o in data["fields"][0]["options"]]
     assert values == list(catalog.ENGINES)
-    assert LICENSE_FIELD == "nvidia_oml_2025_10_24_accepted"
+    assert data["description"].endswith(PAGE_HINT)
+    assert data["fields"][0]["description"] == (
+        "One engine serves the whole server. Changing it stops captions in active calls for a "
+        "few minutes."
+    )
+
+
+def test_doc_url_is_the_page_url_argument():
+    form = build_form(panel(), status(), page_url="/nc/index.php/apps/x/settings/index.html")
+    assert form.to_dict()["doc_url"] == "/nc/index.php/apps/x/settings/index.html"
+
+
+ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
 
 
 @pytest.mark.parametrize(
     ("engine_id", "situation", "expected"),
     [
-        ("whistle", {}, "Whistle — active · 7 languages, auto-detect · bundled, light"),
+        ("whistle", {}, "Whistle — in use · 7 languages"),
         (
             "nemotron-en",
             {"cards": {"nemotron-en": card("nemotron-en", model={"state": "ready"})}},
-            "Nemotron English — ready · English only · 8.9% word errors on our meetings · "
-            "NVIDIA-OML · needs 2.3 GiB memory (3 recommended), 1 CPU · "
-            "accept license first · CPU estimate",
+            "Nemotron English — ready · English only",
         ),
+        ("nemotron-en", {}, "Nemotron English — available · English only, 0.43 GiB download"),
         (
             "nemotron-multilingual",
             {},
-            "Nemotron Multilingual — available · 7 languages, auto-detect · "
-            "12.8% word errors on our meetings · OpenMDW-1.1 · 0.44 GiB download, "
-            "needs 2.3 GiB memory (3 recommended), 1 CPU · CPU estimate",
+            "Nemotron Multilingual — available · 7 languages, 0.44 GiB download",
+        ),
+        (
+            "nemotron-multilingual",
+            {"cards": {"nemotron-multilingual": card(
+                "nemotron-multilingual", model={"state": "partial"}, advisory=True,
+                reasons=ADVISORY,
+            )}},
+            "Nemotron Multilingual — available · 7 languages, 0.44 GiB download · warning",
         ),
         (
             "nemotron-en",
@@ -185,13 +199,37 @@ def test_form_shape_round_trips():
                         "nemotron-en",
                         eligible=False,
                         reasons=[
-                            {"code": "memory_limit", "message": MEMORY_REASON},
                             {"code": "cpu_quota", "message": "The CPU quota is 0.5 CPUs."},
+                            {"code": "memory_limit", "message": MEMORY_REASON},
                         ],
                     )
                 }
             },
-            f"Nemotron English — unavailable: {MEMORY_REASON} (+1 more) · CPU estimate",
+            "Nemotron English — unavailable: needs more CPU and more",
+        ),
+        (
+            "nemotron-multilingual",
+            {"cards": {"nemotron-multilingual": card(
+                "nemotron-multilingual", eligible=False, reasons=[{
+                    "code": "limits_missing",
+                    "message": "Set CPU and memory limits and disable swap for the container "
+                               "first.",
+                }],
+            )}},
+            "Nemotron Multilingual — unavailable: container limits not set",
+        ),
+        (
+            "nemotron-en",
+            {"cards": {"nemotron-en": card("nemotron-en", eligible=False, reasons=[{
+                "code": "cpu_instructions", "message": "This CPU lacks AVX2, so ...",
+                "measured": None, "required": "avx2",
+            }])}},
+            "Nemotron English — unavailable: CPU lacks AVX2",
+        ),
+        (
+            "whistle",
+            {"switch": {"state": "validating", "target": "nemotron-en", "previous": "whistle"}},
+            "Whistle — in use; checking the requirements",
         ),
         ("nemotron-en", {"switch": downloading(452)}, "Nemotron English — downloading 45%"),
         (
@@ -207,7 +245,7 @@ def test_form_shape_round_trips():
         (
             "whistle",
             {"switch": downloading(10)},
-            "Whistle — active until the switch finishes (select to cancel)",
+            "Whistle — in use until the switch finishes (select to cancel)",
         ),
         (
             "whistle",
@@ -220,32 +258,9 @@ def test_form_shape_round_trips():
             "Whistle — captions stopped during the change (select to cancel)",
         ),
         (
-            "nemotron-en",
-            {
-                "cards": {
-                    "nemotron-en": card(
-                        "nemotron-en",
-                        license={"acknowledged": True},
-                        model={"state": "ready"},
-                    )
-                }
-            },
-            "Nemotron English — ready · English only · 8.9% word errors on our meetings · "
-            "NVIDIA-OML · needs 2.3 GiB memory (3 recommended), 1 CPU · CPU estimate",
-        ),
-        (
             "whistle",
-            {
-                "cards": {
-                    "whistle": card(
-                        "whistle",
-                        advisory=True,
-                        reasons=[{"code": "cpu_quota", "message": "The CPU quota is too high."}],
-                    )
-                }
-            },
-            "Whistle — active · 7 languages, auto-detect · bundled, light · "
-            "warning: The CPU quota is too high.",
+            {"cards": {"whistle": card("whistle", advisory=True, reasons=ADVISORY)}},
+            "Whistle — in use · 7 languages · warning",
         ),
     ],
 )
@@ -257,14 +272,30 @@ def test_option_labels(engine_id, situation, expected):
     assert expected in form_labels
     assert len(set(form_labels)) == 3
     assert all(len(label) <= MAX_LABEL for label in form_labels)
+    joined = " ".join(form_labels)
+    assert not any(word in joined for word in ("word errors", "NVIDIA", "GiB memory"))
 
 
-def test_long_ineligible_label_is_truncated_and_keeps_reason_start():
-    reasons = [{"code": "memory_limit", "message": MEMORY_REASON + " " + "x" * 300}]
+@pytest.mark.parametrize("code", sorted(admin_form.REASON_PHRASES))
+def test_unavailable_labels_are_short_phrases_never_cut_sentences(code):
+    reasons = [
+        {"code": code, "message": MEMORY_REASON + " " + "x" * 300, "required": "avx2,fma"},
+        {"code": "network", "message": "Cannot reach github.com to download the model."},
+    ]
+    for engine_id in ("nemotron-en", "nemotron-multilingual"):
+        p = panel(cards={engine_id: card(engine_id, eligible=False, reasons=reasons)})
+        label = option_label(next(c for c in p["engines"] if c["id"] == engine_id), p)
+        assert MAX_LABEL == 90
+        assert len(label) < MAX_LABEL and not label.endswith("…"), label
+        assert "x" * 5 not in label and "container memory limit is" not in label
+        assert label.endswith(" and more")
+
+
+def test_unknown_reason_points_to_the_page():
+    reasons = [{"code": "something_new", "message": "A long sentence " * 20}]
     p = panel(cards={"nemotron-en": card("nemotron-en", eligible=False, reasons=reasons)})
     label = option_label(p["engines"][1], p)
-    assert len(label) == MAX_LABEL and label.endswith("…")
-    assert label.startswith("Nemotron English — unavailable: " + MEMORY_REASON[:40])
+    assert label == "Nemotron English — unavailable: requirements not met (see ?)"
 
 
 def test_radio_default_is_target_while_busy():
@@ -293,99 +324,57 @@ def test_build_is_deterministic():
     first = build_form(p, status(), ("A note.",)).to_dict()
     assert build_form(copy.deepcopy(p), status(), ("A note.",)).to_dict() == first
     assert "333" not in str(first)
-    assert "2 calls have captions on now." in first["fields"][0]["description"]
+    assert first["fields"][0]["description"].endswith("2 calls have captions on now.")
 
 
-def test_cleanup_field_only_when_something_is_removable():
-    assert field(build_form(panel(), status()), CLEANUP_FIELD) is None
-    partial = card("nemotron-en", model={"state": "partial", "bytesDone": 3 << 29})
-    form = build_form(panel(cards={"nemotron-en": partial}), status())
-    assert "frees 1.5 GiB" in field(form, CLEANUP_FIELD).label
-    active = card("nemotron-en", active=True, model={"state": "ready"})
-    assert (
-        field(
-            build_form(panel("nemotron-en", cards={"nemotron-en": active}), status()), CLEANUP_FIELD
-        )
-        is None
+LONG_FAILURE = {"state": "failed", "target": "nemotron-multilingual", "previous": "nemotron-en",
+                "rolledBack": True, "error": {"message": "Capacity check failed " + "x" * 300}}
+LONG_REFUSAL = {"code": "not_eligible", "engine": "nemotron-en",
+                "message": "Nemotron English cannot run here.",
+                "reasons": [{"message": "Reason one " + "y" * 60}, {"message": "Reason two."}]}
+
+
+def test_refusal_comes_first_and_survives_a_long_status():
+    p = panel("nemotron-multilingual", switch=LONG_FAILURE, lastRefusal=LONG_REFUSAL)
+    notes = ("A change to Whistle is in progress. " + "n" * 200,)
+    text = status_text(p, status("paused", reason="Memory " + "z" * 150), notes)
+    assert text.startswith(
+        "Not applied: Nemotron English. Nemotron English cannot run here. Reason one "
     )
-    target = card("nemotron-en", model={"state": "partial", "bytesDone": 10})
-    busy = panel(switch=downloading(10), cards={"nemotron-en": target})
-    assert field(build_form(busy, status()), CLEANUP_FIELD) is None
+    assert "Reason two" not in text  # only the first reason
+    assert len(text) <= MAX_TEXT and text.endswith(" " + PAGE_HINT)
+    assert "…" in text
 
 
-def test_license_field_reports_acceptance():
-    plain = field(build_form(panel(), status()), LICENSE_FIELD)
-    assert plain.default is False
-    assert plain.description.startswith("Required before switching to Nemotron English. ")
-    assert catalog.NVIDIA_OML.url in plain.description
-    accepted = card("nemotron-en", license={"acknowledged": True})
-    form = build_form(panel(cards={"nemotron-en": accepted}), status())
-    assert field(form, LICENSE_FIELD).description.startswith("Accepted. ")
-    ticked = build_form(panel(licenseBoxTicked=True), status())
-    assert field(ticked, LICENSE_FIELD).description.startswith("Accepted. ")
-    english = next(c for c in panel()["engines"] if c["id"] == "nemotron-en")
-    assert "accept license first" in option_label(english, panel())
-    assert "accept license first" not in option_label(
-        english, panel(licenseBoxTicked=True)
+def test_page_hint_is_never_cut():
+    notes = tuple("A long note " + "x" * 200 for _ in range(10))
+    text = status_text(panel(), status(), notes)
+    assert len(text) == MAX_TEXT == 400
+    assert text.endswith("… " + PAGE_HINT)
+    assert PAGE_HINT == "Full settings and progress: click ? next to the title."
+
+
+def test_refused_choice_is_visible_in_the_form_description():
+    refusal = {"code": "not_eligible", "engine": "nemotron-en", "at": 1,
+               "message": "Nemotron English cannot run here.",
+               "reasons": [{"code": "memory_limit", "message": MEMORY_REASON}]}
+    description = build_form(panel(lastRefusal=refusal), status()).to_dict()["description"]
+    assert description == (
+        "Not applied: Nemotron English. Nemotron English cannot run here. "
+        + MEMORY_REASON + " Using Whistle. Captions are ready. " + PAGE_HINT
     )
-
-
-def test_action_notes_survive_a_long_status():
-    failed = {"state": "failed", "target": "nemotron-multilingual", "previous": "nemotron-en",
-              "rolledBack": True, "error": {"message": "Capacity check failed " + "x" * 300}}
-    refusal = {"engine": "nemotron-en", "message": "Not eligible",
-               "reasons": [{"message": "Reason " + "y" * 120}] * 3}
-    p = panel("nemotron-multilingual", switch=failed, lastRefusal=refusal)
-    text = status_text(p, status("paused", reason="Memory " + "z" * 150), ("Tick the box.",))
-    assert "Tick the box." in text and len(text) <= MAX_TEXT
 
 
 @pytest.mark.parametrize(
     ("p", "s", "notes", "expected"),
     [
-        (
-            panel(),
-            status(),
-            (),
-            [
-                "Active engine: Whistle.",
-                "Captions are ready.",
-                "Capacity check: 2 simultaneous speakers passed.",
-                "Requirements are provisional estimates.",
-            ],
-        ),
+        (panel(), status(), (), "Using Whistle. Captions are ready."),
         (
             panel(),
             status("blocked", reason="Container memory limit is missing", adminActionRequired=True),
             (),
-            [
-                "Captions are paused: Container memory limit is missing.",
-                "Administrator action required.",
-            ],
-        ),
-        (
-            panel(),
-            status(
-                capacity={
-                    "state": "insufficient",
-                    "testedSpeakers": 0,
-                    "scenarios": [{"passed": False, "reasons": ["caption_delay"]}],
-                }
-            ),
-            (),
-            ["Capacity check did not pass even for one speaker (caption delay)."],
-        ),
-        (
-            panel(),
-            status(capacity={"state": "not_tested", "testedSpeakers": 0}),
-            (),
-            ["Capacity check not run yet."],
-        ),
-        (
-            panel(),
-            status(capacity={"state": "limited", "testedSpeakers": 1}),
-            (),
-            ["Capacity check: 1 simultaneous speaker passed."],
+            "Using Whistle. Captions are paused: Container memory limit is missing. "
+            "Administrator action required.",
         ),
         (
             panel(
@@ -394,7 +383,7 @@ def test_action_notes_survive_a_long_status():
             ),
             status(),
             (),
-            ["Active engine: Nemotron English.", "Now using Nemotron English."],
+            "Now using Nemotron English. Captions are ready.",
         ),
         (
             panel(
@@ -411,10 +400,8 @@ def test_action_notes_survive_a_long_status():
             ),
             status(),
             (),
-            [
-                "Could not switch to Nemotron English: Capacity check did not establish a safe "
-                "speaking budget. Rolled back to Whistle."
-            ],
+            "Could not switch to Nemotron English: Capacity check did not establish a safe "
+            "speaking budget. Rolled back to Whistle. Captions are ready.",
         ),
         (
             panel(
@@ -427,16 +414,14 @@ def test_action_notes_survive_a_long_status():
             ),
             status(),
             (),
-            [
-                "Could not switch to Nemotron English: Load failed. Captions will recover "
-                "automatically."
-            ],
+            "Could not switch to Nemotron English: Load failed. Captions will recover "
+            "automatically. Captions are ready.",
         ),
         (
             panel(switch={"state": "cancelled", "target": "nemotron-en", "previous": "whistle"}),
             status(),
             (),
-            ["The change to Nemotron English was cancelled."],
+            "The change to Nemotron English was cancelled. Captions are ready.",
         ),
         (
             panel(
@@ -450,74 +435,37 @@ def test_action_notes_survive_a_long_status():
             ),
             status(),
             (),
-            [
-                "Your choice of Nemotron English was not applied: Nemotron English cannot run "
-                "here. Reason a. Reason b. Reason c."
-            ],
+            "Not applied: Nemotron English. Nemotron English cannot run here. Reason a. "
+            "Using Whistle. Captions are ready.",
         ),
         (
             panel(lastError={"code": "restore", "message": "The model files were corrupt"}),
             status(),
             (),
-            ["The model files were corrupt."],
-        ),
-        (
-            panel(),
-            status(),
-            ("Tick the NVIDIA Open Model License box to continue.",),
-            ["Tick the NVIDIA Open Model License box to continue."],
+            "Using Whistle. The model files were corrupt. Captions are ready.",
         ),
         (
             panel(switch=downloading(452)),
             status(),
-            (),
-            [
-                "Reload this page to see progress. Active engine: Whistle. Changing to Nemotron "
-                "English: downloading 45%."
-            ],
-        ),
-        (
-            panel("nemotron-multilingual"),
-            status(),
-            (),
-            [
-                "Nemotron Multilingual is licensed under OpenMDW License 1.1: "
-                "https://openmdw.ai/license/1-1/. "
-                "nvidia/nemotron-3.5-asr-streaming-0.6b by NVIDIA Corporation"
-            ],
-        ),
-        (
-            panel("nemotron-en"),
-            status(),
-            (),
-            [
-                "Nemotron English is licensed under NVIDIA Open Model License: ",
-                "Licensed by NVIDIA Corporation under the NVIDIA Open Model License.",
-            ],
+            ("A change to Nemotron English is in progress. Wait for it to finish.",),
+            "A change to Nemotron English is in progress. Wait for it to finish. "
+            "Changing to Nemotron English: downloading 45%. Captions are ready.",
         ),
         (
             panel(switch={"state": "checking", "target": "nemotron-en", "previous": "whistle"}),
-            status(),
+            status("checking", reason="Running the capacity check"),
             (),
-            ["Captions are off until the change finishes."],
+            "Changing to Nemotron English: running the capacity check. Captions are off until "
+            "it finishes. Captions are paused: Running the capacity check.",
         ),
     ],
 )
 def test_status_text(p, s, notes, expected):
     text = status_text(p, s, notes)
-    for part in expected:
-        assert part in text
+    assert text == expected + " " + PAGE_HINT
     assert len(text) <= MAX_TEXT
-    assert "Powered by NVIDIA" not in text
-    assert "Reason d." not in text
-    if p["switch"]["state"] not in admin_form.ACTIVE_STATES:
-        assert "Reload this page" not in text
-
-
-def test_status_text_is_bounded():
-    notes = tuple("A long note " + "x" * 200 for _ in range(10))
-    text = status_text(panel(), status(), notes)
-    assert len(text) == MAX_TEXT and text.endswith("…")
+    for gone in ("Reload this page", "Capacity check:", "licensed under", "provisional"):
+        assert gone not in text
 
 
 def test_status_text_skips_restore_error_repeated_by_failed_switch():
@@ -536,21 +484,19 @@ def test_status_text_skips_restore_error_repeated_by_failed_switch():
 
 
 def test_parse_values():
-    assert parse_values([]) == admin_form.Selection(None, False, False)
+    assert parse_values([]) == admin_form.Selection(None)
     record = SimpleNamespace(key=ENGINE_FIELD, value=" nemotron-en ")
-    selection = parse_values([record, ("unknown", "x"), (LICENSE_FIELD, "1")])
-    assert selection == admin_form.Selection("nemotron-en", True, False)
+    legacy = [("nvidia_oml_2025_10_24_accepted", "1"), ("remove_unused_models", "1")]
+    selection = parse_values([record, ("unknown", "x"), *legacy])
+    assert selection == admin_form.Selection("nemotron-en")
     assert parse_values([(ENGINE_FIELD, "")]).engine is None
-    for value in ("1", "true", "TRUE", "on", "yes", True):
-        assert parse_values([(LICENSE_FIELD, value), (CLEANUP_FIELD, value)]) == (
-            admin_form.Selection(None, True, True)
-        )
-    for value in ("0", "", "false", False, None):
-        assert parse_values([(LICENSE_FIELD, value)]).accept_license is False
+    assert not hasattr(admin_form, "LICENSE_FIELD") and not hasattr(admin_form, "CLEANUP_FIELD")
 
 
 def test_top_menu_page_is_gone():
-    assert not (ROOT / "cassini_live" / "static").exists()
+    # The settings page is a standalone document served by the ExApp, not a top-menu page.
+    static = ROOT / "cassini_live" / "static"
+    assert not (static / "live.js").exists() and not (static / "live.css").exists()
     assert (ROOT / "img" / "app.svg").exists()
     pattern = re.compile(r"live\.js|live\.css|top-menu|top menu", re.IGNORECASE)
     proposal = ROOT / "docs" / "proposals" / "engine-selection.md"

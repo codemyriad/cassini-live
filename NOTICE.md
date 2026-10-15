@@ -38,8 +38,8 @@ against the SHA-256 below, and the license text (and notice) is stored next to i
 * **Nemotron English**: [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b),
   sherpa-onnx export `sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2`.
   NVIDIA Open Model License (version of 2025-10-24,
-  `LICENSES/NVIDIA-Open-Model-License.txt`); the administrator must accept it before
-  the download. Notice: "Licensed by NVIDIA Corporation under the NVIDIA Open Model
+  `LICENSES/NVIDIA-Open-Model-License.txt`), shown with its full text on the
+  settings page. Notice: "Licensed by NVIDIA Corporation under the NVIDIA Open Model
   License" (`LICENSES/NVIDIA-Open-Model-License-NOTICE.txt`).
   * `encoder.int8.onnx` `7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8`
   * `decoder.int8.onnx` `0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98`

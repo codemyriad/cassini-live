@@ -1,5 +1,15 @@
 # Proposal: administrator-selected speech engine
 
+> 2026-10-15 (0.7.1): the license acceptance step was removed; licenses are shown but
+> not accepted. The engine choice gained an admin-only page served by the ExApp (see
+> docs/install.md). Sections mentioning `license_required`, `LICENSE_FIELD`,
+> `LICENSE_GRACE_S` and acknowledgements describe 0.7.0.
+> Also in 0.7.1: unavailable option labels use a short phrase per reason code instead of
+> the first reason's sentence; "(select to cancel)" appears only in the states the page
+> can cancel (not `validating`); `measurements` is `{"measuredOn", "estimates"}`; a
+> refusal noted during a change is cleared when that change ends; a switch or model
+> removal while a change runs is refused with 409 `busy` instead of waiting for it.
+
 Status: architecture spec for four parallel implementers. No production code is in
 this document's change. Branch `feat/engine-selection`, on top of the uncommitted
 0.6.2 work. Keep that work.
