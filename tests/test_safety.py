@@ -23,6 +23,11 @@ SAFE = {
     "affinityCpus": 8,
     "effectiveCpus": 4.0,
     "memoryLimitBytes": 2048 * MIB,
+    "memoryCurrentBytes": 410 * MIB,
+    "memoryFileBytes": 0,
+    "memoryStatAvailable": True,
+    "cpuStallUsec": 0,
+    "hostCpuStallUsec": 0,
     "swapLimitBytes": 0,
     "pidsLimit": 128,
     "hostMemoryBytes": 8192 * MIB,
@@ -381,7 +386,8 @@ async def test_outcome_reports_blocked_trip_and_close(passing):
     assert await waiter == (False, "Caption service stopped")
     await starting
     assert await engine_guard(FakeBackend(), data).wait_outcome(0.01) == (
-        False, "Capacity has not been established"
+        False,
+        "Capacity has not been established",
     )
 
 

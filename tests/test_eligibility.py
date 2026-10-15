@@ -56,8 +56,13 @@ def test_each_failing_rule_disables_with_a_reason(code):
 
 
 def test_messages_carry_numbers_from_the_catalog():
-    facts = dataclasses.replace(GOOD, memory_limit_bytes=2 * GIB, host_memory_bytes=4 * GIB,
-                                cpu_quota=0.5, free_disk_bytes=GIB // 2)
+    facts = dataclasses.replace(
+        GOOD,
+        memory_limit_bytes=2 * GIB,
+        host_memory_bytes=4 * GIB,
+        cpu_quota=0.5,
+        free_disk_bytes=GIB // 2,
+    )
     reasons = {r.code: r for r in assess(catalog.get("nemotron-en"), facts, ABSENT).reasons}
     assert reasons["memory_limit"].message == (
         "The container memory limit is 2.0 GiB. Nemotron English needs at least 2.3 GiB "
@@ -75,11 +80,22 @@ def test_messages_carry_numbers_from_the_catalog():
 
 
 def test_every_failing_rule_is_reported():
-    facts = dataclasses.replace(GOOD, **{k: v for case in CASES.values() for k, v in case.items()
-                                         if k not in ("arch", "free_disk_bytes")}
-                                | {"host_memory_bytes": 4 * GIB})
+    facts = dataclasses.replace(
+        GOOD,
+        **{
+            k: v
+            for case in CASES.values()
+            for k, v in case.items()
+            if k not in ("arch", "free_disk_bytes")
+        }
+        | {"host_memory_bytes": 4 * GIB},
+    )
     assert set(codes(assess(catalog.get("nemotron-en"), facts, ABSENT))) == {
-        "limits_missing", "memory_limit", "host_memory", "cpu_quota", "cpu_instructions",
+        "limits_missing",
+        "memory_limit",
+        "host_memory",
+        "cpu_quota",
+        "cpu_instructions",
         "network",
     }
 
@@ -110,28 +126,55 @@ def test_partial_download_lowers_the_disk_need():
 
 
 def test_no_avx2_requirement_on_aarch64_or_with_unreadable_flags():
-    for facts in (dataclasses.replace(GOOD, arch="aarch64", cpu_flags=frozenset({"asimd"})),
-                  dataclasses.replace(GOOD, cpu_flags=frozenset())):
+    for facts in (
+        dataclasses.replace(GOOD, arch="aarch64", cpu_flags=frozenset({"asimd"})),
+        dataclasses.replace(GOOD, cpu_flags=frozenset()),
+    ):
         assert assess(catalog.get("nemotron-en"), facts, ABSENT).eligible
 
 
 def snapshot(**overrides):
     data = {
-        "monitoringAvailable": True, "pressureAvailable": True, "cpuPressure": 0,
-        "cpuPressureRecent": 0, "hostCpuPressure": 0, "memoryPressure": 0, "effectiveCpus": 4.0,
+        "monitoringAvailable": True,
+        "pressureAvailable": True,
+        "cpuPressure": 0,
+        "cpuPressureRecent": 0,
+        "hostCpuPressure": 0,
+        "memoryPressure": 0,
+        "effectiveCpus": 4.0,
         "cpuQuotaCpus": 4.0,
-        "affinityCpus": 8, "memoryLimitBytes": 3 * GIB, "swapLimitBytes": 0, "pidsLimit": 256,
-        "memoryFraction": 0.1, "pidsFraction": 0.1, "hostMemoryBytes": 16 * GIB,
-        "hostAvailableBytes": 12 * GIB, "throttledPeriods": 0, "throttledUsec": 0,
-        "cpuPeriods": 0, "oomKills": 0,
+        "affinityCpus": 8,
+        "memoryLimitBytes": 3 * GIB,
+        "memoryCurrentBytes": 300 * 1024**2,
+        "memoryFileBytes": 0,
+        "memoryStatAvailable": True,
+        "cpuStallUsec": 0,
+        "hostCpuStallUsec": 0,
+        "swapLimitBytes": 0,
+        "pidsLimit": 256,
+        "memoryFraction": 0.1,
+        "pidsFraction": 0.1,
+        "hostMemoryBytes": 16 * GIB,
+        "hostAvailableBytes": 12 * GIB,
+        "throttledPeriods": 0,
+        "throttledUsec": 0,
+        "cpuPeriods": 0,
+        "oomKills": 0,
     }
     return data | overrides
 
 
 def test_whistle_is_never_disabled_and_carries_advisory_budget_reasons():
     whistle = catalog.get("whistle")
-    worst = dataclasses.replace(GOOD, cpu_quota=None, memory_limit_bytes=None, arch="riscv64",
-                                free_disk_bytes=None, network={}, snapshot=snapshot())
+    worst = dataclasses.replace(
+        GOOD,
+        cpu_quota=None,
+        memory_limit_bytes=None,
+        arch="riscv64",
+        free_disk_bytes=None,
+        network={},
+        snapshot=snapshot(),
+    )
     result = assess(whistle, worst, ModelState("whistle", "bundled", None))
     assert result.eligible and result.reasons == () and not result.advisory
     unsafe = dataclasses.replace(worst, snapshot=snapshot(swapLimitBytes=None))
@@ -159,8 +202,14 @@ def test_host_facts_from_a_fake_reader_and_cpuinfo(tmp_path):
         def status(self, engine_id):
             return "unreachable" if engine_id == "nemotron-en" else "reachable"
 
-    facts = host_facts(reader=lambda: snapshot(cpuQuotaCpus=2.0), store_root=store,
-                       probe=Probe(), cpuinfo=cpuinfo, disk_usage=disk_usage, arch="x86_64")
+    facts = host_facts(
+        reader=lambda: snapshot(cpuQuotaCpus=2.0),
+        store_root=store,
+        probe=Probe(),
+        cpuinfo=cpuinfo,
+        disk_usage=disk_usage,
+        arch="x86_64",
+    )
     assert facts.cpu_quota == 2.0 and facts.affinity_cpus == 8
     assert facts.memory_limit_bytes == 3 * GIB and facts.swap_limit_bytes == 0
     assert facts.host_memory_bytes == 16 * GIB

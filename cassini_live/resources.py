@@ -1,12 +1,18 @@
 """Read cgroup v2 budgets and pressure. Missing enforcement is not a safe budget."""
 
+import logging
 import math
 import os
 from pathlib import Path
 
 from . import catalog
 
+LOGGER = logging.getLogger(__name__)
 MIB = 1024 * 1024
+# Unjustified: reused from the diagnostic video's headroom constant (diagnostics.py). Measuring
+# the supervisor's RSS with 10 tracks and the video on, then 1.5x the peak, would justify it.
+SUPERVISOR_MARGIN_MIB = 128
+_stat_warned = False
 
 
 def _number(path):
@@ -41,7 +47,33 @@ def _pressure(path, window="avg60"):
     return None
 
 
+def _pressure_total(path):
+    """Cumulative "some" stall time in microseconds; None when unreadable. The averages above
+    are clamped to a percentage, so this counter, differenced per tick, needs its own reader."""
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("some "):
+                value = int(dict(item.split("=") for item in line.split()[1:])["total"])
+                return value if value >= 0 else None
+    except (OSError, ValueError, KeyError):
+        pass
+    return None
+
+
+def _stat_file(path):
+    """Page cache charged to the cgroup (memory.stat "file"); None when unreadable."""
+    try:
+        for line in (path / "memory.stat").read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if key == "file":
+                return int(value)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
+    global _stat_warned
     affinity = (
         len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
     )
@@ -52,6 +84,8 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     severity_available = True
     monitored = False
     unreadable = False
+    memory_current = memory_file = None
+    binding = None
     for path in _paths(root):
         try:
             quota, period = (path / "cpu.max").read_text().split()
@@ -67,6 +101,11 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         pid_max, pid_now = _number(path / "pids.max"), _number(path / "pids.current")
         if mem_max and mem_now is not None:
             memory_ratio = max(memory_ratio, mem_now / mem_max)
+        limit = math.inf if mem_max is None else mem_max
+        if mem_now is not None and (binding is None or limit < binding):
+            # The fit check charges usage against the cgroup whose limit binds; on a tie the
+            # outer one, whose usage includes everything below it.
+            binding, memory_current, memory_file = limit, mem_now, _stat_file(path)
         if pid_max and pid_now is not None:
             pids_ratio = max(pids_ratio, pid_now / pid_max)
         if mem_max is not None and mem_now is None or pid_max is not None and pid_now is None:
@@ -97,10 +136,15 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         pass
     cpu = min(quotas) if quotas else None
     cpu_pressure = [_pressure(proc / "pressure/cpu"), _pressure(root / "cpu.pressure")]
-    cpu_recent = [_pressure(proc / "pressure/cpu", "avg10"),
-                  _pressure(root / "cpu.pressure", "avg10")]
+    cpu_recent = [
+        _pressure(proc / "pressure/cpu", "avg10"),
+        _pressure(root / "cpu.pressure", "avg10"),
+    ]
     memory_pressure = [_pressure(proc / "pressure/memory"), _pressure(root / "memory.pressure")]
     psi_available = all(value is not None for value in cpu_pressure + memory_pressure)
+    if memory_current is not None and memory_file is None and not _stat_warned:
+        _stat_warned = True
+        LOGGER.warning("memory.stat is unreadable; memory headroom counts page cache as used")
     return {
         "monitoringAvailable": monitored and not unreadable,
         "pressureAvailable": psi_available,
@@ -109,11 +153,16 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
             max(cpu_recent) if psi_available and None not in cpu_recent else None
         ),
         "hostCpuPressure": _pressure(proc / "pressure/cpu", "avg10"),
+        "cpuStallUsec": _pressure_total(root / "cpu.pressure"),
+        "hostCpuStallUsec": _pressure_total(proc / "pressure/cpu"),
         "memoryPressure": max(memory_pressure) if psi_available else None,
         "effectiveCpus": min(affinity, cpu) if cpu else float(affinity),
         "cpuQuotaCpus": cpu,
         "affinityCpus": affinity,
         "memoryLimitBytes": min(memory) if memory else None,
+        "memoryCurrentBytes": memory_current,
+        "memoryFileBytes": memory_file,
+        "memoryStatAvailable": memory_file is not None,
         "swapLimitBytes": min(swap) if swap else None,
         "pidsLimit": min(pids) if pids else None,
         "memoryFraction": memory_ratio,
@@ -179,6 +228,50 @@ def load_problem(data, engine_id):
     if not memory or current + engine.requirements.model_mib * MIB > 0.8 * memory:
         return f"Not enough free container memory to load {engine.name}"
     return pressure_problem(data)
+
+
+def headroom_mib(data):
+    """Memory the container can still take before memory.max, in MiB; None when unknown.
+
+    Page cache (memory.stat "file") is not charged: the kernel reclaims file pages before it
+    kills, and the host drops the model's cache after a cold load (engine_host.py). Without
+    memory.stat the whole of memory.current counts, pessimistic by the cache."""
+    limit, current = data.get("memoryLimitBytes"), data.get("memoryCurrentBytes")
+    if not limit or current is None:
+        return None
+    return (limit - (current - (data.get("memoryFileBytes") or 0))) // MIB
+
+
+def start_problem(data, engine_id, rss_mib=None, workers=1):
+    """Why an engine must not load now, or None: a start stays clear of the kernel's OOM
+    killer, not of a fraction of the budget. Nothing consults this yet (0.8.0 step 6).
+
+    rss_mib is the last resident size the engine's host reported; the catalog's model_mib
+    stands in before a first load. Whistle's workers are spawned one at a time, so workers
+    counts those still to start."""
+    engine = catalog.get(engine_id)
+    if data.get("memoryLimitBytes") is None:
+        return "Set finite cgroup v2 memory limits"
+    headroom = headroom_mib(data)
+    if headroom is None:
+        return "Container memory use cannot be read"
+    needs = engine.requirements
+    if engine.kind == "worker_pool":
+        # model_mib 192 per worker: 130/190 MiB measured at one/two workers, rounded up.
+        need = needs.model_mib * workers
+    else:
+        # The full allowance of MAX_STREAMS streams and a max_batch batch, so a loaded engine
+        # fits its ceiling whatever admission later meters per speaker. RSS 944-965 MiB and
+        # batch 45 measured (2026-10-15); stream 16 provisional, about 7 measured serially.
+        need = (
+            (rss_mib or needs.model_mib)
+            + needs.stream_mib * catalog.MAX_STREAMS
+            + needs.batch_mib * needs.max_batch
+            + SUPERVISOR_MARGIN_MIB
+        )
+    if headroom < need:
+        return f"Not enough memory to load {engine.name}: {need} MiB needed, {headroom} MiB free"
+    return None
 
 
 def pressure_problem(data):
