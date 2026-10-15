@@ -101,18 +101,31 @@ class LagMeter:
 
     def __init__(self):
         self.maxima = {}
+        self._second = None  # the latest second with a sample
         self.requests = deque(maxlen=self.REQUESTS)
 
     def observe(self, lag, now):
         second = int(now)
+        # Lag is continuous, so a second the monitor skipped (its 1 s period re-anchors on
+        # wake and straddles two boundaries now and then, or it stalled) carries the lag seen
+        # at the next tick, never 0. Only seconds inside the kept buckets are filled.
+        if self._second is None:
+            first = second
+        else:
+            first = max(self._second + 1, second - self.BUCKETS + 1)
+        for skipped in range(first, second):
+            self.maxima[skipped] = lag
         self.maxima[second] = max(self.maxima.get(second, 0.0), lag)
+        self._second = second if self._second is None else max(self._second, second)
         for stale in [s for s in self.maxima if s <= second - self.BUCKETS]:
             del self.maxima[stale]
 
     def sustained(self, now):
-        # A second without a tick counts as no lag: shedding needs a full window of evidence.
+        # Seconds before the first sample are no evidence either way and stay out of the
+        # minimum; with none at all nothing is sustained.
         second = int(now)
-        return min(self.maxima.get(s, 0.0) for s in range(second - self.WINDOW_S + 1, second + 1))
+        window = range(second - self.WINDOW_S + 1, second + 1)
+        return min((self.maxima[s] for s in window if s in self.maxima), default=0.0)
 
     def record(self, seconds):
         self.requests.append(seconds)
@@ -126,14 +139,16 @@ class LagMeter:
 
 def _headroom_mib(sample):
     """memory.max minus non-reclaimable charge: the kernel reclaims file pages before an
-    OOM. Without memory.stat the file figure is 0 and headroom is pessimistic."""
+    OOM, except the shmem part (tmpfs, which only swap could take and swap is 0). Without
+    memory.stat the file figure is 0 and headroom is pessimistic."""
     limit = sample.get("memoryLimitBytes")
     if not limit:
         return None, None
     current = sample.get("memoryCurrentBytes")
     if current is None:
         current = sample.get("memoryFraction", 0.0) * limit
-    used = current - (sample.get("memoryFileBytes") or 0)
+    reclaimable = (sample.get("memoryFileBytes") or 0) - (sample.get("memoryShmemBytes") or 0)
+    used = current - max(0, reclaimable)
     return (limit - used) / MIB, used / MIB
 
 
@@ -195,7 +210,9 @@ class LoadGovernor:
 
     def _seat(self, transcriber, now):
         self.seats.setdefault(transcriber, now)
-        self._active_at.setdefault(transcriber, now)
+        # Asking again is activity, lease or not: a holder parked in the slot FIFO after a
+        # long gap must not lose its seat to idle expiry during the wait.
+        self._active_at[transcriber] = now
 
     def _refusal(self, transcriber, now):
         if transcriber.paused_until is not None and transcriber.paused_until > now:

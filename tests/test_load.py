@@ -9,6 +9,7 @@ CALM = {
     "memoryLimitBytes": 3072 * MIB,
     "memoryCurrentBytes": 1500 * MIB,
     "memoryFileBytes": 400 * MIB,
+    "memoryShmemBytes": 0,
     "memoryStatAvailable": True,
     "cpuStallUsec": 0,
     "cpuPressureRecent": 1.0,
@@ -51,7 +52,8 @@ def governor(**changes):
 
 def seated(gov, clock, count):
     """Admit `count` leased speakers one second apart, keeping up, so "newest" is well
-    defined and the earlier ones never raise the control lag."""
+    defined and the earlier ones never raise the control lag. The monitor ticks every
+    second, so each admission second gets its calm sample."""
     speakers = []
     for _ in range(count):
         clock.now += 1
@@ -61,6 +63,7 @@ def seated(gov, clock, count):
         assert gov.admit(speaker).admitted
         speaker.speak(clock.now)
         speakers.append(speaker)
+        gov.tick(CALM)
     return speakers
 
 
@@ -99,6 +102,9 @@ def test_memory_refuses_below_two_per_speaker_allowances():
     assert gov.admit(Speaker()).reason == "memory"
     gov.tick({**CALM, "memoryCurrentBytes": short - 2 * MIB})
     assert gov.admit(Speaker()).admitted and holder
+    # Shared memory sits in the file figure but cannot be reclaimed: it counts as used.
+    gov.tick({**CALM, "memoryCurrentBytes": short - 2 * MIB, "memoryShmemBytes": 2 * MIB})
+    assert gov.admit(Speaker()).reason == "memory"
 
 
 def test_memory_rule_never_binds_for_whistle_or_without_a_limit():
@@ -127,12 +133,22 @@ def test_cpu_stall_refuses_and_closes_admission():
 
 
 def test_cpu_rule_is_skipped_without_pressure_counters():
-    gov, clock = governor()
-    seated(gov, clock, 1)
+    # A zero threshold refuses on any reading, so an admission proves the rule was skipped.
+    gov, clock = governor(thresholds={"cpu_stall_admit": 0.0})
+    (holder,) = seated(gov, clock, 1)  # kept referenced: with no seats no rule is reached
     clock.now += 1
+    holder.speak(clock.now)  # keeping up, so only the cpu rule could refuse
     gov.tick({**CALM, "cpuStallUsec": None})
-    assert gov.cpu_stall is None
-    assert gov.admit(Speaker()).admitted
+    assert gov.cpu_stall is None and len(gov.seats) == 1
+    decision = gov.admit(Speaker())
+    assert (decision.admitted, decision.reason) == (True, None) and not gov.closed
+    # The first counter after a gap only re-anchors; the second yields a reading that fails.
+    for _ in range(2):
+        clock.now += 1
+        holder.speak(clock.now)
+        gov.tick({**CALM, "cpuStallUsec": 0})
+    assert gov.cpu_stall == 0.0
+    assert gov.admit(Speaker()).reason == "cpu"
 
 
 def test_lag_refuses_from_the_control_lag_of_leased_speakers():
@@ -163,13 +179,25 @@ def test_seat_expires_after_idle_without_a_lease_and_release_frees_it():
     gov, clock = governor()
     first, second = seated(gov, clock, 2)
     first.leased = second.leased = False
-    sustain(gov, clock, [], 0, 13)  # first admitted at 101: idle 14 s at the last tick
+    sustain(gov, clock, [], 0, 14)  # first last leased at the 102 tick: idle 14 s at the last
     assert len(gov.seats) == 2
     second.leased = True
     sustain(gov, clock, [], 0, 1)
     assert first not in gov.seats and second in gov.seats
     gov.release(second)
     assert not gov.seats
+
+
+def test_admit_refreshes_the_seat_so_a_wait_after_a_gap_does_not_expire_it():
+    gov, clock = governor()
+    (holder,) = seated(gov, clock, 1)
+    holder.leased = False
+    sustain(gov, clock, [], 0, 14)  # idle 14 s since the 101 tick
+    assert holder in gov.seats
+    clock.now += 1  # a new segment at idle 15: admitted, then parked in the slot FIFO
+    assert gov.admit(holder).admitted and gov.seats[holder] == 101.0
+    sustain(gov, clock, [], 0, 1)  # the tick at idle 16 must not take the seat mid-wait
+    assert holder in gov.seats
 
 
 def test_shedding_pauses_the_newest_seat_holder_with_a_lease():
@@ -364,10 +392,31 @@ def test_lag_meter_sustained_is_the_window_minimum_of_per_second_maxima():
     assert meter.sustained(108.9) == 0.2
     meter.observe(3.0, 109)
     assert meter.sustained(109) == 3.0
-    # A second without a tick counts as no lag; history beyond the buckets is dropped.
-    assert meter.sustained(111) == 0.0
+    # Seconds nobody sampled are no evidence of calm; history beyond the buckets is dropped
+    # and a late sample stands in for the seconds it skipped.
+    assert meter.sustained(111) == 3.0
     meter.observe(1.0, 120)
-    assert set(meter.maxima) == {120}
+    assert meter.maxima == dict.fromkeys(range(111, 121), 1.0)
+
+
+def test_lag_meter_fills_the_seconds_a_late_tick_skipped():
+    meter = LagMeter()
+    # A 1.0001 s tick period starting just under a boundary leaves second 101 unsampled.
+    ticks = [round(100.9999 + i * 1.0001, 4) for i in range(6)]
+    assert [int(t) for t in ticks] == [100, 102, 103, 104, 105, 106]
+    for now in ticks:
+        meter.observe(3.0, now)
+    assert meter.maxima[101] == 3.0
+    assert [meter.sustained(now) for now in ticks[4:]] == [3.0, 3.0]
+    # A tick delayed 2.5 s fills the gap with the lag it then saw: nobody looked in between.
+    meter.observe(4.0, ticks[-1] + 2.5)
+    assert meter.maxima[107] == meter.maxima[108] == 4.0
+    assert meter.sustained(108.5) == 3.0
+    # Before the first sample nothing is sustained, and that sample is not diluted by it.
+    fresh = LagMeter()
+    assert fresh.sustained(50) == 0.0
+    fresh.observe(2.5, 50)
+    assert fresh.sustained(50) == 2.5
 
 
 def test_lag_meter_p95_of_recent_requests():

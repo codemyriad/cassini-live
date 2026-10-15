@@ -5,6 +5,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from cassini_live import transcriber
 from cassini_live.pool import WorkerPool
@@ -338,6 +339,21 @@ async def test_pending_since_and_lease_follow_the_whistle_worker():
     track.queue.put_nowait(None)
     await decoding
     assert not track.has_lease() and track.lease_at is None and track.pending_since is None
+    # Cancelled with a chunk still queued and one in flight: nothing stays pending.
+    from .test_stream_transcriber import SilentTrack
+
+    track = WhistleTranscriber("b", "en", asyncio.Queue(), pool=pool)
+    await track.start(SilentTrack())
+    track._enqueue(SpeechChunk(samples, sequence=0, created_at=base))
+    track._enqueue(SpeechChunk(samples, sequence=1, created_at=base + 0.5))
+    async with asyncio.timeout(2):
+        while sum(m["type"] == "audio" for m in worker.sent) < 3:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base and track.has_lease()
+    track.audio_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await track.audio_task
+    assert track.pending_since is None and not track.has_lease()
     await pool.close()
 
 

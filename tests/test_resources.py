@@ -13,7 +13,7 @@ CGROUP = {
     "full avg10=0.00 avg60=0.00 avg300=0.00 total=12\n",
     "memory.max": str(3 * GIB),
     "memory.current": str(1500 * MIB),
-    "memory.stat": "anon 471859200\nfile 1048576000\nkernel 8388608\nfile_mapped 0\n",
+    "memory.stat": "anon 471859200\nfile 1048576000\nkernel 8388608\nshmem 104857600\n",
     "memory.swap.max": "0",
     "memory.events": "oom_kill 0\n",
     "pids.max": "256",
@@ -25,7 +25,8 @@ CGROUP = {
 
 @pytest.fixture
 def cgroup(tmp_path, monkeypatch):
-    """A staging-shaped container: 2 CPU, 3 GiB, 1.5 GiB charged of which 1000 MiB is cache."""
+    """A staging-shaped container: 2 CPU, 3 GiB, 1.5 GiB charged of which 1000 MiB is cache
+    and 100 MiB of that cache is shared memory."""
     monkeypatch.setattr(resources, "_paths", lambda root: [root])
     monkeypatch.setattr(resources, "_stat_warned", False)
     (tmp_path / "pressure").mkdir()
@@ -34,11 +35,12 @@ def cgroup(tmp_path, monkeypatch):
     return tmp_path
 
 
-def fit_data(limit_mib, current_mib, file_mib=None):
+def fit_data(limit_mib, current_mib, file_mib=None, shmem_mib=0):
     return {
         "memoryLimitBytes": None if limit_mib is None else limit_mib * MIB,
         "memoryCurrentBytes": current_mib * MIB,
         "memoryFileBytes": None if file_mib is None else file_mib * MIB,
+        "memoryShmemBytes": None if file_mib is None else shmem_mib * MIB,
         "memoryStatAvailable": file_mib is not None,
     }
 
@@ -47,10 +49,14 @@ def test_snapshot_reports_charged_memory_page_cache_and_stall_counters(cgroup):
     data = resources.snapshot(cgroup, cgroup)
     assert data["memoryCurrentBytes"] == 1500 * MIB
     assert data["memoryFileBytes"] == 1000 * MIB
+    assert data["memoryShmemBytes"] == 100 * MIB
     assert data["memoryStatAvailable"] is True
     assert data["cpuStallUsec"] == 987654
     assert data["hostCpuStallUsec"] == 50
-    assert resources.headroom_mib(data) == 3072 - 500
+    # Shared memory is in the file figure but stays charged: 1500 - (1000 - 100) used.
+    assert resources.headroom_mib(data) == 3072 - 600
+    (cgroup / "memory.stat").write_text("anon 1\nfile 1048576000\n")
+    assert resources.snapshot(cgroup, cgroup)["memoryShmemBytes"] == 0
     (cgroup / "cpu.pressure").unlink()
     (cgroup / "pressure/cpu").unlink()
     data = resources.snapshot(cgroup, cgroup)
@@ -78,7 +84,7 @@ def test_snapshot_counts_page_cache_as_used_without_memory_stat_and_logs_once(cg
         data = resources.snapshot(cgroup, cgroup)
         resources.snapshot(cgroup, cgroup)
     assert data["memoryCurrentBytes"] == 1500 * MIB
-    assert data["memoryFileBytes"] is None
+    assert data["memoryFileBytes"] is None and data["memoryShmemBytes"] is None
     assert data["memoryStatAvailable"] is False
     assert data["monitoringAvailable"] is True
     assert resources.headroom_mib(data) == 3072 - 1500
@@ -107,10 +113,45 @@ def test_snapshot_charges_memory_against_the_binding_cgroup(tmp_path, monkeypatc
     assert data["memoryCurrentBytes"] == 2 * GIB and resources.headroom_mib(data) is None
 
 
+def test_binding_cgroup_tie_goes_to_the_outer_cgroup(tmp_path, monkeypatch):
+    # A scope capped at the same figure as its slice: the slice's charge includes the scope's
+    # and everything beside it, so that is what the limit is measured against.
+    root, slice_ = tmp_path, tmp_path / "app.slice"
+    scope = slice_ / "run.scope"
+    scope.mkdir(parents=True)
+    monkeypatch.setattr(resources, "_paths", lambda _: [root, scope, slice_])  # innermost first
+    (root / "memory.current").write_text(str(2 * GIB))
+    for path, current in ((slice_, 800 * MIB), (scope, 600 * MIB)):
+        (path / "memory.max").write_text(str(GIB))
+        (path / "memory.current").write_text(str(current))
+        (path / "memory.stat").write_text("file 0\nshmem 0\n")
+    data = resources.snapshot(root, tmp_path)
+    assert data["memoryLimitBytes"] == GIB and data["memoryCurrentBytes"] == 800 * MIB
+    (scope / "memory.max").write_text(str(GIB - 1))
+    data = resources.snapshot(root, tmp_path)
+    assert data["memoryLimitBytes"] == GIB - 1 and data["memoryCurrentBytes"] == 600 * MIB
+
+
+def test_cpu_stall_is_read_from_the_innermost_cgroup_with_the_root_as_fallback(
+    tmp_path, monkeypatch
+):
+    root, child = tmp_path, tmp_path / "child"
+    child.mkdir()
+    monkeypatch.setattr(resources, "_paths", lambda _: [root, child])
+    (root / "cpu.pressure").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=5000\n")
+    (child / "cpu.pressure").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=700\n")
+    assert resources.snapshot(root, tmp_path)["cpuStallUsec"] == 700
+    (child / "cpu.pressure").unlink()
+    assert resources.snapshot(root, tmp_path)["cpuStallUsec"] == 5000
+
+
 def test_headroom_is_unknown_without_a_limit_or_a_reading():
     assert resources.headroom_mib(fit_data(None, 100)) is None
     assert resources.headroom_mib({"memoryLimitBytes": 3 * GIB}) is None
     assert resources.headroom_mib(fit_data(3072, 3072 + 64, 0)) == -64
+    # Shared memory never reclaims, and a stat with more shmem than file charges nothing.
+    assert resources.headroom_mib(fit_data(2048, 1500, 1200, shmem_mib=200)) == 2048 - 500
+    assert resources.headroom_mib(fit_data(2048, 1500, 100, shmem_mib=300)) == 2048 - 1500
 
 
 def test_nemotron_start_fit_on_three_and_two_gib_and_unlimited(cgroup):

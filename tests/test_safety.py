@@ -25,6 +25,7 @@ SAFE = {
     "memoryLimitBytes": 2048 * MIB,
     "memoryCurrentBytes": 410 * MIB,
     "memoryFileBytes": 0,
+    "memoryShmemBytes": 0,
     "memoryStatAvailable": True,
     "cpuStallUsec": 0,
     "hostCpuStallUsec": 0,

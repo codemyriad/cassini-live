@@ -148,6 +148,30 @@ async def test_pending_since_follows_the_oldest_undecoded_chunk():
     track.queue.put_nowait(None)
     await decoding
     assert track.pending_since is None
+    # Cancelled mid-decode with a chunk still queued (the shutdown timeout path): the
+    # chunks go with the task, so nothing stays pending.
+    track = fake.transcriber("s", "en", asyncio.Queue())
+    await track.start(SilentTrack())
+    track._enqueue(chunk(0, created_at=base))
+    track._enqueue(chunk(1, created_at=base + 0.5))
+    async with asyncio.timeout(2):
+        while len(fake.streams) < 2 or not fake.streams[1].calls:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base and track.has_lease()
+    track.audio_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await track.audio_task
+    assert track.pending_since is None and not track.has_lease()
+
+
+class SilentTrack:
+    """A track that never delivers a frame: the capture loop only flushes the gate."""
+
+    async def receive(self):
+        await asyncio.Future()
+
+    def stop(self):
+        pass
 
 
 async def test_lease_fields_and_registration():

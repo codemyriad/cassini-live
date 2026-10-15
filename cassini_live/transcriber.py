@@ -277,6 +277,8 @@ class WhistleTranscriber:
         finally:
             if not self.keep_track:
                 self.stream.stop()
+            # A cancelled decoder leaves its queued chunks behind; none is pending any more.
+            self.pending_since = None
             await self._release(healthy=False)
 
     async def shutdown(self):

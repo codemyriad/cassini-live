@@ -147,6 +147,7 @@ def snapshot(**overrides):
         "memoryLimitBytes": 3 * GIB,
         "memoryCurrentBytes": 300 * 1024**2,
         "memoryFileBytes": 0,
+        "memoryShmemBytes": 0,
         "memoryStatAvailable": True,
         "cpuStallUsec": 0,
         "hostCpuStallUsec": 0,

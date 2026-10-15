@@ -60,16 +60,21 @@ def _pressure_total(path):
     return None
 
 
-def _stat_file(path):
-    """Page cache charged to the cgroup (memory.stat "file"); None when unreadable."""
+def _stat_memory(path):
+    """Page cache charged to the cgroup (memory.stat "file") and the tmpfs part of it
+    ("shmem", counted in "file" but only swappable, never reclaimable); (None, None) when
+    unreadable. A memory.stat without a shmem line reports 0 for it."""
     try:
+        stats = {}
         for line in (path / "memory.stat").read_text().splitlines():
             key, _, value = line.partition(" ")
-            if key == "file":
-                return int(value)
+            if key in ("file", "shmem"):
+                stats[key] = int(value)
+        if "file" in stats:
+            return stats["file"], stats.get("shmem", 0)
     except (OSError, ValueError):
         pass
-    return None
+    return None, None
 
 
 def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
@@ -84,9 +89,10 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     severity_available = True
     monitored = False
     unreadable = False
-    memory_current = memory_file = None
+    memory_current = memory_file = memory_shmem = None
     binding = None
-    for path in _paths(root):
+    paths = _paths(root)
+    for path in paths:
         try:
             quota, period = (path / "cpu.max").read_text().split()
             if quota != "max" and int(quota) > 0 and int(period) > 0:
@@ -102,10 +108,12 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         if mem_max and mem_now is not None:
             memory_ratio = max(memory_ratio, mem_now / mem_max)
         limit = math.inf if mem_max is None else mem_max
-        if mem_now is not None and (binding is None or limit < binding):
-            # The fit check charges usage against the cgroup whose limit binds; on a tie the
-            # outer one, whose usage includes everything below it.
-            binding, memory_current, memory_file = limit, mem_now, _stat_file(path)
+        # The fit check charges usage against the cgroup whose limit binds; on a tie the
+        # outer one, whose usage includes everything below it. The paths come innermost
+        # first, so depth breaks the tie rather than iteration order.
+        if mem_now is not None and (binding is None or (limit, len(path.parts)) < binding):
+            binding, memory_current = (limit, len(path.parts)), mem_now
+            memory_file, memory_shmem = _stat_memory(path)
         if pid_max and pid_now is not None:
             pids_ratio = max(pids_ratio, pid_now / pid_max)
         if mem_max is not None and mem_now is None or pid_max is not None and pid_now is None:
@@ -142,6 +150,12 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     ]
     memory_pressure = [_pressure(proc / "pressure/memory"), _pressure(root / "memory.pressure")]
     psi_available = all(value is not None for value in cpu_pressure + memory_pressure)
+    # The container's own cgroup is the deepest path: its stall time is what admission
+    # differences. Under a cgroup namespace (docker) it is the root itself.
+    own = max(paths, key=lambda p: len(p.parts))
+    cpu_stall = _pressure_total(own / "cpu.pressure")
+    if cpu_stall is None and own != root:
+        cpu_stall = _pressure_total(root / "cpu.pressure")
     if memory_current is not None and memory_file is None and not _stat_warned:
         _stat_warned = True
         LOGGER.warning("memory.stat is unreadable; memory headroom counts page cache as used")
@@ -153,7 +167,7 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
             max(cpu_recent) if psi_available and None not in cpu_recent else None
         ),
         "hostCpuPressure": _pressure(proc / "pressure/cpu", "avg10"),
-        "cpuStallUsec": _pressure_total(root / "cpu.pressure"),
+        "cpuStallUsec": cpu_stall,
         "hostCpuStallUsec": _pressure_total(proc / "pressure/cpu"),
         "memoryPressure": max(memory_pressure) if psi_available else None,
         "effectiveCpus": min(affinity, cpu) if cpu else float(affinity),
@@ -162,6 +176,7 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         "memoryLimitBytes": min(memory) if memory else None,
         "memoryCurrentBytes": memory_current,
         "memoryFileBytes": memory_file,
+        "memoryShmemBytes": memory_shmem,
         "memoryStatAvailable": memory_file is not None,
         "swapLimitBytes": min(swap) if swap else None,
         "pidsLimit": min(pids) if pids else None,
@@ -234,12 +249,14 @@ def headroom_mib(data):
     """Memory the container can still take before memory.max, in MiB; None when unknown.
 
     Page cache (memory.stat "file") is not charged: the kernel reclaims file pages before it
-    kills, and the host drops the model's cache after a cold load (engine_host.py). Without
+    kills, and the host drops the model's cache after a cold load (engine_host.py). Its shmem
+    part (tmpfs, /dev/shm) stays charged: only swap could take it and swap is 0. Without
     memory.stat the whole of memory.current counts, pessimistic by the cache."""
     limit, current = data.get("memoryLimitBytes"), data.get("memoryCurrentBytes")
     if not limit or current is None:
         return None
-    return (limit - (current - (data.get("memoryFileBytes") or 0))) // MIB
+    reclaimable = (data.get("memoryFileBytes") or 0) - (data.get("memoryShmemBytes") or 0)
+    return (limit - (current - max(0, reclaimable))) // MIB
 
 
 def start_problem(data, engine_id, rss_mib=None, workers=1):
