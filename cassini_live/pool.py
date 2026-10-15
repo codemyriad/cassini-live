@@ -76,6 +76,9 @@ class Worker:
 
 
 class WorkerPool:
+    engine_id = "whistle"
+    load_check = None
+
     def __init__(self, size, weights=None, worker_factory=Worker):
         self.size = size
         self.weights = weights
@@ -108,6 +111,26 @@ class WorkerPool:
     @property
     def waiting(self):
         return sum(not future.done() for future in self.waiters)
+
+    @property
+    def busy(self):
+        return len(self.leased)
+
+    def is_idle(self):
+        return self.idle.qsize() == self.size
+
+    def resize(self, size):
+        if not self.closed:
+            raise RuntimeError("Resize the worker pool only while it is closed")
+        self.size = size
+        self.idle = asyncio.Queue(maxsize=size)
+
+    def transcriber(self, session_id, language, transcript_queue, *translation_hooks):
+        from .transcriber import WhistleTranscriber
+
+        return WhistleTranscriber(
+            session_id, language, transcript_queue, *translation_hooks, pool=self
+        )
 
     def note_drop(self):
         self.dropped_chunks += 1
@@ -254,4 +277,5 @@ class WorkerPool:
             "recentCapacityPressure": bool(
                 self.last_pressure and time.monotonic() - self.last_pressure < 60
             ),
+            "engine": self.engine_id,
         }

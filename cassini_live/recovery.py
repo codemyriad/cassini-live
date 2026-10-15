@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import catalog
 from .resources import MIB, budget_problem
 
 
@@ -15,9 +16,9 @@ from .resources import MIB, budget_problem
 class RecoveryPolicy:
     base: float = 120
     cap: float = 3600
-    insufficient: float = 900
-    headroom_window: float = 180
-    stable_window: float = 1800
+    insufficient: float = 300
+    headroom_window: float = 60  # four clean 15 s polls; the backoff bounds flapping
+    stable_window: float = 600
     poll: float = 15
     monitor: float = 1
 
@@ -26,19 +27,21 @@ class RecoveryPolicy:
         return min(self.cap, self.base * 2 ** min(max(failures - 1, 0), 10)) * (1 + 0.2 * jitter())
 
 
-def recovery_problem(data, workers):
-    if problem := budget_problem(data, workers):
+def recovery_problem(data, workers, engine_id="whistle"):
+    if problem := budget_problem(data, workers, engine_id):
         return problem
     if data.get("hostCpuPressure") is None or data["hostCpuPressure"] >= 20:
         return "Waiting for readable, low host CPU pressure"
     if data["memoryFraction"] >= 0.6 or data["pidsFraction"] >= 0.6:
         return "Waiting for memory and process headroom"
     reserve = max(256 * MIB, data["hostMemoryBytes"] * 0.1)
-    if data["hostAvailableBytes"] - workers * 192 * MIB < reserve * 1.5:
+    headroom = catalog.load_headroom_mib(engine_id, workers) * MIB
+    if data["hostAvailableBytes"] - headroom < reserve * 1.5:
         return "Waiting for sustained host memory headroom"
-    # PSI measures time stalled, including contention outside this container.
-    if (data.get("cpuPressure") is None or data.get("memoryPressure") is None
-            or data["cpuPressure"] >= 20 or data["memoryPressure"] >= 1):
+    # PSI measures time stalled, including contention outside this container. CPU uses the
+    # 10 s average like the trip; memory tolerates the brief stalls a page-cache drop causes.
+    if (data.get("cpuPressureRecent") is None or data.get("memoryPressure") is None
+            or data["cpuPressureRecent"] >= 20 or data["memoryPressure"] >= 10):
         return "Waiting for host CPU and memory pressure to settle"
     return None
 
@@ -66,12 +69,16 @@ class RecoveryJournal:
             raise ValueError("Invalid retry time")
         return data
 
-    def write(self, failures, next_attempt, pending, reason):
+    def write(self, failures, next_attempt, pending, reason, last_trip=None, running=False):
         data = dict(
             failures=failures,
             nextAttemptAt=next_attempt,
             attemptInProgress=pending,
+            # Only a clean stop or a trip clears it: a boot that finds it
+            # set follows a process death while the engine ran, which counts as a failure.
+            engineRunning=running,
             reason=reason,
+            lastTrip=last_trip,
             updatedAt=time.time(),
         )
         self.data = data

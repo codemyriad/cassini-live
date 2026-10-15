@@ -8,8 +8,6 @@ from pathlib import Path
 
 import numpy as np
 
-from .transcriber import WhistleTranscriber
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -68,7 +66,7 @@ async def scenario(pool, speakers, *, participants=10, speed=1.3):
         for i in range(speakers, participants)
     ]
     captions = asyncio.Queue()
-    tracks = [WhistleTranscriber(str(i), "en", captions, pool=pool) for i in range(participants)]
+    tracks = [pool.transcriber(str(i), "en", captions) for i in range(participants)]
     decoders = [asyncio.create_task(t._decode()) for t in tracks]
     finals = [[] for _ in range(speakers)]
     first = [None] * speakers
@@ -118,9 +116,9 @@ async def scenario(pool, speakers, *, participants=10, speed=1.3):
         for task in decoders:
             task.cancel()
         await asyncio.gather(collector, *decoders, return_exceptions=True)
-        # Cancellation may leave native streams in progress. Replace them before
+        # Cancellation may leave native streams in progress. Drop them before
         # returning the pool to calls, never reuse their pending protocol replies.
-        await asyncio.gather(*(t._release(healthy=False) for t in tracks))
+        await asyncio.gather(*(t.abort() for t in tracks))
     elapsed = time.monotonic() - started
     reference = ((FIXTURES / "jfk.txt").read_text() + " ") * 2
     errors = [word_error_rate(reference, " ".join(f)) for f in finals]

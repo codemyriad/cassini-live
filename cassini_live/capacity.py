@@ -11,11 +11,11 @@ import socket
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 
-from . import __version__
+from . import __version__, catalog, engines
 from .calibration import scenario
 from .config import Config
-from .pool import WorkerPool
 from .resources import limits
 
 LOGGER = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ class CapacityAssessment:
             "testedSpeakers": 0,
             "testedParticipants": 10,
             "configuredWorkers": pool.size,
+            "engine": pool.engine_id,
             "appVersion": __version__,
             "limits": limits(),
             "scenarios": [],
@@ -62,7 +63,7 @@ class CapacityAssessment:
         }
         self.result = report
         try:
-            if pool.idle.qsize() != pool.size:
+            if not pool.is_idle():
                 raise RuntimeError("Capacity check requires an idle service")
             async with asyncio.timeout(120):
                 for count in range(1, min(pool.size, 4) + 1):
@@ -145,7 +146,18 @@ async def main(args):
             await asyncio.sleep(1)
     else:
         config = Config.from_env()
-        pool = WorkerPool(args.workers or config.workers, args.weights or config.weights)
+        size = args.workers or (
+            config.workers
+            if config.workers_explicit or args.engine == catalog.DEFAULT_ENGINE
+            else catalog.worker_ceiling(args.engine, limits()["effectiveCpus"])
+        )
+        pool = engines.create_backend(
+            args.engine,
+            size=size,
+            weights=args.weights or config.weights,
+            model_dir=args.model_dir,
+            threads=catalog.engine_threads(limits()["effectiveCpus"]),
+        )
         from .safety import SafetyController
 
         assessment = CapacityAssessment(pool)
@@ -173,4 +185,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--workers", type=int, choices=range(1, 33))
     parser.add_argument("--weights")
+    parser.add_argument(
+        "--engine",
+        choices=list(catalog.ENGINES),
+        default=catalog.DEFAULT_ENGINE,
+        help="Speech engine to test. A Nemotron run loads about 1 GB: start it under "
+        "systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0",
+    )
+    parser.add_argument("--model-dir", type=Path, help="Verified Nemotron model directory")
     raise SystemExit(asyncio.run(main(parser.parse_args())))

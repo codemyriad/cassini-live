@@ -9,6 +9,7 @@ from contextlib import suppress
 from aiortc.mediastreams import MediaStreamError
 from av import AudioResampler
 
+from .engines.shared import EngineFailed
 from .pool import CapacityError
 from .speech import SpeechGate
 from .talk.types import StreamEndedException, Transcript
@@ -18,6 +19,8 @@ POOL = None  # Set by application lifespan before rooms can be created.
 
 
 class WhistleTranscriber:
+    SEGMENT_SECONDS = 15
+
     def __init__(self, session_id, language, transcript_queue, *_translation_hooks, pool=None):
         self._pool = pool
         self.session_id = session_id
@@ -28,7 +31,7 @@ class WhistleTranscriber:
         self.audio_task = None
         self.capture_task = None
         self.queue = asyncio.Queue(maxsize=6)
-        self.gate = SpeechGate()
+        self.gate = SpeechGate(max_seconds=self.SEGMENT_SECONDS)
         self.dropped_chunks = 0
         self.lost_chunks = 0  # Every discarded chunk, for the diagnostic lanes.
         self.pending = ""
@@ -121,6 +124,9 @@ class WhistleTranscriber:
             worker, self.worker = self.worker, None
             self.lease_samples = 0
             await self.pool.release(worker, healthy=healthy)
+
+    async def abort(self):
+        await self._release(healthy=False)
 
     async def _finish(self, reason="flush"):
         if not self.worker:
@@ -283,9 +289,137 @@ class WhistleTranscriber:
                 await self._stop()
                 self.language = language
                 self.queue = asyncio.Queue(maxsize=6)
-                self.gate = SpeechGate()
+                self.gate = SpeechGate(max_seconds=self.SEGMENT_SECONDS)
                 self.pending = ""
                 await self.connect()
                 await self.start(stream)
             finally:
                 self.keep_track = False
+
+
+class StreamTranscriber(WhistleTranscriber):
+    """One continuous native stream per speaker on the shared engine host.
+
+    A speaking slot is held for one gate segment and never preempted; the native
+    stream stays open across pauses and ends only at a real end of audio.
+    """
+
+    # No preemption on the shared engine: shorter segments free slots sooner, and a waiting
+    # speaker keeps audio as long as the stale limit allows.
+    SEGMENT_SECONDS = 8
+    SLOT_WAIT_S = 4
+
+    def __init__(self, *args, **kwargs):
+        self.slot = None
+        super().__init__(*args, **kwargs)
+        self.engine_stream = None
+        self.uncommitted = 0
+
+    @property
+    def worker(self):
+        # Diagnostics lanes show the held slot like a Whistle worker.
+        return self.slot
+
+    @worker.setter
+    def worker(self, value):
+        self.slot = value
+
+    def _drop_stream(self):
+        self.engine_stream = None
+        self.uncommitted = 0
+
+    async def _release(self, healthy):
+        if self.slot is not None:
+            slot, self.slot = self.slot, None
+            self.lease_samples = 0
+            self.pool.release_slot(slot)
+        if not healthy and self.engine_stream is not None:
+            stream = self.engine_stream
+            self._drop_stream()
+            await stream.cancel()
+
+    async def _end_stream(self, reason="flush"):
+        """The only real end: pad, input_finished and final text, or a plain cancel."""
+        stream, uncommitted = self.engine_stream, self.uncommitted
+        self._drop_stream()
+        if stream is not None:
+            if uncommitted:
+                await self._emit(await stream.finish())
+                self.pool.stream_ends[reason] += 1
+            else:
+                await stream.cancel()
+        await self._release(healthy=True)
+
+    async def _finish(self, reason="flush"):
+        # Segment end: final text since the last commit; the stream stays open.
+        if self.engine_stream is not None and self.uncommitted:
+            self.uncommitted = 0
+            await self._emit(await self.engine_stream.commit())
+            self.pool.stream_ends[reason] += 1
+        await self._release(healthy=True)
+
+    async def _decode_audio(self, chunk):
+        if self.slot is None:
+            self.slot = await self.pool.acquire_slot(timeout=self.SLOT_WAIT_S)
+            if time.monotonic() - chunk.created_at > 4:
+                await self._release(healthy=True)
+                self._note_drop()
+                return
+        if self.engine_stream is None:
+            self.engine_stream = await self.pool.open_stream(self.language)
+        for offset in range(0, len(chunk.samples), 16000):
+            samples = chunk.samples[offset : offset + 16000]
+            result = await self.engine_stream.audio(samples)
+            self.uncommitted += len(samples)
+            self.lease_samples += len(samples)
+            self.pool.chunks_processed += 1
+            self.pool.audio_seconds += len(samples) / 16000
+            await self._emit(result)
+
+    async def _decode(self):
+        expected = 0
+        while True:
+            chunk = await self.queue.get()
+            try:
+                if chunk is None:
+                    await self._end_stream()
+                    return
+                if chunk.sequence != expected:
+                    # Never splice audio across a lost interval in native state.
+                    await self._end_stream("audioGap")
+                    await self._clear_preview()
+                expected = chunk.sequence + 1
+                if time.monotonic() - chunk.created_at > 4:
+                    self._note_drop()
+                    await self._end_stream("expiredAudio")
+                    await self._clear_preview()
+                    continue
+                if len(chunk.samples):
+                    await self._decode_audio(chunk)
+                if chunk.end:
+                    await self._finish(chunk.end_reason)
+            except CapacityError:
+                self.pool.capacity_waits += 1
+                self._note_drop()
+                await self._clear_preview()
+            except EngineFailed:
+                # The engine restarts itself; never from here.
+                LOGGER.warning("Caption engine unavailable; retrying next speech chunk")
+                self._note_drop()
+                self._drop_stream()
+                await self._release(healthy=True)
+                await self._clear_preview()
+            except Exception as error:
+                # EngineStreamError included: only this stream is cancelled.
+                LOGGER.warning("Caption recognition failed (%s)", type(error).__name__)
+                await self._release(healthy=False)
+                await self._clear_preview()
+            if chunk is None:
+                return
+
+
+def create(session_id, language, transcript_queue, *translation_hooks, pool=None):
+    backend = pool if pool is not None else POOL
+    if backend is None:
+        return WhistleTranscriber(session_id, language, transcript_queue, *translation_hooks)
+    return backend.transcriber(session_id, language, transcript_queue, *translation_hooks)

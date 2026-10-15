@@ -329,3 +329,15 @@ def test_lanes_render_with_history_and_without_data():
     history = [{"t": time.monotonic(), "lanes": {1: "speech"}, "finals": 1, "drops": 0}]
     assert render(data, history).size == (WIDTH, HEIGHT)
     assert render({}).size == (WIDTH, HEIGHT)
+
+
+async def test_publisher_end_is_logged_with_its_reason(monkeypatch, caplog):
+    from cassini_live import diagnostics
+
+    caplog.set_level("INFO", logger="cassini_live.diagnostics")
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    monkeypatch.setattr(diagnostics, "snapshot", lambda: {"memoryLimitBytes": 0})
+    manager = DiagnosticVideo(SimpleNamespace(clients={}, admission=None))
+    manager.start("room")
+    await manager.task
+    assert "Diagnostic video ended (paused: insufficient diagnostic headroom)" in caplog.text

@@ -48,6 +48,7 @@ from .meta_translator import MetaTranslator
 from .models import LANGUAGE_MAP
 from nc_py_api import AsyncNextcloudApp
 from ..transcriber import WhistleTranscriber
+from ..transcriber import create as create_transcriber
 from .utils import get_ssl_context, hmac_sha256, sanitize_websocket_url
 from websockets import ClientConnection
 from websockets import State as WsState
@@ -1282,7 +1283,7 @@ class SpreedClient:
 
 				stream = AudioStream(track)
 				async with weakself().transcriber_lock:
-					weakself().transcribers[spkr_sid] = WhistleTranscriber(
+					weakself().transcribers[spkr_sid] = create_transcriber(
 						spkr_sid,
 						weakself().room_lang_id,
 						weakself().transcript_queue,
@@ -1294,7 +1295,7 @@ class SpreedClient:
 						await weakself().transcribers[spkr_sid].connect()
 						await weakself().transcribers[spkr_sid].start(stream=stream)
 					except Exception:
-						LOGGER.exception("Could not start Whistle caption stream.",
+						LOGGER.exception("Could not start caption stream.",
 							extra={
 
 								"session_id": spkr_sid,

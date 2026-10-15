@@ -4,6 +4,8 @@ import math
 import os
 from pathlib import Path
 
+from . import catalog
+
 MIB = 1024 * 1024
 
 
@@ -95,12 +97,17 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         pass
     cpu = min(quotas) if quotas else None
     cpu_pressure = [_pressure(proc / "pressure/cpu"), _pressure(root / "cpu.pressure")]
+    cpu_recent = [_pressure(proc / "pressure/cpu", "avg10"),
+                  _pressure(root / "cpu.pressure", "avg10")]
     memory_pressure = [_pressure(proc / "pressure/memory"), _pressure(root / "memory.pressure")]
     psi_available = all(value is not None for value in cpu_pressure + memory_pressure)
     return {
         "monitoringAvailable": monitored and not unreadable,
         "pressureAvailable": psi_available,
         "cpuPressure": max(cpu_pressure) if psi_available else None,
+        "cpuPressureRecent": (
+            max(cpu_recent) if psi_available and None not in cpu_recent else None
+        ),
         "hostCpuPressure": _pressure(proc / "pressure/cpu", "avg10"),
         "memoryPressure": max(memory_pressure) if psi_available else None,
         "effectiveCpus": min(affinity, cpu) if cpu else float(affinity),
@@ -125,7 +132,7 @@ def limits(root=Path("/sys/fs/cgroup")):
     return {k: data[k] for k in ("effectiveCpus", "memoryLimitBytes", "affinityCpus")}
 
 
-def budget_problem(data, workers):
+def budget_problem(data, workers, engine_id="whistle"):
     cpu, memory, processes = data["cpuQuotaCpus"], data["memoryLimitBytes"], data["pidsLimit"]
     if not cpu or not memory or not processes or data["swapLimitBytes"] != 0:
         return "Set finite cgroup v2 CPU, memory and PID limits, and disable container swap"
@@ -136,10 +143,41 @@ def budget_problem(data, workers):
         return "Reserve at least half the host memory outside the caption container"
     if processes > 256:
         return "The caption container PID limit must be at most 256"
-    if not 1 <= workers <= min(4, max(1, int(cpu // 2))):
-        return "Requested recognition workers exceed the CPU budget (maximum four)"
-    if memory < (384 + workers * 192) * MIB:
-        return "The memory budget is too small for the requested recognition workers"
+    engine = catalog.get(engine_id)
+    if engine.kind == "worker_pool":
+        if not 1 <= workers <= min(4, max(1, int(cpu // 2))):
+            return "Requested recognition workers exceed the CPU budget (maximum four)"
+        if memory < (384 + workers * 192) * MIB:
+            return "The memory budget is too small for the requested recognition workers"
+    else:
+        needs = engine.requirements
+        if not 1 <= workers <= catalog.worker_ceiling(engine_id, cpu):
+            return f"Requested simultaneous speakers exceed the CPU budget for {engine.name}"
+        if cpu < needs.min_cpu_quota:
+            return f"{engine.name} needs a CPU quota of at least {needs.min_cpu_quota:g} CPU"
+        if memory < catalog.memory_floor_mib(engine_id, workers) * MIB:
+            return (
+                f"The memory budget is too small for {engine.name}: set at least "
+                f"{_gib(catalog.memory_floor_mib(engine_id, workers))} GiB "
+                f"({_gib(needs.recommended_memory_mib)} GiB recommended)"
+            )
+    return pressure_problem(data)
+
+
+def _gib(mib):
+    # Rounded up: the value is a requirement, so the shown figure must be enough.
+    return f"{math.ceil(mib / 1024 * 10 - 1e-9) / 10:.1f}".removesuffix(".0")
+
+
+def load_problem(data, engine_id):
+    """Loading a shared model must not itself push the container into the 80% trip."""
+    engine = catalog.get(engine_id)
+    if engine.kind == "worker_pool":
+        return None
+    memory = data.get("memoryLimitBytes")
+    current = data.get("memoryFraction", 0) * (memory or 0)
+    if not memory or current + engine.requirements.model_mib * MIB > 0.8 * memory:
+        return f"Not enough free container memory to load {engine.name}"
     return pressure_problem(data)
 
 

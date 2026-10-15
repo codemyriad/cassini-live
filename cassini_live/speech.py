@@ -26,8 +26,9 @@ class SpeechChunk:
 
 
 class SpeechGate:
-    def __init__(self, detector=None):
+    def __init__(self, detector=None, max_seconds=15):
         self.detector = detector or SpeechDetector()
+        self.max_samples = max_seconds * 16000
         self.frame_size = getattr(self.detector, "frame_size", 320)
         self.tail = np.empty(0, dtype="<f4")
         self.pre = deque(maxlen=5120 // self.frame_size)
@@ -91,9 +92,9 @@ class SpeechGate:
             reason = None
             if quiet_samples >= 9600:
                 reason = "silence"
-            elif self.duration >= 14 * 16000 and quiet_samples >= 2048:
+            elif self.duration >= self.max_samples - 16000 and quiet_samples >= 2048:
                 reason = "durationPause"
-            elif self.duration >= 15 * 16000:
+            elif self.duration >= self.max_samples:
                 reason = "durationLimit"
             while len(self.buffer) > 16000:
                 chunks.append(self._chunk(self.buffer[:16000]))
@@ -120,9 +121,11 @@ class SpeechGate:
             chunks.append(self._chunk(samples, end=True))
         sequence = self.sequence
         chunks_emitted = self.chunks_emitted
+        max_samples = self.max_samples  # The engine's segment limit outlives the reset.
         if hasattr(self.detector, "reset"):
             self.detector.reset()
         self.__init__(self.detector)
+        self.max_samples = max_samples
         self.sequence = sequence
         self.chunks_emitted = chunks_emitted
         return chunks

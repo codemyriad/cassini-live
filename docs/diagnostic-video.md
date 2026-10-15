@@ -19,6 +19,11 @@ minus current worker leases. They are instantaneous headroom, not a promise of
 more meetings: participants can start speaking at any time, and all rooms share
 the ten-track limit. We don't extrapolate additional capacity from idle CPUs.
 
+With a Nemotron engine there is one shared engine process instead of one worker
+per speaker. There, "scribes" and "workers" mean speaking slots: the lane tag
+shows the slot a speaker holds, and spare voices are the measured speaker count
+minus the slots in use. The header names the active engine.
+
 There is at most one video publisher per installation. It uses 960×540 VP8 at
 one frame every two seconds, one codec thread and a low-priority child process.
 The child receives only aggregate metrics through a bounded pipe. It neither
@@ -39,6 +44,7 @@ The optional process stops if it exceeds 128 MiB RSS or sustains more than
 being ready. Its address space is capped at 768 MiB. It does not restart in a
 loop. A failed feed stays off until its owning caption room closes and a later
 room starts. It also stops when its parent closes the pipe or stops heartbeats.
+Every stop logs `Diagnostic video ended (…)` with its reason.
 The normal container limits still apply to the entire application.
 
 This is diagnostic video, not a recording or a separate monitoring service.

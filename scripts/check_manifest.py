@@ -32,11 +32,10 @@ def main():
     patterns = [r.findtext("url").replace(r"\/", "/") for r in routes]
     for private in ("api/v1/call/transcribe", "api/v1/call/leave", "enabled", "init"):
         assert not any(re.fullmatch(pattern, private) for pattern in patterns)
-    for public in ("status", "ui/live.js", "ui/live.css", "img/app.svg"):
-        assert any(re.fullmatch(pattern, public) for pattern in patterns)
-    assert (ROOT / "img/app.svg").read_bytes() == (
-        ROOT / "cassini_live/static/app.svg"
-    ).read_bytes()
+    # The engine choice lives in AppAPI declarative admin settings, not a proxied page.
+    for hidden in ("ui/live.js", "ui/live.css", "img/app.svg", "api/v1/call/set-language"):
+        assert not any(re.fullmatch(pattern, hidden) for pattern in patterns)
+    assert patterns == ["^status$"], "status is the only public route"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 
 

@@ -181,3 +181,22 @@ async def test_startup_check_blocks_calls_until_it_passes(monkeypatch, headers):
             ).status_code == 200
             service.request.assert_awaited_once()
     assert pool.closed
+
+
+async def test_report_names_the_engine_and_requires_an_idle_backend(monkeypatch):
+    from cassini_live import capacity
+    from cassini_live.capacity import CapacityAssessment
+    from tests.fakes_engine import FakeBackend
+
+    async def scenario(pool, count):
+        return {"passed": True, "speakers": count}
+
+    monkeypatch.setattr(capacity, "scenario", scenario)
+    backend = FakeBackend("nemotron-en", 2)
+    assessment = CapacityAssessment(backend)
+    await assessment.run()
+    assert assessment.result["engine"] == "nemotron-en"
+    assert assessment.result["state"] == "error"  # not started: is_idle() is false
+    await backend.start()
+    await assessment.run()
+    assert assessment.result["state"] == "passed" and assessment.result["testedSpeakers"] == 2

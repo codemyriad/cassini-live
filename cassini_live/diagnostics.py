@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -10,6 +11,8 @@ from contextlib import suppress
 from pathlib import Path
 
 from .resources import snapshot
+
+LOGGER = logging.getLogger(__name__)
 
 
 def process_usage(pid):
@@ -31,6 +34,7 @@ class DiagnosticVideo:
         self.state = "idle" if self.enabled else "disabled"
         self.metrics = {}
         self._stop_task = None
+        self._stop_reason = "stopped"
         # Anonymous, process-local lane numbers; never session or participant ids.
         self._lanes = weakref.WeakKeyDictionary()
         self._next_lane = 0
@@ -78,6 +82,9 @@ class DiagnosticVideo:
         if self.task is None:
             return
         if self._stop_task is None:
+            self._stop_reason = (
+                "stopped: caption room closed" if token else "stopped: caption service closed rooms"
+            )
             self._stop_task = asyncio.create_task(self._stop(self.task))
         # Caller cancellation propagates, but reaping remains owned and tracked.
         await asyncio.shield(self._stop_task)
@@ -164,7 +171,7 @@ class DiagnosticVideo:
                     self.state = "paused: diagnostic budget exceeded"
                     return
                 pool = safety.pool
-                busy = len(pool.leased)
+                busy = pool.busy
                 remaining = max(0, pool.admission_limit - busy)
                 clients = list(self.service.clients.values())
                 transcribers = [
@@ -172,6 +179,7 @@ class DiagnosticVideo:
                 ]
                 ends = getattr(pool, "stream_ends", {})
                 sample = {
+                    "engine": getattr(pool, "engine_id", "whistle"),
                     "state": safety.state,
                     "rooms": len(clients),
                     "tracks": len(safety.tracks),
@@ -241,10 +249,12 @@ class DiagnosticVideo:
                 previous_host, previous_caption = host, caption
                 await asyncio.sleep(2)
         except asyncio.CancelledError:
+            self.state = self._stop_reason
             raise
         except Exception as error:
             self.state = "unavailable: " + type(error).__name__
         finally:
+            LOGGER.info("Diagnostic video ended (%s)", self.state)
             if process and process.returncode is None:
                 if process.stdin and hasattr(process.stdin, "close"):
                     with suppress(Exception):

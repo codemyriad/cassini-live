@@ -4,19 +4,25 @@
   <!-- Talk hardcodes this ID; Cassini Live replaces the official caption ExApp. -->
   <id>live_transcription</id>
   <name>Cassini Live</name>
-  <summary>Private, multilingual live captions for Nextcloud Talk, powered by Whistle.</summary>
+  <summary>Private live captions for Nextcloud Talk, with a choice of speech engines.</summary>
   <description><![CDATA[Turn on captions in Talk and follow the conversation in real time.
-Whistle recognises English, German, French, Spanish, Italian, Dutch and Polish on your CPU.
-Language detection is automatic. Audio and captions stay on your infrastructure; no account,
-API key, GPU, recording or end-user configuration is needed.
+Audio and captions stay on your infrastructure; no account, API key, GPU, recording or
+end-user configuration is needed.
+
+Whistle is bundled: it recognises English, German, French, Spanish, Italian, Dutch and Polish
+on your CPU, with automatic language detection. Administrators can switch the whole server to
+an optional, more accurate Nemotron engine in Administration settings > Artificial
+intelligence: Nemotron English (NVIDIA Open Model License) or Nemotron Multilingual
+(OpenMDW-1.1). Their models are downloaded on request, not shipped in the image, and need
+at least 2.25 GiB of container memory (3 GiB recommended) and twice that of host memory.
 
 Requires Talk's high-performance backend, AppAPI and a deploy daemon. Supply the HPB internal
-secret once in deploy options; its URL is discovered from Talk. Whistle is bundled in the image.
+secret once in deploy options; its URL is discovered from Talk.
 
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.6.1</version>
+  <version>0.7.0</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -30,7 +36,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.6.1</image-tag>
+      <image-tag>0.7.0</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -47,7 +53,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <variable>
         <name>CASSINI_LIVE_WORKERS</name>
         <display-name>Concurrent speaking segments (optional)</display-name>
-        <description>Leave empty for CPU quota sizing, up to four recognition workers. The installation check measures usable simultaneous speakers. Silent tracks do not reserve workers. Range: 1 to 32.</description>
+        <description>Leave empty for CPU quota sizing, up to four recognition workers. The installation check measures usable simultaneous speakers. Silent tracks do not reserve workers. With Nemotron: maximum simultaneous speakers. Range: 1 to 32.</description>
       </variable>
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>
@@ -58,8 +64,6 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
     <!-- Native caption endpoints are server-to-server, never browser-proxied. -->
     <routes>
       <route><url>^status$</url><verb>GET</verb><access_level>USER</access_level></route>
-      <route><url>^ui\/live\.(js|css)$</url><verb>GET</verb><access_level>USER</access_level></route>
-      <route><url>^img\/app\.svg$</url><verb>GET</verb><access_level>USER</access_level></route>
     </routes>
   </external-app>
 </info>

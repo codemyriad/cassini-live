@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from . import catalog
 from .resources import limits
 
 LANGUAGE_NAMES = {
@@ -44,17 +45,23 @@ def websocket_url(url: str) -> str:
     )
 
 
+def state_dir() -> Path:
+    return Path(os.environ.get("APP_PERSISTENT_STORAGE", "/home/cassini/.local/state"))
+
+
 @dataclass(frozen=True)
 class Config:
     weights: str | None
     workers: int
     secret: str
     hpb_url: str
+    workers_explicit: bool = False
 
     @classmethod
     def from_env(cls):
         cpus = limits()["effectiveCpus"]
-        workers = int(os.environ.get("CASSINI_LIVE_WORKERS") or min(4, max(1, int(cpus // 2))))
+        explicit = os.environ.get("CASSINI_LIVE_WORKERS")
+        workers = int(explicit or catalog.worker_ceiling(catalog.DEFAULT_ENGINE, cpus))
         if not 1 <= workers <= 32:
             raise ValueError("CASSINI_LIVE_WORKERS must be between 1 and 32")
         weights = os.environ.get("CASSINI_LIVE_WEIGHTS")
@@ -66,4 +73,5 @@ class Config:
             workers,
             os.environ.get("CASSINI_TALK_SIGNALING_INTERNAL_SECRET", ""),
             os.environ.get("CASSINI_TALK_HPB_URL", ""),
+            bool(explicit),
         )

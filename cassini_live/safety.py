@@ -1,13 +1,18 @@
 """One supervisor owns admission, shutdown and bounded automatic recovery."""
 
 import asyncio
+import logging
 import os
 import random
 import time
 from contextlib import suppress
 
+from . import catalog
+from .pool import CapacityError
 from .recovery import RecoveryJournal, RecoveryPolicy, recovery_problem
-from .resources import budget_problem, pressure_problem, signature, snapshot
+from .resources import budget_problem, load_problem, pressure_problem, signature, snapshot
+
+LOGGER = logging.getLogger(__name__)
 
 
 def cpu_pressure_reason(previous, current, elapsed, lag):
@@ -68,6 +73,7 @@ class SafetyController:
         self.state, self.reason = "blocked", "Capacity has not been established"
         self.phase = "idle"
         self.last_refusal = None
+        self.last_trip = None
         self.cpu_health = {}
         self.tracks = set()
         self.monitor = None
@@ -83,7 +89,41 @@ class SafetyController:
         self.admin_action = False
         self.first = asyncio.Event()
         self.wake = asyncio.Event()
-        self.pool.resource_check = lambda: pressure_problem(self.reader())
+        self.fresh = False
+        self.attempt_started = None
+        self._outcome = None
+        self._hook(pool)
+
+    @property
+    def engine_id(self):
+        return getattr(self.pool, "engine_id", "whistle")
+
+    def _hook(self, pool):
+        pool.resource_check = lambda: pressure_problem(self.reader())
+        pool.load_check = lambda: load_problem(self.reader(), self.engine_id)
+
+    def replace_pool(self, pool):
+        # Only a stopped controller may swap engines; the monitor owns the running pool.
+        if self.monitor and not self.monitor.done():
+            raise RuntimeError("Stop caption supervision before replacing the speech engine")
+        from . import transcriber
+
+        self.pool = self.assessment.pool = pool
+        self._hook(pool)
+        transcriber.POOL = pool
+
+    def _resolve(self, ok, reason):
+        if self._outcome is not None and not self._outcome.done():
+            self._outcome.set_result((ok, reason))
+
+    async def wait_outcome(self, timeout):
+        """The first result of the attempt launched by start(): ready, tripped or blocked."""
+        if self._outcome is None:
+            return (self.state == "ready", self.reason)
+        try:
+            return await asyncio.wait_for(asyncio.shield(self._outcome), timeout)
+        except TimeoutError:
+            return (False, "The capacity check did not finish in time")
 
     def status(self):
         retry = max(0, self.next_attempt - self.clock())
@@ -101,6 +141,7 @@ class SafetyController:
             "activeTracks": len(self.tracks),
             "maxTracks": self.max_tracks,
             "lastRefusal": self.last_refusal,
+            "lastTrip": self.last_trip,
             "failures": self.failures,
             "adminActionRequired": self.admin_action,
             "automaticRecovery": self.desired_enabled,
@@ -116,7 +157,11 @@ class SafetyController:
 
     def allow_room(self, rooms):
         self.require_ready()
-        if rooms >= min(2, self.assessment.result.get("testedSpeakers", 0)):
+        speakers = self.assessment.result.get("testedSpeakers", 0)
+        # Whistle's two-room cap predates the shared engine, which serves every tested speaker.
+        if catalog.get(self.engine_id).kind == "worker_pool":
+            speakers = min(2, speakers)
+        if rooms >= speakers:
             self.last_refusal = "Caption room budget reached"
             raise ResourceRefused(self.last_refusal)
 
@@ -129,12 +174,15 @@ class SafetyController:
         self.tracks.add(lease)
         return lease
 
-    async def start(self):
+    async def start(self, *, fresh=False):
         async with self.lock:
             if self.monitor and not self.monitor.done():
                 self.wake.set()
                 return
             self.desired_enabled = True
+            # A deliberate engine switch is bounded by its manager, not the cooldown.
+            self.fresh = fresh
+            self._outcome = asyncio.get_running_loop().create_future()
             self.first.clear()
             self.monitor = asyncio.create_task(self._supervise())
         # Do not hold the lifecycle lock during model loading: disable must cancel it.
@@ -153,9 +201,11 @@ class SafetyController:
             pass
         self.wake.clear()
 
-    def _persist(self, pending):
+    def _persist(self, pending, running=False):
         deadline = self.wall_clock() + max(0, self.next_attempt - self.clock())
-        self.journal.write(self.failures, deadline, pending, self.reason)
+        self.journal.write(
+            self.failures, deadline, pending, self.reason, self.last_trip, running=running
+        )
 
     async def _supervise(self):
         try:
@@ -166,30 +216,44 @@ class SafetyController:
                 try:
                     saved = self.journal.read()
                     self.failures = saved.get("failures", 0)
+                    if isinstance(saved.get("lastTrip"), dict):
+                        self.last_trip = saved["lastTrip"]
                     remaining = min(
-                        self.policy.cap * 1.2 + 180,
+                        self.policy.cap * 1.2,
                         max(0, saved.get("nextAttemptAt", 0) - self.wall_clock()),
                     )
-                    if saved.get("attemptInProgress"):
+                    crashed = saved.get("engineRunning") and not saved.get("attemptInProgress")
+                    if crashed:
+                        # The ready engine died without a clean stop; its run was uncounted.
+                        self.failures = min(20, self.failures + 1)
+                    if saved.get("attemptInProgress") or crashed:
                         remaining = max(remaining, self.policy.delay(self.failures, self.jitter))
                     self.next_attempt = self.clock() + remaining
                     self.must_settle = bool(remaining or self.failures)
                     if remaining:
                         self.reason = "Recovering after an interrupted caption process"
+                    if self.fresh:
+                        self.fresh = False
+                        self.failures, self.next_attempt, self.must_settle = 0, 0, False
+                        self._persist(False)
+                    elif crashed:
+                        self._persist(False)  # Count this crash once, even if boot dies again.
                     break
                 except (OSError, ValueError, TypeError):
                     self.state, self.phase = "blocked", "configuration"
                     self.reason = "Recovery journal is unreadable; check persistent storage"
                     self.admin_action = True
+                    self._resolve(False, self.reason)
                     self.first.set()
                     await self._pause(self.policy.poll)
             while self.desired_enabled:
                 try:
                     data = self.reader()
                     if self.auto_size and self.pool.closed:
-                        self.pool.size = min(4, max(1, int(data["effectiveCpus"] // 2)))
-                        self.pool.idle = asyncio.Queue(maxsize=self.pool.size)
-                    problem = budget_problem(data, self.pool.size)
+                        self.pool.resize(
+                            catalog.worker_ceiling(self.engine_id, data["effectiveCpus"])
+                        )
+                    problem = budget_problem(data, self.pool.size, self.engine_id)
                     if not problem and not data.get("pressureAvailable", False):
                         problem = (
                             "Linux PSI pressure statistics are unavailable; enable and expose PSI"
@@ -207,9 +271,11 @@ class SafetyController:
                         self.reason, self.admin_action = problem, not transient
                         self.healthy_since = None
                         self.must_settle = True
+                        if not transient:
+                            self._resolve(False, problem)
                     else:
                         self.admin_action = False
-                        headroom = recovery_problem(data, self.pool.size)
+                        headroom = recovery_problem(data, self.pool.size, self.engine_id)
                         if headroom:
                             self.healthy_since = None
                             self.must_settle = True
@@ -245,6 +311,7 @@ class SafetyController:
                     self.reason = "Resource monitoring or recovery storage is unavailable"
                     self.admin_action = True
                     self.healthy_since = None
+                    self._resolve(False, self.reason)
                 self.first.set()
                 await self._pause(self.policy.poll)
         finally:
@@ -253,14 +320,16 @@ class SafetyController:
 
     async def _attempt(self, data):
         self.failures = min(20, self.failures + 1)
-        self.next_attempt = self.clock() + self.policy.delay(self.failures, self.jitter) + 180
+        # Crash guard: an OOM restart during the load waits this out.
+        self.next_attempt = self.clock() + self.policy.delay(self.failures, self.jitter)
         self.reason = "Checking caption capacity"
         self._persist(True)  # Must succeed before any expensive allocation.
+        self.attempt_started = self.clock()
         self.state, self.phase = "checking", "loading"
         self.initial = data
         try:
             # Generation fences and complete teardown are prerequisites for reuse.
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(catalog.get(self.engine_id).requirements.start_timeout_s):
                 await self.pool.start()
             self.assessment.start()
             self.phase = "calibrating"
@@ -268,8 +337,13 @@ class SafetyController:
             await self._watch()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            await self.trip("Recognition workers or resource monitoring failed")
+        except Exception as error:
+            LOGGER.warning("Caption supervision failed (%s)", type(error).__name__)
+            # A refused load names its reason; an administrator's rollback message shows it.
+            await self.trip(
+                str(error) if isinstance(error, CapacityError) and str(error)
+                else "Recognition workers or resource monitoring failed"
+            )
 
     async def _watch(self):
         previous = self.initial
@@ -316,16 +390,21 @@ class SafetyController:
                 self.pool.admission_limit = report["testedSpeakers"]
                 self.state, self.phase = "ready", "ready"
                 self.reason = "Capacity check passed"
-                self._persist(False)
+                # The attempt was counted as a failure in case it crashed; it did not.
+                self.failures, self.next_attempt = max(0, self.failures - 1), 0
+                self._persist(False, running=True)
+                self._resolve(True, self.reason)
                 ready_since = now
             elif ready_since is not None and now - ready_since >= self.policy.stable_window:
                 self.failures, self.next_attempt = 0, 0
-                self._persist(False)
+                self._persist(False, running=True)  # Still running: a later crash must count.
                 ready_since = None
             # Excess demand is handled by bounded queues and admission, not a
             # service-wide restart. Real resource pressure remains monitored.
 
     async def trip(self, reason, *, insufficient=False):
+        if self.state == "ready":
+            self.failures = min(20, self.failures + 1)  # A running engine's attempt was uncounted.
         self.state, self.phase, self.reason = "recovering", "cooling_down", reason
         self.healthy_since = None
         self.must_settle = True
@@ -334,6 +413,15 @@ class SafetyController:
         if insufficient:
             delay = max(delay, self.policy.insufficient)
         self.next_attempt = self.clock() + delay
+        self._resolve(False, reason)
+        # Rooms close silently otherwise; the reason must outlive recovery.
+        self.last_trip = {"reason": reason, "at": round(self.wall_clock()), **self.cpu_health}
+        LOGGER.warning(
+            "Captions paused, closing all rooms: %s; retrying in %d s (CPU health: %s)",
+            reason,
+            delay,
+            self.cpu_health or "unavailable",
+        )
         # Persist first so a teardown crash cannot reset the backoff.
         try:
             self._persist(False)
@@ -356,18 +444,22 @@ class SafetyController:
         for lease in list(self.tracks):
             lease.release()
 
-    async def close(self):
-        task = asyncio.create_task(self._close())
+    async def close(self, reason=None):
+        task = asyncio.create_task(self._close(reason or "Caption service stopped"))
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             await asyncio.shield(task)
             raise
 
-    async def _close(self):
+    async def _close(self, reason):
         async with self.lock:
+            if self.state == "checking":
+                # A stop is not a crash: undo the attempt's provisional failure and deadline.
+                self.failures, self.next_attempt = max(0, self.failures - 1), 0
             self.desired_enabled = False
             self.state, self.phase = "disabled", "disabled"
+            self._resolve(False, reason)
             with suppress(OSError, ValueError):
                 self._persist(False)
             if self.monitor:
@@ -378,7 +470,7 @@ class SafetyController:
             else:
                 await self._teardown()
             self.state, self.phase = "disabled", "disabled"
-            self.reason = "Caption service stopped"
+            self.reason = reason
             self.admin_action = False
             with suppress(OSError, ValueError):
                 self._persist(False)

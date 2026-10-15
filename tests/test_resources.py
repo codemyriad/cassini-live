@@ -29,3 +29,33 @@ def test_reads_enforced_budget_and_refuses_missing_counters(tmp_path, monkeypatc
     assert resources.snapshot(tmp_path, tmp_path)["hostCpuPressure"] is None
     (tmp_path / "memory.current").unlink()
     assert "cannot be read" in resources.budget_problem(resources.snapshot(tmp_path, tmp_path), 2)
+
+
+def test_whistle_budget_is_unchanged_and_nemotron_needs_its_floor():
+    from tests.test_safety import SAFE
+
+    MIB = resources.MIB
+    for workers in (1, 2, 3):
+        assert resources.budget_problem(SAFE, workers) == resources.budget_problem(
+            SAFE, workers, "whistle"
+        )
+    small = {**SAFE, "memoryLimitBytes": 2048 * MIB}
+    assert "2.3 GiB" in resources.budget_problem(small, 1, "nemotron-en")
+    roomy = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    assert resources.budget_problem(roomy, 4, "nemotron-en") is None
+    assert "CPU budget" in resources.budget_problem(roomy, 5, "nemotron-multilingual")
+    one_cpu = {**roomy, "cpuQuotaCpus": 0.5, "effectiveCpus": 0.5}
+    assert resources.budget_problem(one_cpu, 1, "nemotron-en")
+
+
+def test_load_problem_keeps_the_model_below_the_trip():
+    from tests.test_safety import SAFE
+
+    MIB = resources.MIB
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB, "memoryFraction": 0.2}
+    assert resources.load_problem(data, "whistle") is None
+    assert resources.load_problem(data, "nemotron-en") is None
+    assert "Not enough free" in resources.load_problem(
+        {**data, "memoryFraction": 0.5}, "nemotron-en"
+    )
+    assert resources.load_problem({**data, "memoryFraction": 0.9}, "nemotron-en")

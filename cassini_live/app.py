@@ -4,32 +4,32 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 from typing import Literal
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
 from nc_py_api import AsyncNextcloudApp
 from nc_py_api.ex_app import run_app, set_handlers
 from pydantic import BaseModel, Field
 
-from . import __version__, transcriber
+from . import __version__, catalog, transcriber
 from .auth import SafeAppAPIAuthMiddleware
 from .capacity import CapacityAssessment
-from .config import LANGUAGES, Config
+from .config import Config, state_dir
+from .eligibility import NetworkProbe
+from .engine_switch import EngineManager
+from .model_store import ModelStore
 from .pool import WorkerPool
 from .recovery import RecoveryJournal
 from .safety import ResourceRefused, SafetyController
 from .service import CaptionService
+from .settings import SettingsStore
+from .settings_sync import SettingsSync
 from .talk.types import SpreedClientException, VoskException
 
 LOGGER = logging.getLogger(__name__)
-ASSETS = Path(__file__).parent / "static"
 Language = Literal["auto", "en", "de", "fr", "es", "it", "nl", "pl"]
-ALL_LANGUAGES = {
-    "auto": {"name": "Automatic", "metadata": {"separator": " ", "rtl": False}},
-    **LANGUAGES,
-}
+DISABLED_NOTE = "Cassini Live is disabled. Enable it to change the speech engine."
+STOPPED_NOTE = "Cassini Live is restarting or stopped. Reload this page in a minute."
 
 
 class TranscribeRequest(BaseModel):
@@ -54,15 +54,27 @@ def create_app(
     discovery_delay=15,
 ):
     config = config or Config.from_env()
+    # Production wiring builds its own pool; tests inject one and get no settings sync.
+    production = pool is None
     pool = pool or WorkerPool(config.workers, config.weights)
     service = service or CaptionService(config)
     assessment = CapacityAssessment(pool)
     safety = safety_factory(pool, assessment, service)
+    storage = state_dir()
     if safety_factory is SafetyController:
-        storage = Path(os.environ.get("APP_PERSISTENT_STORAGE", "/home/cassini/.local/state"))
         safety.journal = RecoveryJournal(storage / "cassini-live-recovery.json")
         safety.auto_size = not bool(os.environ.get("CASSINI_LIVE_WORKERS"))
     service.admission = safety
+    manager = EngineManager(
+        safety,
+        service,
+        config,
+        ModelStore(storage / "models" if production else None,
+                   calls_active=lambda: bool(safety.tracks)),
+        SettingsStore(storage / "cassini-live-settings.json" if production else None),
+        probe=NetworkProbe() if production else None,
+    )
+    sync = None
     call_starts = 0
     discovery_task = None
     enable_generation = 0
@@ -73,9 +85,12 @@ def create_app(
                 safety.state, safety.phase = "disabled", "disabled"
                 safety.reason = "Caption service stopped"
                 return
+            if sync:
+                # Before discovery, so the form can show why Talk is not ready.
+                await sync.start()
             await service.discover(nc)
         service.enabled = True
-        await safety.start()
+        await manager.start_safety()
 
     async def retry_connection(force=False):
         delay = discovery_delay
@@ -103,41 +118,36 @@ def create_app(
                 await discovery_task
             discovery_task = None
 
+    async def remove_legacy_page(nc):
+        # 0.6.x registered a menu page; the engine choice now lives in admin settings.
+        try:
+            await nc.ui.resources.delete_script("top_menu", "live", "ui/live")
+            await nc.ui.top_menu.unregister("live")
+        except Exception as error:
+            LOGGER.debug("Could not remove the legacy page (%s)", type(error).__name__)
+
     async def enabled_handler(enabled, nc):
         nonlocal discovery_task, enable_generation
         enable_generation += 1
         generation = enable_generation
         await stop_discovery()
         if not enabled:
+            await manager.stop()
+            if sync:
+                await sync.stop(final=DISABLED_NOTE)
             await safety.close()
             await service.close()
             return ""
+        if sync:
+            await sync.start()
         try:
             await service.discover(nc)
-            await nc.ocs(
-                "POST",
-                "/ocs/v2.php/apps/app_api/api/v1/ui/top-menu",
-                json={
-                    "name": "live",
-                    "displayName": "Cassini Live",
-                    "icon": "img/app.svg",
-                    "adminRequired": 0,
-                },
-            )
-            await nc.ocs(
-                "POST",
-                "/ocs/v2.php/apps/app_api/api/v1/ui/script",
-                json={
-                    "type": "top_menu",
-                    "name": "live",
-                    "path": "ui/live",
-                },
-            )
+            await remove_legacy_page(nc)
             if generation != enable_generation:
                 return ""
             service.enabled = True
             if not safety.desired_enabled:
-                await safety.start()
+                await manager.start_safety()
             return ""
         except Exception:
             if generation != enable_generation:
@@ -157,6 +167,8 @@ def create_app(
             raise RuntimeError("Talk requires APP_ID=live_transcription")
         transcriber.POOL = pool
         try:
+            if production:
+                await manager.restore()
             try:
                 await restore_connection(nc_factory())
             except Exception:
@@ -165,9 +177,12 @@ def create_app(
             yield
         finally:
             await stop_discovery()
+            if sync:
+                await sync.stop(final=STOPPED_NOTE)
+            await manager.stop()
             await safety.close()
             await service.close()
-            await pool.close()
+            await safety.pool.close()
             transcriber.POOL = None
 
     app = FastAPI(
@@ -179,6 +194,7 @@ def create_app(
     app.state.service = service
     app.state.assessment = assessment
     app.state.safety = safety
+    app.state.manager = manager
 
     def require_enabled():
         if not service.enabled:
@@ -194,13 +210,17 @@ def create_app(
             "live_transcription": {
                 "version": __version__,
                 "features": ["live_transcription"],
-                "live_transcription": {"supported_languages": ALL_LANGUAGES},
+                "live_transcription": {"supported_languages": manager.languages()},
             }
         }
 
     @app.get("/api/v1/languages")
     async def languages():
-        return ALL_LANGUAGES
+        return manager.languages()
+
+    def require_language(language):
+        if language not in manager.languages():
+            raise HTTPException(400, "The active speech engine does not support this language")
 
     @app.post("/api/v1/call/transcribe")
     async def transcribe_call(req: TranscribeRequest):
@@ -208,6 +228,7 @@ def create_app(
         require_enabled()
         if req.translationTargetLangId:
             raise HTTPException(400, "Cassini Live provides captions in the spoken language")
+        require_language(req.langId)
         try:
             call_starts += 1
             try:
@@ -231,6 +252,7 @@ def create_app(
     @app.post("/api/v1/call/set-language")
     async def set_language(req: LanguageRequest):
         require_enabled()
+        require_language(req.langId)
         try:
             await service.set_language(req)
         except KeyError:
@@ -246,25 +268,34 @@ def create_app(
         await service.leave(roomToken)
         return {"message": "Captions stopped"}
 
-    @app.get("/status")
-    async def status():
+    def status_body():
         resource_status = safety.status()
         if discovery_task and not discovery_task.done():
             resource_status["automaticRecovery"] = True
+        engine = catalog.get(manager.active)
         return {
             "name": "Cassini Live",
             "version": __version__,
             "enabled": service.enabled,
-            "model": "Whistle",
-            "languages": list(LANGUAGES),
-            "automaticLanguage": True,
+            "model": engine.name,
+            "languages": list(engine.languages),
+            "automaticLanguage": engine.automatic_language,
             "signallingConfigured": service.settings is not None,
             "activeRooms": len(service.clients),
             "capacityAssessment": assessment.result,
             "resourceSafety": resource_status,
             "diagnosticVideo": service.diagnostics.status(),
-            **pool.status(),
+            **safety.pool.status(),
+            # After the pool fields: the pool reports only its engine id under this key.
+            "engine": manager.engine_status(),
         }
+
+    if production:
+        sync = SettingsSync(manager, nc_factory, status_body)
+
+    @app.get("/status")
+    async def status():
+        return status_body()
 
     @app.post("/capacity/check")
     async def check_capacity(request: Request):
@@ -274,6 +305,8 @@ def create_app(
             raise HTTPException(403, "Run the capacity check from the app container")
         if service.clients or call_starts:
             raise HTTPException(409, "Capacity check requires no active caption rooms")
+        if manager.busy:
+            raise HTTPException(409, "A speech engine change is in progress")
         if safety.lock.locked() or safety.state == "checking":
             return {"state": safety.state}
         try:
@@ -281,18 +314,6 @@ def create_app(
         except ResourceRefused as error:
             raise HTTPException(503, str(error)) from error
         return {"state": safety.state}
-
-    @app.get("/ui/live.js")
-    async def script():
-        return FileResponse(ASSETS / "live.js", media_type="text/javascript")
-
-    @app.get("/ui/live.css")
-    async def stylesheet():
-        return FileResponse(ASSETS / "live.css", media_type="text/css")
-
-    @app.get("/img/app.svg")
-    async def icon():
-        return FileResponse(ASSETS / "app.svg", media_type="image/svg+xml")
 
     return app
 

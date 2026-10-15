@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.6.1`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.7.0`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.6.1 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.7.0 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry
@@ -64,7 +64,10 @@ publish to GHCR or the Nextcloud App Store.
    Changing daemon logging defaults only affects newly created containers.
    Do not use an unbounded log driver on a shared server.
 
-7. Open **Cassini Live** in Nextcloud. Wait for its measured-capacity result (usually under two minutes).
+7. Wait for the measured-capacity result (usually under two minutes). As an
+   administrator, open **Administration settings → Artificial intelligence →
+   Cassini Live** and reload the page until it shows "Captions are ready.", or run
+   the `cassini_live.capacity --installed` command from step 6.
    See [capacity assessment](capacity.md) for automatic recovery and configuration errors. Join a Talk
    call with another participant, enable captions from the call menu, and speak.
    Test your languages, a late joiner, microphone mute/unmute and stop/start.
@@ -81,6 +84,68 @@ direct deployments use `APP_HOST` and `APP_PORT`.
 The image permits HaRP to install certificates as root. Its entrypoint drops
 to the `cassini` user before starting FRP, the API or model workers.
 
+## Choose a speech engine
+
+Cassini Live runs one speech engine for the whole server. Whistle is bundled and
+needs the least memory. Two optional NVIDIA Nemotron engines are more accurate
+but need much more memory. They are downloaded only when an administrator
+chooses one.
+
+| Engine | Languages | Word errors on our English meetings | Container memory | Download |
+|---|---|---|---|---|
+| Whistle (default) | 7, automatic detection | 19% | 384 MiB + 192 MiB per worker; 2 GiB recommended | none, bundled |
+| Nemotron English | English only | 8.9% | at least 2.25 GiB; 3 GiB recommended | 442 MiB |
+| Nemotron Multilingual | 7, automatic detection | 12.8% | at least 2.25 GiB; 3 GiB recommended | 453 MiB |
+
+Both Nemotron engines also need a CPU quota of at least one CPU, AVX2 on x86_64
+processors, host RAM of at least twice the container memory limit (so at least
+4.5 GiB), and about 1.3 GiB of free persistent storage during the download.
+They need less CPU than Whistle: about half a CPU per simultaneous speaker,
+against about two. The memory figures are measured; the CPU figures are
+estimates until confirmed by a capacity check on Nemotron.
+
+The settings live in **Administration settings → Artificial intelligence →
+Cassini Live** (`/settings/admin/ai`). Only Nextcloud administrators see this
+form. The form does not update by itself: **reload the page** to see download
+progress, the capacity check and the result of a change.
+
+* Each option label says whether the engine is active, ready, available, or
+  "unavailable:" followed by the reason, for example a memory limit that is too
+  small. Nextcloud cannot grey out an option. If you choose an unavailable
+  engine, Cassini Live puts the previous choice back within a few seconds and
+  explains why in the status text at the top of the form.
+* Nemotron English is licensed under the NVIDIA Open Model License. Tick the
+  license box before you choose it, or within 30 seconds after. Otherwise the
+  choice is reverted. Nemotron Multilingual is licensed under OpenMDW-1.1 and
+  needs no acceptance. Both license texts and notices are stored next to the
+  downloaded model files. See [third-party notices](../NOTICE.md).
+* The model downloads from the sherpa-onnx release on GitHub into
+  `APP_PERSISTENT_STORAGE/models/<engine>/`, or
+  `/home/cassini/.local/state/models/` when that variable is unset. Keep this
+  directory on persistent storage, or the model downloads again after the
+  container is recreated. Captions keep working with the old engine during the
+  download. Select the old engine again to cancel.
+* After the download, Cassini Live checks the files, then **ends captions in all
+  active calls**, loads the new engine and runs the capacity check. This takes a
+  few minutes. Participants turn captions on again afterwards.
+* If the new engine fails to load or fails the capacity check, Cassini Live rolls
+  back to the previous engine and shows the reason. At startup, a missing or
+  damaged model falls back to Whistle. A failed engine is never retried
+  automatically: choose it again after you fix the cause.
+* To free disk space, tick **Remove downloaded models that are not in use**. It
+  appears only when a model other than the active one is on disk.
+
+Raise the limits before you choose a Nemotron engine. For example, on a host
+with at least 6 GiB RAM and eight CPUs:
+
+```sh
+docker update --cpus=4 --memory=3g --memory-swap=3g nc_app_live_transcription
+```
+
+Persist the same values in the AppAPI daemon's deployment options. With
+Nemotron, `CASSINI_LIVE_WORKERS` sets the maximum number of simultaneous
+speakers instead of a number of worker processes.
+
 ## Check before a release
 
 Verify on a disposable Nextcloud with AppAPI and a real HPB, for each supported
@@ -89,7 +154,9 @@ check. Verify participant caption preferences, room language changes, guest
 calls, reconnect after an HPB restart, overflow behaviour, TLS and HaRP routing.
 Call media and captions must not appear in the container filesystem or logs.
 
-The default is one recognition worker per two quota CPUs, capped at four.
+With Whistle, the default is one recognition worker per two quota CPUs, capped
+at four. With Nemotron, one shared engine process serves up to four simultaneous
+speakers, depending on the CPU quota.
 `CASSINI_LIVE_WORKERS` can reduce this count; requesting more than the budget
 allows blocks startup. Speech waits briefly for workers, and sustained overload
 stops caption rooms. The Talk meeting itself continues without captions.

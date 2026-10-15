@@ -166,7 +166,7 @@ async def test_capacity_timeout_does_not_kill_track(monkeypatch):
 async def test_muted_track_without_frames_flushes_and_releases(monkeypatch):
     from .test_streaming import AlwaysSpeech, AudioSource
 
-    monkeypatch.setattr(transcriber, "SpeechGate", lambda: SpeechGate(AlwaysSpeech()))
+    monkeypatch.setattr(transcriber, "SpeechGate", lambda **kw: SpeechGate(AlwaysSpeech(), **kw))
     pool = WorkerPool(1, worker_factory=FakeWorker)
     await pool.start()
     monkeypatch.setattr(transcriber, "POOL", pool)
@@ -204,6 +204,18 @@ def test_continuous_speech_yields_worker_every_fifteen_seconds():
     assert sum(c.end for c in chunks) == 3
     assert sum(len(c.samples) for c in chunks) == 16000 * 31
     assert max(len(c.samples) for c in chunks) <= 16000
+
+
+def test_flush_keeps_the_configured_segment_limit():
+    from .test_streaming import AlwaysSpeech
+
+    # Receive timeouts flush idle gates; a stream engine must keep its shorter segments.
+    gate = SpeechGate(AlwaysSpeech(), max_seconds=8)
+    assert gate.flush() == []
+    chunks = gate.feed(np.ones(16000 * 9, dtype="<f4"))
+    end = next(i for i, c in enumerate(chunks) if c.end)
+    assert chunks[end].end_reason == "durationLimit"
+    assert sum(len(c.samples) for c in chunks[: end + 1]) == 16000 * 8
 
 
 def test_neural_gate_rejects_backgrounds_but_preserves_noisy_speech():

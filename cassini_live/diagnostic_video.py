@@ -144,6 +144,13 @@ def _base_image():
     return _BASE_IMAGE
 
 
+ENGINE_LABELS = {
+    "whistle": "Whistle",
+    "nemotron-en": "Nemotron EN",
+    "nemotron-multilingual": "Nemotron ML",
+}
+
+
 def _plural(n, one, many):
     return one if n == 1 else many
 
@@ -206,11 +213,15 @@ def render(data, history=()):
     draw.rounded_rectangle((x0, 25, x1, 55), 15, fill=bg)
     draw.ellipse((x0 + 12, 35, x0 + 22, 45), fill=ink)
     draw.text((x0 + 30, 40), label, font=pill_font, fill=ink, anchor="lm")
+    clock = time.strftime("%H:%M:%S UTC", time.gmtime())
+    clock_font = _font("mono", 17)
+    draw.text((WIDTH - 32, 40), clock, font=clock_font, fill=TEXT_DIM, anchor="rm")
+    engine = data.get("engine", "whistle")
     draw.text(
-        (WIDTH - 32, 40),
-        time.strftime("%H:%M:%S UTC", time.gmtime()),
-        font=_font("mono", 17),
-        fill=TEXT_DIM,
+        (WIDTH - 32 - clock_font.getlength(clock) - 20, 40),
+        ENGINE_LABELS.get(engine, engine),
+        font=_font("regular", 17),
+        fill=TEXT_SOFT,
         anchor="rm",
     )
 
@@ -280,7 +291,7 @@ def render(data, history=()):
             draw.rectangle(tag, fill=CYAN)
             draw.text(
                 (tag[0] + 10, y + lane_h / 2),
-                f"scribe {lane['scribe']}",
+                f"{'scribe' if engine == 'whistle' else 'slot'} {lane['scribe']}",
                 font=tag_font,
                 fill=CYAN_INK,
                 anchor="lm",

@@ -20,7 +20,7 @@ class AlwaysSpeech:
 
 @pytest.fixture
 def speech_gate(monkeypatch):
-    monkeypatch.setattr(transcriber, "SpeechGate", lambda: SpeechGate(AlwaysSpeech()))
+    monkeypatch.setattr(transcriber, "SpeechGate", lambda **kw: SpeechGate(AlwaysSpeech(), **kw))
 
 
 class FakeWorker:
@@ -175,3 +175,63 @@ async def test_audio_burst_keeps_recent_audio_without_killing_stream(
     await captioner._put_audio(np.full(16000, 9, dtype="<f4"))
     assert int(captioner.queue.get_nowait().samples[0]) == 9
     assert "discarded 1 speech chunks" in caplog.text
+
+
+async def test_worker_pool_backend_members():
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    assert pool.engine_id == "whistle" and pool.load_check is None
+    pool.closed = True
+    pool.resize(3)
+    assert pool.size == 3 and pool.idle.maxsize == 3
+    pool.resize(2)
+    await pool.start()
+    assert pool.is_idle() and pool.busy == 0
+    with pytest.raises(RuntimeError):
+        pool.resize(1)
+    worker = pool.acquire()
+    assert pool.busy == 1 and not pool.is_idle()
+    track = pool.transcriber("s", "de", asyncio.Queue(), lambda: False)
+    assert type(track) is WhistleTranscriber and track.pool is pool and track.language == "de"
+    assert pool.status()["engine"] == "whistle"
+    await pool.release(worker)
+    await pool.close()
+
+
+async def test_create_dispatches_on_the_active_backend(monkeypatch):
+    class Backend:
+        def transcriber(self, *args):
+            return ("backend", args)
+
+    queue = asyncio.Queue()
+    monkeypatch.setattr(transcriber, "POOL", None)
+    assert type(transcriber.create("s", "en", queue)) is WhistleTranscriber
+    monkeypatch.setattr(transcriber, "POOL", Backend())
+    assert transcriber.create("s", "en", queue, 1, 2) == ("backend", ("s", "en", queue, 1, 2))
+    explicit = WorkerPool(1)
+    assert transcriber.create("s", "en", queue, pool=explicit).pool is explicit
+
+
+async def test_calibration_aborts_every_track(monkeypatch):
+    from cassini_live import calibration
+
+    aborted = []
+
+    class Track(WhistleTranscriber):
+        async def _decode(self):
+            await asyncio.Future()
+
+        async def abort(self):
+            aborted.append(self.session_id)
+            await super().abort()
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    pool.transcriber = lambda s, lang, q, *h: Track(s, lang, q, pool=pool)
+    await pool.start()
+    monkeypatch.setattr(calibration, "speech_fixture", lambda: np.zeros(1600, dtype="<f4"))
+    task = asyncio.create_task(calibration.scenario(pool, 1, participants=3, speed=100))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sorted(aborted) == ["0", "1", "2"]
+    await pool.close()

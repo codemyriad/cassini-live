@@ -15,6 +15,7 @@ from tests.test_streaming import FakeWorker
 SAFE = {
     "pressureAvailable": True,
     "cpuPressure": 0,
+    "cpuPressureRecent": 0,
     "hostCpuPressure": 0,
     "memoryPressure": 0,
     "monitoringAvailable": True,
@@ -296,3 +297,135 @@ def test_throttle_severity_uses_actual_elapsed_time():
         "hostCpuPressure": 0,
     }
     assert cpu_pressure_reason(before, after, 2, 0) is None
+
+
+def engine_guard(pool, data):
+    from dataclasses import replace
+
+    from cassini_live.recovery import RecoveryPolicy
+
+    return SafetyController(
+        pool,
+        CapacityAssessment(pool),
+        reader=lambda: dict(data),
+        policy=replace(RecoveryPolicy(), monitor=0.005, poll=0.005),
+        jitter=lambda: 0,
+    )
+
+
+async def wait_for(predicate):
+    async with asyncio.timeout(2):
+        while not predicate():
+            await asyncio.sleep(0.002)
+
+
+@pytest.fixture
+def passing(monkeypatch):
+    async def scenario(pool, count):
+        return {"passed": True, "speakers": count}
+
+    monkeypatch.setattr(capacity, "scenario", scenario)
+
+
+async def test_replace_pool_only_while_stopped_and_outcomes(passing):
+    from cassini_live import transcriber
+    from tests.fakes_engine import FakeBackend
+
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("whistle", 1), data)
+    await guard.start()
+    assert await guard.wait_outcome(2) == (True, "Capacity check passed")
+    with pytest.raises(RuntimeError):
+        guard.replace_pool(FakeBackend("nemotron-en", 1))
+    await guard.close(reason="Changing the speech engine")
+    assert guard.reason == "Changing the speech engine"
+    backend = FakeBackend("nemotron-en", 1)
+    guard.replace_pool(backend)
+    assert guard.engine_id == "nemotron-en" and transcriber.POOL is backend
+    assert guard.assessment.pool is backend and backend.load_check() is None
+    try:
+        await guard.start(fresh=True)
+        assert (await guard.wait_outcome(2))[0]
+        data["memoryFraction"] = 0.9
+        await wait_for(lambda: guard.state != "ready")
+    finally:
+        await guard.close()
+        transcriber.POOL = None
+
+
+async def test_outcome_reports_blocked_trip_and_close(passing):
+    from tests.fakes_engine import FakeBackend
+
+    guard = engine_guard(FakeBackend("nemotron-en", 1), SAFE)  # 2 GiB: below the floor
+    await guard.start()
+    ok, why = await guard.wait_outcome(2)
+    assert not ok and "memory budget is too small for Nemotron English" in why
+    await guard.close()
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("nemotron-en", 1, start_error=RuntimeError("x")), data)
+    await guard.start()
+    ok, why = await guard.wait_outcome(2)
+    assert not ok and guard.state == "recovering"
+    assert why == "Recognition workers or resource monitoring failed"
+    await guard.close()
+    refused = CapacityError("Not enough free container memory to load Nemotron English")
+    guard = engine_guard(FakeBackend("nemotron-en", 1, start_error=refused), data)
+    await guard.start()
+    assert await guard.wait_outcome(2) == (False, str(refused))
+    await guard.close()
+    guard = engine_guard(FakeBackend("nemotron-en", 1, start_gate=asyncio.Event()), data)
+    starting = asyncio.create_task(guard.start())  # Blocks while the model loads.
+    await wait_for(lambda: guard.phase == "loading")
+    waiter = asyncio.create_task(guard.wait_outcome(2))
+    await guard.close()
+    assert await waiter == (False, "Caption service stopped")
+    await starting
+    assert await engine_guard(FakeBackend(), data).wait_outcome(0.01) == (
+        False, "Capacity has not been established"
+    )
+
+
+async def test_fresh_start_ignores_cooldown_but_not_budget(passing):
+    from tests.fakes_engine import FakeBackend
+
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("whistle", 1), data)
+    guard.journal.write(3, guard.wall_clock() + 3600, False, "Tripped")
+    await guard.start()
+    assert guard.state == "recovering" and guard.phase == "cooling_down"
+    await guard.close()
+    await guard.start(fresh=True)
+    assert (await guard.wait_outcome(2))[0] and guard.failures <= 1
+    await guard.close()
+    guard.journal.write(3, guard.wall_clock() + 3600, False, "Tripped")
+    data["memoryLimitBytes"] = 256 * MIB
+    await guard.start(fresh=True)
+    assert not (await guard.wait_outcome(2))[0] and guard.state == "blocked"
+    await guard.close()
+
+
+async def test_auto_size_resizes_through_the_backend(passing):
+    from tests.fakes_engine import FakeBackend
+
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    backend = FakeBackend("nemotron-en", 1)
+    guard = engine_guard(backend, data)
+    guard.auto_size = True
+    await guard.start()
+    await guard.wait_outcome(2)
+    assert backend.size == 4  # (4 CPUs - 0.25) / 0.5, capped at four
+    await guard.close()
+
+
+@pytest.mark.parametrize(
+    "engine_id, tested, rooms",
+    [("whistle", 4, 2), ("whistle", 1, 1), ("nemotron-en", 4, 4), ("nemotron-multilingual", 3, 3)],
+)
+def test_room_cap_is_two_only_for_whistle(engine_id, tested, rooms):
+    assessment = SimpleNamespace(result={"testedSpeakers": tested})
+    guard = SafetyController(SimpleNamespace(engine_id=engine_id), assessment)
+    guard.state = "ready"
+    for open_rooms in range(rooms):
+        guard.allow_room(open_rooms)
+    with pytest.raises(ResourceRefused):
+        guard.allow_room(rooms)
