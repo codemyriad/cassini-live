@@ -14,6 +14,7 @@ import queue
 import re
 import sys
 import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -53,6 +54,10 @@ class _Stream:
         self.samples = 0
         self.request = None
         self.order = order
+        # Measurement only: when the outstanding request arrived and when its first
+        # decode batch began, so a result reports queueing apart from decoding.
+        self.received = None
+        self.started = None
 
 
 def clean(text):
@@ -137,6 +142,7 @@ class Host:
         stream.request = kind
         stream.order = self.order
         self.order += 1
+        stream.received, stream.started = time.monotonic(), None
 
     def step(self):
         ready = sorted(
@@ -144,13 +150,26 @@ class Host:
             key=lambda s: s.order,
         )
         if ready:
-            self.recognizer.decode_streams([s.native for s in ready[: self.options.max_batch]])
+            batch = ready[: self.options.max_batch]
+            now = time.monotonic()
+            for stream in batch:
+                if stream.started is None:
+                    stream.started = now
+            self.recognizer.decode_streams([s.native for s in batch])
+        done = None
         for sid, stream in list(self.streams.items()):
             if stream.request and not self.recognizer.is_ready(stream.native):
-                self._complete(sid, stream)
+                done = time.monotonic() if done is None else done
+                self._complete(sid, stream, done)
 
-    def _complete(self, sid, stream):
+    def _complete(self, sid, stream, done):
         kind, stream.request = stream.request, None
+        # A request that never needed a batch (nothing left to decode) waited the whole time.
+        started = done if stream.started is None else stream.started
+        timing = {
+            "waitMs": round((started - stream.received) * 1000),
+            "decodeMs": round((done - started) * 1000),
+        }
         text, tag = clean(self.recognizer.get_result(stream.native))
         if tag in CASSINI_LANGUAGES:
             stream.detected = tag
@@ -166,7 +185,7 @@ class Host:
                 # Committed text is already delivered: a fresh stream bounds memory.
                 stream.native = self._native(stream.language)
                 stream.committed = stream.samples = 0
-        self.write({"type": "result", "id": sid, "result": result})
+        self.write({"type": "result", "id": sid, "result": result, **timing})
 
 
 def serve(stdin, stdout, recognizer, options):

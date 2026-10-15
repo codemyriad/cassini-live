@@ -98,6 +98,71 @@ async def test_expired_audio_ends_the_stream():
     assert fake.stream_ends["expiredAudio"] == 1 and fake.dropped_chunks == 1
 
 
+async def test_latency_is_recorded_per_audio_result_but_not_per_commit():
+    fake = await backend()
+    track = fake.transcriber("s", "en", asyncio.Queue())
+    await run(track, chunk(0, created_at=time.monotonic() - 1.5), chunk(1, end=True))
+    (stream,) = fake.streams
+    assert [c[0] for c in stream.calls] == ["audio", "audio", "commit", "cancel"]
+    first, second = fake.lag.samples
+    assert 1.5 <= first < 3 and 0 <= second < 1
+    assert fake.status()["lagSeconds"] == second
+
+
+class Permits:
+    """An audio gate that lets one result through per permit."""
+
+    def __init__(self):
+        self.queue = asyncio.Queue()
+
+    def grant(self):
+        self.queue.put_nowait(None)
+
+    async def wait(self):
+        await self.queue.get()
+
+
+async def test_pending_since_follows_the_oldest_undecoded_chunk():
+    fake = await backend()
+    fake.audio_gate = permits = Permits()
+    track = fake.transcriber("s", "en", asyncio.Queue())
+    assert track.pending_since is None
+    base = time.monotonic()
+    track._enqueue(chunk(0, created_at=base))
+    track._enqueue(chunk(1, created_at=base + 0.5))
+    assert track.pending_since == base
+    decoding = asyncio.create_task(track._decode())
+    async with asyncio.timeout(2):
+        while not fake.streams or not fake.streams[0].calls:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base  # in flight, still undecoded
+    permits.grant()
+    async with asyncio.timeout(2):
+        while len(fake.streams[0].calls) < 2:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base + 0.5
+    permits.grant()
+    async with asyncio.timeout(2):
+        while track.pending_since is not None:
+            await asyncio.sleep(0.005)
+    track.queue.put_nowait(None)
+    await decoding
+    assert track.pending_since is None
+
+
+async def test_lease_fields_and_registration():
+    fake = await backend()
+    track = fake.transcriber("s", "en", asyncio.Queue())
+    assert track in fake.transcribers
+    assert track.paused_until is None and track.shed_reason is None
+    assert not track.has_lease() and track.lease_at is None
+    before = time.monotonic()
+    await track._decode_audio(chunk(0))
+    assert track.has_lease() and before <= track.lease_at <= time.monotonic()
+    await track._finish("silence")
+    assert not track.has_lease() and track.lease_at is None
+
+
 async def test_waiting_speaker_never_preempts_an_open_segment():
     shared = SharedEngine(catalog.get("nemotron-en"), "/m", 1, process_factory=FakeHostProcess)
     await shared.start()

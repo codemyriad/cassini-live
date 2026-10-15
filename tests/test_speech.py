@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import time
 import wave
 from pathlib import Path
 
@@ -280,6 +281,63 @@ async def test_waiting_speaker_gets_turn_after_two_seconds(monkeypatch):
     assert sum(m["type"] == "audio" for m in messages[: starts[1]]) == 2
     assert pool.scheduling_yields == 1
     assert not pool.waiting and pool.idle.qsize() == 1
+    await pool.close()
+
+
+async def test_latency_is_recorded_per_audio_reply_but_not_for_the_end():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    await pool.start()
+    track = WhistleTranscriber("a", "en", asyncio.Queue(), pool=pool)
+    assert track in pool.transcribers
+    samples = np.ones(16000, dtype="<f4")
+    track.queue.put_nowait(SpeechChunk(samples, end=True, created_at=time.monotonic() - 1.5))
+    track.queue.put_nowait(None)
+    await track._decode()
+    assert [m["type"] for m in next(iter(pool.workers)).sent] == ["start", "audio", "end"]
+    (recorded,) = pool.lag.samples
+    assert 1.5 <= recorded < 3
+    assert pool.status()["lagSeconds"] == recorded
+    await pool.close()
+
+
+async def test_pending_since_and_lease_follow_the_whistle_worker():
+    permits = asyncio.Queue()
+
+    class GatedWorker(FakeWorker):
+        async def receive(self, **kwargs):
+            await permits.get()
+            return await super().receive(**kwargs)
+
+    pool = WorkerPool(1, worker_factory=GatedWorker)
+    await pool.start()
+    track = WhistleTranscriber("a", "en", asyncio.Queue(), pool=pool)
+    assert track.pending_since is None and not track.has_lease()
+    samples = np.ones(16000, dtype="<f4")
+    base = time.monotonic()
+    track._enqueue(SpeechChunk(samples, sequence=0, created_at=base))
+    track._enqueue(SpeechChunk(samples, sequence=1, created_at=base + 0.5))
+    assert track.pending_since == base
+    decoding = asyncio.create_task(track._decode())
+    worker = next(iter(pool.workers))
+    async with asyncio.timeout(2):
+        while not any(m["type"] == "audio" for m in worker.sent):
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base and track.has_lease() and track.lease_at is not None
+    permits.put_nowait(None)
+    async with asyncio.timeout(2):
+        while sum(m["type"] == "audio" for m in worker.sent) < 2:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base + 0.5
+    permits.put_nowait(None)
+    async with asyncio.timeout(2):
+        while track.pending_since is not None:
+            await asyncio.sleep(0.005)
+    assert track.has_lease()  # the segment has not ended
+    for _ in range(2):  # the end's result and done replies
+        permits.put_nowait(None)
+    track.queue.put_nowait(None)
+    await decoding
+    assert not track.has_lease() and track.lease_at is None and track.pending_since is None
     await pool.close()
 
 

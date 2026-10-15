@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+import weakref
 from collections import Counter, deque
 from contextlib import suppress
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ import numpy as np
 
 from .. import catalog
 from ..engine_host import LANGUAGE_OPTION
-from ..pool import CapacityError
+from ..pool import CapacityError, _LagMeter
 
 LOGGER = logging.getLogger(__name__)
 SEGMENTS = "continuous"  # "per_segment" if commit turns out to truncate finals
@@ -189,6 +190,11 @@ class SharedEngine:
         self._reader = None
         self._restart = None
         self._next_id = 0
+        self.lag = _LagMeter()
+        # Every live transcriber on this backend, for the load governor (step 4).
+        self.transcribers = weakref.WeakSet()
+        # Clock reading of the last host reply; step 5 tells a late reply from a dead host.
+        self.last_message_at = None
 
     # Speaking slots. Same hand-off rules as WorkerPool._offer/acquire_wait.
 
@@ -325,6 +331,7 @@ class SharedEngine:
         try:
             while True:
                 message = await host.receive()
+                self.last_message_at = self.clock()
                 if message.get("type") == "error" and "id" not in message:
                     raise EOFError("Engine host failed")
                 future = self.pending.pop(message.get("id"), None)
@@ -484,4 +491,6 @@ class SharedEngine:
             "engine": self.engine_id,
             "openStreams": len(self.streams),
             "hostRestarts": self.restarts,
+            "lagSeconds": self.lag.last(),
+            "p95RequestSeconds": self.lag.p95(),
         }

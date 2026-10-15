@@ -68,9 +68,45 @@ async def test_start_spawns_one_host_with_its_environment():
         "speechGating",
         "streamEnds",
         "waitingSpeakers",
+        "lagSeconds",
+        "p95RequestSeconds",
     } <= status.keys()
     await shared.close()
     assert host.closed and shared.status()["workers"] == 0
+
+
+def test_lag_meter_reports_last_and_p95():
+    from cassini_live.pool import _LagMeter
+
+    meter = _LagMeter()
+    assert meter.last() == 0.0 and meter.p95() == 0.0
+    for seconds in range(100, 0, -1):
+        meter.record(seconds / 100)
+    assert meter.last() == 0.01 and meter.p95() == 0.95
+    for _ in range(meter.WINDOW):
+        meter.record(2.0)
+    assert meter.p95() == 2.0  # old samples age out of the window
+
+
+async def test_status_reports_recorded_lag_and_last_message_time():
+    clock = [100.0]
+    shared, _ = engine(clock=lambda: clock[0])
+    await shared.start()
+    # The ready message is read by the spawn, not by the reader.
+    assert shared.last_message_at is None
+    stream = await shared.open_stream("en")
+    assert shared.last_message_at == 100.0
+    clock[0] = 103.5
+    await stream.audio(SPEECH)
+    assert shared.last_message_at == 103.5
+    shared.lag.record(0.4)
+    shared.lag.record(0.2)
+    status = shared.status()
+    assert status["lagSeconds"] == 0.2 and status["p95RequestSeconds"] == 0.4
+    assert set(shared.transcribers) == set()
+    track = shared.transcriber("s", "en", asyncio.Queue())
+    assert set(shared.transcribers) == {track}
+    await shared.close()
 
 
 async def test_slot_fifo_handoff_cannot_be_stolen():
@@ -353,8 +389,12 @@ class SlowHost(FakeHostProcess):
 async def test_cancelled_close_still_stops_the_host():
     # A tripped monitor is cancelled mid-teardown; the old model must not outlive it.
     hosts = []
-    shared = SharedEngine(catalog.get("nemotron-en"), "/m", 1,
-                          process_factory=lambda: hosts.append(SlowHost()) or hosts[-1])
+    shared = SharedEngine(
+        catalog.get("nemotron-en"),
+        "/m",
+        1,
+        process_factory=lambda: hosts.append(SlowHost()) or hosts[-1],
+    )
     await shared.start()
     closing = asyncio.create_task(shared.close())
     await asyncio.sleep(0.01)
@@ -385,12 +425,13 @@ async def test_host_process_is_killed_when_its_close_is_cancelled():
 
 
 async def test_cancelled_open_frees_the_host_stream(tmp_path):
-    engine = SharedEngine(catalog.get("nemotron-en"), tmp_path, 2, max_streams=2,
-                          process_factory=FakeHostProcess)
+    engine = SharedEngine(
+        catalog.get("nemotron-en"), tmp_path, 2, max_streams=2, process_factory=FakeHostProcess
+    )
     await engine.start()
     try:
         task = asyncio.create_task(engine.open_stream("en"))
-        await asyncio.sleep(0)      # request sent, reply not yet read
+        await asyncio.sleep(0)  # request sent, reply not yet read
         await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

@@ -4,13 +4,14 @@ import asyncio
 import json
 import queue
 import threading
+import weakref
 from collections import Counter
 from contextlib import suppress
 
 import numpy as np
 
 from cassini_live import catalog, engine_host
-from cassini_live.pool import CapacityError
+from cassini_live.pool import CapacityError, _LagMeter
 
 CHUNK = 8960  # 0.56 s at 16 kHz
 
@@ -275,6 +276,8 @@ class FakeBackend:
         self.stream_error = None
         self.audio_gate = None
         self.waiters = 0
+        self.lag = _LagMeter()
+        self.transcribers = weakref.WeakSet()
 
     @property
     def workers(self):
@@ -370,6 +373,8 @@ class FakeBackend:
             "admittedSpeakers": self.admission_limit,
             "workers": int(self.started),
             "engine": self.engine_id,
+            "lagSeconds": self.lag.last(),
+            "p95RequestSeconds": self.lag.p95(),
         }
 
 

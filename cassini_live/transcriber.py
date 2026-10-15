@@ -41,10 +41,22 @@ class WhistleTranscriber:
         self.input_ended = False
         self.started = asyncio.Event()
         self.lock = asyncio.Lock()
+        # Load signals (0.8.0-instant-admission.md): created_at of the oldest chunk
+        # still waiting for its result, and when the current lease was granted.
+        self.pending_since = None
+        self.lease_at = None
+        # Hold-off and shed marks, written from step 8 on; nothing writes them yet.
+        self.paused_until = None
+        self.shed_reason = None
+        if self.pool is not None:
+            self.pool.transcribers.add(self)
 
     @property
     def pool(self):
         return self._pool if self._pool is not None else POOL
+
+    def has_lease(self):
+        return self.worker is not None
 
     async def connect(self):
         # Track arrival must never reserve recognition capacity or close a room.
@@ -67,6 +79,8 @@ class WhistleTranscriber:
             if self.dropped_chunks == 1 or self.dropped_chunks % 30 == 0:
                 LOGGER.warning("Caption backlog: discarded %s speech chunks", self.dropped_chunks)
         self.queue.put_nowait(chunk)
+        if self.pending_since is None:
+            self.pending_since = chunk.created_at
 
     def _note_drop(self):
         self.lost_chunks += 1
@@ -123,6 +137,7 @@ class WhistleTranscriber:
         if self.worker:
             worker, self.worker = self.worker, None
             self.lease_samples = 0
+            self.lease_at = None
             await self.pool.release(worker, healthy=healthy)
 
     async def abort(self):
@@ -147,6 +162,7 @@ class WhistleTranscriber:
         while offset < len(chunk.samples):
             if self.worker is None:
                 self.worker = await self.pool.acquire_wait(timeout=2)
+                self.lease_at = time.monotonic()
                 if time.monotonic() - chunk.created_at > 4:
                     await self._release(healthy=True)
                     self._note_drop()
@@ -176,6 +192,7 @@ class WhistleTranscriber:
                     }
                 )
                 message = await self.worker.receive()
+                self.pool.lag.record(time.monotonic() - chunk.created_at)
                 if message["type"] != "result":
                     raise RuntimeError("Unexpected Whistle response")
                 await self._emit(message["result"])
@@ -208,6 +225,8 @@ class WhistleTranscriber:
         expected = 0
         while True:
             chunk = await self.queue.get()
+            if chunk is not None:
+                self.pending_since = chunk.created_at
             try:
                 if chunk is None:
                     await self._finish()
@@ -240,6 +259,10 @@ class WhistleTranscriber:
                 await self._clear_preview()
                 if chunk is None:
                     return
+            finally:
+                # Nothing is in flight here; a non-empty queue is picked up at once.
+                if self.queue.empty():
+                    self.pending_since = None
 
     async def _run(self):
         try:
@@ -291,6 +314,7 @@ class WhistleTranscriber:
                 self.queue = asyncio.Queue(maxsize=6)
                 self.gate = SpeechGate(max_seconds=self.SEGMENT_SECONDS)
                 self.pending = ""
+                self.pending_since = None
                 await self.connect()
                 await self.start(stream)
             finally:
@@ -332,6 +356,7 @@ class StreamTranscriber(WhistleTranscriber):
         if self.slot is not None:
             slot, self.slot = self.slot, None
             self.lease_samples = 0
+            self.lease_at = None
             self.pool.release_slot(slot)
         if not healthy and self.engine_stream is not None:
             stream = self.engine_stream
@@ -361,6 +386,7 @@ class StreamTranscriber(WhistleTranscriber):
     async def _decode_audio(self, chunk):
         if self.slot is None:
             self.slot = await self.pool.acquire_slot(timeout=self.SLOT_WAIT_S)
+            self.lease_at = time.monotonic()
             if time.monotonic() - chunk.created_at > 4:
                 await self._release(healthy=True)
                 self._note_drop()
@@ -370,6 +396,7 @@ class StreamTranscriber(WhistleTranscriber):
         for offset in range(0, len(chunk.samples), 16000):
             samples = chunk.samples[offset : offset + 16000]
             result = await self.engine_stream.audio(samples)
+            self.pool.lag.record(time.monotonic() - chunk.created_at)
             self.uncommitted += len(samples)
             self.lease_samples += len(samples)
             self.pool.chunks_processed += 1
@@ -380,6 +407,8 @@ class StreamTranscriber(WhistleTranscriber):
         expected = 0
         while True:
             chunk = await self.queue.get()
+            if chunk is not None:
+                self.pending_since = chunk.created_at
             try:
                 if chunk is None:
                     await self._end_stream()
@@ -414,6 +443,10 @@ class StreamTranscriber(WhistleTranscriber):
                 LOGGER.warning("Caption recognition failed (%s)", type(error).__name__)
                 await self._release(healthy=False)
                 await self._clear_preview()
+            finally:
+                # Nothing is in flight here; a non-empty queue is picked up at once.
+                if self.queue.empty():
+                    self.pending_since = None
             if chunk is None:
                 return
 

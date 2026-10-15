@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import time
 
 import numpy as np
 import pytest
@@ -22,7 +23,9 @@ def host():
 def test_stream_lifecycle_and_one_reply_per_request(host):
     assert host.call({"type": "open", "id": 1, "language": "en"}) == {"type": "opened", "id": 1}
     reply = host.call({"type": "audio", "id": 1, "pcm": pcm(SPEECH)})
-    assert reply == {"type": "result", "id": 1, "result": {"text": "", "pending": "w1"}}
+    assert reply["type"] == "result" and reply["id"] == 1
+    assert reply["result"] == {"text": "", "pending": "w1"}
+    assert set(reply) == {"type", "id", "result", "waitMs", "decodeMs"}
     # The commit pad is zeros: no new words, the stream stays open.
     assert host.call({"type": "commit", "id": 1})["result"] == {"text": "w1", "pending": ""}
     assert host.call({"type": "audio", "id": 1, "pcm": pcm(SPEECH)})["result"]["pending"] == "w2"
@@ -167,6 +170,33 @@ def test_per_segment_mode():
 def test_clean():
     assert engine_host.clean("hallo <de-DE> welt <fr>") == ("hallo welt", "fr")
     assert engine_host.clean("plain text") == ("plain text", None)
+
+
+def test_results_report_queueing_and_decoding_time_separately():
+    class SlowRecognizer(FakeRecognizer):
+        def decode_streams(self, streams):
+            time.sleep(0.03)
+            super().decode_streams(streams)
+
+    replies = []
+    host = engine_host.Host(SlowRecognizer(), engine_host.Options("x", True), replies.append)
+    host.handle({"type": "open", "id": 1})
+    host.handle({"type": "audio", "id": 1, "pcm": pcm(SPEECH)})
+    time.sleep(0.02)
+    host.step()
+    opened, result = replies
+    assert "waitMs" not in opened and "decodeMs" not in opened
+    assert result["type"] == "result" and result["waitMs"] >= 20 and result["decodeMs"] >= 30
+    assert isinstance(result["waitMs"], int) and isinstance(result["decodeMs"], int)
+    # A request spanning several batches counts from its first one.
+    host.handle({"type": "finish", "id": 1})
+    while host.busy:
+        host.step()
+    assert replies[-1]["type"] == "result"
+    assert replies[-1]["waitMs"] >= 0 and replies[-1]["decodeMs"] >= 90
+    # Errors carry no timing.
+    host.handle({"type": "commit", "id": 1})
+    assert replies[-1]["type"] == "error" and "waitMs" not in replies[-1]
 
 
 def test_batch_never_exceeds_max_batch_and_serves_oldest_first():

@@ -6,6 +6,7 @@ members below, so they never depend on the engine kind.
 """
 
 import asyncio
+import weakref
 from collections import Counter
 from pathlib import Path
 from typing import Callable, Protocol
@@ -22,7 +23,14 @@ class Transcriber(Protocol):
     lost_chunks: int
     lease_samples: int
     worker: object | None
+    # Load signals (0.8.0-instant-admission.md): oldest undecoded chunk's created_at,
+    # when the current lease was granted, and the governor's hold-off/shed marks.
+    pending_since: float | None
+    lease_at: float | None
+    paused_until: float | None
+    shed_reason: str | None
 
+    def has_lease(self) -> bool: ...
     async def connect(self) -> None: ...
     async def start(self, stream) -> None: ...
     async def shutdown(self) -> None: ...
@@ -32,6 +40,14 @@ class Transcriber(Protocol):
     async def _put_audio(self, samples) -> None: ...
     def _flush_gate(self) -> None: ...
     async def _decode(self) -> None: ...
+
+
+class LagMeter(Protocol):
+    """Per-request latency (capture to result), recorded by the transcribers."""
+
+    def record(self, seconds: float) -> None: ...
+    def last(self) -> float: ...
+    def p95(self) -> float: ...
 
 
 class Backend(Protocol):
@@ -54,6 +70,8 @@ class Backend(Protocol):
     partials_emitted: int
     workers: set
     leased: set
+    lag: LagMeter
+    transcribers: weakref.WeakSet  # every live Transcriber, registered on creation
 
     @property
     def waiting(self) -> int: ...
