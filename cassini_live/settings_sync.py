@@ -162,8 +162,9 @@ class SettingsSync:
         except Exception as error:
             self._log("poll", error)
             self.delay = BACKOFF_S
-        if self.publish_failed:
-            self.notify()
+        # Captions and the capacity check change outside the manager; an identical form is
+        # skipped without an OCS call, so this republishes only when the text changed.
+        self.notify()
 
     async def _decide(self, selection):
         manager = self.manager

@@ -277,3 +277,24 @@ async def test_start_and_stop_with_final_note(h):
     count = len(h.nc.forms)
     await asyncio.sleep(0.01)
     assert len(h.nc.forms) == count
+
+
+async def test_status_changes_outside_the_manager_are_republished(h):
+    status = {"captions": "checking"}
+    sync = SettingsSync(h.manager, lambda: h.nc, lambda: dict(status),
+                        build=lambda panel, st, notes: Form({**panel, **st}), publish_min_s=0.01)
+    task = asyncio.create_task(sync._publish_loop())
+    try:
+        await sync.poll_once()
+        await asyncio.sleep(0.05)
+        assert h.nc.forms[-1].to_dict()["captions"] == "checking"
+        published = len(h.nc.forms)
+        await sync.poll_once()  # nothing changed: no new registration
+        await asyncio.sleep(0.05)
+        assert len(h.nc.forms) == published
+        status["captions"] = "ready"  # the capacity check finished
+        await sync.poll_once()
+        await asyncio.sleep(0.05)
+        assert h.nc.forms[-1].to_dict()["captions"] == "ready"
+    finally:
+        task.cancel()
