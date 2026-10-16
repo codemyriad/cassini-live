@@ -446,8 +446,18 @@ class SafetyController:
                 else f"{catalog.get(self.engine_id).name} could not be loaded"
             )
             return
-        self.initial = self.reader()
-        self.oom_baseline = self.initial["oomKills"]
+        try:
+            self.initial = self.reader()
+            self.oom_baseline = self.initial["oomKills"]
+        except Exception:
+            # Monitoring broke right after the load. Never leave a running engine behind a
+            # blocked state, or the next poll starts it again: stop it, and the attempt
+            # was no crash.
+            await self.pool.close()
+            self.failures, self.next_attempt = max(0, self.failures - 1), 0
+            with suppress(OSError, ValueError):
+                self._persist(False)
+            raise
         self.governor.ceiling = self.pool.size  # auto_size may have resized the backend
         self.state, self.phase, self.reason = "ready", "ready", "Captions are ready"
         # The attempt was counted as a failure in case it crashed; it did not.

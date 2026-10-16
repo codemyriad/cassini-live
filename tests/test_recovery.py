@@ -712,3 +712,33 @@ async def test_explicit_workers_above_the_ceiling_are_clamped(harness, caplog):
         assert "CASSINI_LIVE_WORKERS=5 is above the CPU ceiling of 2" in caplog.text
     finally:
         await guard.close()
+
+
+async def test_a_failed_read_after_the_load_stops_the_engine(harness):
+    # Review 0.8.0: the read after a successful load was outside the load's error
+    # handling, so a failure left a running backend marked blocked and the next poll
+    # called pool.start() on it.
+    guard, pool, data, clock = harness
+    started = pool.start
+    broken = []
+
+    async def start():
+        await started()
+        broken.append(True)
+
+    def reader():
+        if broken and broken.pop():
+            raise OSError("cgroup files vanished")
+        return dict(data)
+
+    pool.start = start
+    guard.reader = reader
+    try:
+        await guard.start()
+        assert guard.state == "blocked" and guard.phase == "configuration"
+        assert pool.closed and not pool.workers and guard.failures == 0
+        pool.start = started
+        await until(lambda: guard.state == "ready")
+        assert len(pool.workers) == pool.size and not pool.failure_circuit_open
+    finally:
+        await guard.close()
