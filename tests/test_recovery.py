@@ -161,7 +161,6 @@ async def test_persisted_interrupted_attempt_waits_after_process_restart(harness
         await guard.close()
 
 
-
 async def test_trip_reason_is_logged_and_survives_recovery(harness, tmp_path, caplog):
     guard, pool, data, clock = harness
     guard.journal = RecoveryJournal(tmp_path / "recovery.json")
@@ -517,8 +516,15 @@ async def test_process_death_after_the_stable_window_still_backs_off(harness, tm
     guard.journal.path.write_bytes(killed)
 
     pool2 = WorkerPool(1, worker_factory=FakeWorker)
-    g2 = SafetyController(pool2, CapacityAssessment(pool2), reader=lambda: dict(data),
-                          clock=clock, wall_clock=clock, policy=guard.policy, jitter=lambda: 0)
+    g2 = SafetyController(
+        pool2,
+        CapacityAssessment(pool2),
+        reader=lambda: dict(data),
+        clock=clock,
+        wall_clock=clock,
+        policy=guard.policy,
+        jitter=lambda: 0,
+    )
     g2.journal = RecoveryJournal(guard.journal.path)
     try:
         await g2.start()
@@ -528,17 +534,68 @@ async def test_process_death_after_the_stable_window_still_backs_off(harness, tm
         await g2.close()
 
 
-async def test_a_07x_capacity_check_cooldown_does_not_delay_the_first_start(harness, tmp_path):
+def write_07x(journal, *args, **kwargs):
+    """A journal as 0.7.x wrote it: no appVersion field."""
+    import json
+
+    journal.write(*args, **kwargs)
+    saved = journal.read()
+    saved.pop("appVersion")
+    journal.path.write_text(json.dumps(saved))
+
+
+LEGACY_CHECK = "Capacity check did not establish a safe speaking budget"
+# Every 0.7.x trip 0.8.0 no longer has (review 0.8.0: not only the capacity check).
+REMOVED_TRIPS = [
+    LEGACY_CHECK,
+    "Caption CPU quota stalls are sustained",
+    "Caption CPU quota pressure (severity unavailable)",
+    "Host CPU pressure is sustained",
+    "Host CPU pressure monitoring is unavailable",
+    "Caption event loop is falling behind",
+    "Resource limits changed; reassessing capacity automatically",
+    "Caption memory budget is nearly exhausted",
+    "Caption process/thread budget is nearly exhausted",
+    "Host memory is under pressure",
+    "Host memory headroom cannot be established",
+    "Resource pressure counters cannot be read safely",
+    "Not enough free container memory to load Nemotron English",
+]
+KEPT_TRIPS = [
+    "The caption memory limit was exceeded",
+    "Repeated recognition worker failures",
+    "Recognition workers or resource monitoring failed",
+    "Recovering after an interrupted caption process",
+]
+
+
+@pytest.mark.parametrize("reason", REMOVED_TRIPS)
+async def test_a_07x_cooldown_from_a_removed_trip_does_not_delay_the_first_start(
+    harness, tmp_path, reason
+):
     guard, pool, data, clock = harness
     guard.journal = RecoveryJournal(tmp_path / "recovery.json")
-    trip = {"reason": "Capacity check did not establish a safe speaking budget", "at": 1}
-    guard.journal.write(3, clock() + 300, False, "Recovering", trip)
+    write_07x(guard.journal, 3, clock() + 300, False, reason, {"reason": reason, "at": 1})
     try:
         await guard.start()
         await until(lambda: guard.state == "ready")
-        assert guard.failures == 0
+        assert guard.failures == 0 and guard.last_trip is None
         saved = guard.journal.read()
-        assert saved["failures"] == 0 and saved["engineRunning"]
+        assert saved["failures"] == 0 and saved["engineRunning"] and saved["lastTrip"] is None
+    finally:
+        await guard.close()
+
+
+@pytest.mark.parametrize("reason", KEPT_TRIPS)
+async def test_a_07x_crash_cooldown_is_honoured(harness, tmp_path, reason):
+    guard, pool, data, clock = harness
+    guard.journal = RecoveryJournal(tmp_path / "recovery.json")
+    # lastTrip may still name an older removed trip; only the current reason counts.
+    write_07x(guard.journal, 2, clock() + 300, False, reason, {"reason": LEGACY_CHECK, "at": 1})
+    try:
+        await guard.start()
+        assert guard.state == "recovering" and guard.phase == "cooling_down"
+        assert guard.failures == 2 and guard.next_attempt - clock() == 300
     finally:
         await guard.close()
 
@@ -547,13 +604,34 @@ async def test_a_07x_engine_killed_while_serving_still_counts(harness, tmp_path)
     # 0.7.x wrote "Capacity check passed" while ready; a kill then is a crash, not a check.
     guard, pool, data, clock = harness
     guard.journal = RecoveryJournal(tmp_path / "recovery.json")
-    trip = {"reason": "Capacity check did not establish a safe speaking budget", "at": 1}
-    guard.journal.write(1, clock(), False, "Capacity check passed", trip, running=True)
+    trip = {"reason": LEGACY_CHECK, "at": 1}
+    write_07x(guard.journal, 1, clock(), False, "Capacity check passed", trip, running=True)
     try:
         await guard.start()
         assert guard.state == "recovering" and guard.phase == "cooling_down"
         assert guard.failures == 2
         assert guard.next_attempt - clock() == guard.policy.delay(2, lambda: 0)
+    finally:
+        await guard.close()
+
+
+async def test_a_second_boot_during_a_real_crash_cooldown_still_waits(harness, tmp_path):
+    # Review 0.8.0: the first boot counted a crash but lastTrip still named the 0.7.x
+    # capacity check, and a second boot (the container restarted again) forgave it.
+    guard, pool, data, clock = harness
+    guard.journal = RecoveryJournal(tmp_path / "recovery.json")
+    trip = {"reason": LEGACY_CHECK, "at": 1}
+    write_07x(guard.journal, 1, clock(), False, "Capacity check passed", trip, running=True)
+    await guard.start()
+    assert guard.phase == "cooling_down"
+    deadline = guard.next_attempt
+    saved = guard.journal.read()
+    await guard.close()
+    guard.journal.path.write_text(__import__("json").dumps(saved))  # died, not stopped
+    await guard.start()
+    try:
+        assert guard.phase == "cooling_down" and guard.failures == 2
+        assert guard.next_attempt == deadline
     finally:
         await guard.close()
 

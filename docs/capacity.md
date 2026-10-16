@@ -151,8 +151,12 @@ serving counts as a failure and waits out the back-off after a restart. It
 lives in `APP_PERSISTENT_STORAGE` (or `/home/cassini/.local/state`). An
 unwritable or corrupt journal blocks model loading as a configuration problem.
 It contains no call identifiers or audio. A journal left by 0.7.x whose reason is
-the old capacity check starts 0.8.0 without that cooldown, and a load that an
-upgrade interrupted is not counted as a crash.
+one of the trips 0.8.0 removed (the capacity check, CPU quota stalls, host CPU
+or memory pressure, a lagging event loop, changed limits, an exhausted memory or
+PID budget) starts 0.8.0 without that cooldown; the first start rewrites the
+journal so a later restart cannot match it again. A cooldown after an OOM kill,
+the failure circuit or a crash while running or loading is honoured, and a load
+that an upgrade interrupted is not counted as a crash.
 
 Disabling the app cancels a load or a measurement. Existing caption rooms closed
 by a crash are not rejoined automatically; participants may need to turn

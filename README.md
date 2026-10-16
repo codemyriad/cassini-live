@@ -72,15 +72,18 @@ Changes in 0.8.0:
 * No automatic capacity check: a start, engine switch, rollback or restart is
   ready in load time instead of up to two minutes.
 * Per-speaker admission and lag-driven shedding (observe-only until measured).
-* Removed trips: CPU pressure, memory or PID use above 80%, low host memory and
-  changed limits no longer close every room; the governor holds or pauses
-  speakers instead.
+* Removed trips: CPU quota stalls, host CPU pressure, a lagging event loop,
+  memory or PID use above 80%, low host memory, changed limits and the capacity
+  check no longer close every room; the governor holds or pauses speakers
+  instead. Only an OOM kill or repeated engine crashes still do.
 * Half-host CPU and memory and the PID count are advice, not requirements; PSI
   is optional. Whistle is no longer capped at two rooms.
 * A late answer from a live engine loses one request instead of counting as a
   crash.
-* A 0.7.x recovery journal and settings are read as they are; a 0.7.x
-  capacity-check cooldown or verdict is dropped on the first start.
+* A 0.7.x recovery journal and settings are read as they are. A 0.7.x cooldown
+  from one of the removed trips, and a capacity-check verdict, are dropped on
+  the first start; a cooldown after an OOM kill, repeated crashes or a crash
+  while running or loading is still waited out.
 
 An optional [diagnostic video](docs/diagnostic-video.md) shows resource usage and
 measured caption headroom inside a call, including its own overhead. We enable

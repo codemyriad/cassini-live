@@ -21,10 +21,24 @@ from .recovery import RecoveryJournal, RecoveryPolicy
 from .resources import advice, snapshot, start_problem, static_problem
 
 LOGGER = logging.getLogger(__name__)
-# 0.7.x tripped when its automatic capacity check failed. That cooldown reflects the
-# check, not a crash, and must not delay the first 0.8.0 start. Its ready reason,
-# "Capacity check passed", is no trip: a process killed while serving stays a crash.
-LEGACY_CHECK_TRIP = "Capacity check did not establish"
+# Trips 0.7.x had and 0.8.0 does not (its capacity check, CPU and memory pressure, limit
+# changes, the load-time memory estimate). Their cooldowns reflect a rule that is gone,
+# not a crash, and must not delay the first 0.8.0 start. OOM kills ("The caption memory
+# limit was exceeded"), the failure circuit and crashes while running or loading keep
+# theirs; so does "Capacity check passed", the 0.7.x ready reason a killed process leaves.
+LEGACY_TRIPS = (
+    "Capacity check did not establish",
+    "Caption event loop is falling behind",
+    "Host CPU pressure",
+    "Caption CPU quota",
+    "Resource limits changed",
+    "Resource pressure counters cannot be read",
+    "Caption memory budget is nearly exhausted",
+    "Caption process/thread budget is nearly exhausted",
+    "Host memory headroom cannot be established",
+    "Host memory is under pressure",
+    "Not enough free container memory to load",
+)
 # Retry-After while an engine loads. Measured warm loads take 1.2-1.9 s (specs.md:48); a
 # cold one can take up to start_timeout_s, so this only paces client retries.
 LOADING_RETRY_S = 5
@@ -50,13 +64,17 @@ class TrackLease:
             self.owner._track_freed()
 
 
-def _legacy_check(saved):
-    """A 0.7.x cooldown after its capacity check failed, and nothing worse since."""
+def _legacy_trip(saved):
+    """A 0.7.x cooldown from a trip 0.8.0 no longer has, and nothing worse since. Only
+    the journal's current reason counts: lastTrip outlives the crash a later boot
+    detected (reason "Recovering after an interrupted caption process"), and a journal
+    any 0.8.0 boot has written (it records appVersion) is never a 0.7.x one."""
+    if "appVersion" in saved:
+        return False
     if saved.get("engineRunning") or saved.get("attemptInProgress"):
         return False  # a crash while serving or loading is honoured whatever the reason
-    trip = saved.get("lastTrip")
-    reasons = (saved.get("reason"), trip.get("reason") if isinstance(trip, dict) else None)
-    return any(isinstance(r, str) and r.startswith(LEGACY_CHECK_TRIP) for r in reasons)
+    reason = saved.get("reason")
+    return isinstance(reason, str) and reason.startswith(LEGACY_TRIPS)
 
 
 class SafetyController:
@@ -298,9 +316,10 @@ class SafetyController:
         crashed = saved.get("engineRunning") and not saved.get("attemptInProgress")
         interrupted = bool(saved.get("attemptInProgress"))
         clean = False
-        if _legacy_check(saved):
-            LOGGER.info("Clearing a 0.7.x capacity-check cooldown from the recovery journal")
+        if _legacy_trip(saved):
+            LOGGER.info("Clearing a 0.7.x cooldown (%s) from the recovery journal", saved["reason"])
             self.failures, remaining, crashed, interrupted, clean = 0, 0, False, False, True
+            self.last_trip = None  # rewritten at once, so no later boot can match it again
         elif interrupted and saved.get("appVersion") != __version__:
             # The container stopped mid-load for an upgrade, not because the load crashed.
             LOGGER.info("Starting cleanly after an upgrade interrupted the previous load")
