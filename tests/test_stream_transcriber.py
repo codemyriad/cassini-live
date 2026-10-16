@@ -1,13 +1,15 @@
 import asyncio
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
 from cassini_live import catalog, transcriber
 from cassini_live.engines.shared import EngineStreamError, LateReply, SharedEngine
+from cassini_live.load import THRESHOLDS, LoadGovernor, Thresholds
 from cassini_live.speech import SpeechChunk, SpeechGate
-from cassini_live.transcriber import StreamTranscriber
+from cassini_live.transcriber import PAUSED_NOTICE, StreamTranscriber
 from tests.fakes_engine import CHUNK, FakeBackend, FakeHostProcess
 from tests.test_streaming import AlwaysSpeech, AudioSource
 
@@ -172,6 +174,15 @@ class SilentTrack:
 
     def stop(self):
         pass
+
+
+class EndedTrack(SilentTrack):
+    """A track whose sender has already gone."""
+
+    async def receive(self):
+        from aiortc.mediastreams import MediaStreamError
+
+        raise MediaStreamError
 
 
 async def test_lease_fields_and_registration():
@@ -366,3 +377,117 @@ def test_gate_cuts_continuous_speech_per_engine(speech_gate, track, cuts):
         if item.end:
             ends.append(total)
     assert ends == [16000 * s for s in cuts]
+
+
+# Live admission (0.8.0 step 8). Thresholds are provisional until the staging lag run, so
+# these build measured ones; the default stays observe-only.
+
+MEASURED = Thresholds(provisional=False, measured_on="2026-10-16")
+
+
+def governed(fake, monkeypatch, *, thresholds=MEASURED, ceiling=1, **changes):
+    monkeypatch.setattr(StreamTranscriber, "SLOT_WAIT_S", 0.05)
+    gov = LoadGovernor(
+        ceiling=ceiling,
+        thresholds=replace(thresholds, **changes),
+        transcribers=fake.transcribers,
+    )
+    gov.tick({})
+    fake.governor = gov
+    return gov
+
+
+async def test_a_refused_speaker_gets_the_paused_notice_and_no_engine_traffic(monkeypatch):
+    fake = await backend()
+    gov = governed(fake, monkeypatch)
+    captions = asyncio.Queue()
+    first = fake.transcriber("a", "en", captions)
+    assert gov.admit(first).admitted  # the first speaker is always admitted
+    second = fake.transcriber("b", "en", captions)
+    await run(second, chunk(0))
+    # Ceiling reached: the second speaker waited its bounded time, then dropped the piece.
+    assert fake.streams == [] and fake.capacity_waits == 1 and second.lost_chunks == 1
+    assert gov.last_refusal["reason"] == "ceiling" and second not in gov.seats
+    notice = events(captions)
+    assert [(e.final, e.message, e.speaker_session_id) for e in notice] == [
+        (False, PAUSED_NOTICE, "b")
+    ]
+    # A ceiling refusal is no hold-off: the next segment asks again.
+    assert second.paused_until is None
+
+
+async def test_the_notice_is_sent_once_per_interval(monkeypatch):
+    fake = await backend()
+    gov = governed(fake, monkeypatch)
+    captions = asyncio.Queue()
+    first = fake.transcriber("a", "en", captions)  # seats are weak: keep the holder alive
+    gov.admit(first)
+    second = fake.transcriber("b", "en", captions)
+    await run(second, chunk(0))
+    await run(second, chunk(0))
+    assert [e.message for e in events(captions)] == [PAUSED_NOTICE]
+    second.pending = "words"  # a partial replaced the notice
+    await run(second, chunk(0))
+    # Within the interval the preview is cleared instead of repeating the notice.
+    assert [e.message for e in events(captions)] == [""]
+
+
+async def test_a_lag_refusal_holds_the_speaker_off_without_waiting(monkeypatch):
+    fake = await backend()
+    gov = governed(fake, monkeypatch, ceiling=3)
+    captions = asyncio.Queue()
+    first = fake.transcriber("a", "en", captions)
+    gov.admit(first)
+    first.slot, first.lease_at = object(), time.monotonic() - 3  # a 3 s backlog
+    first.pending_since = first.lease_at
+    second = fake.transcriber("b", "en", captions)
+    await run(second, chunk(0))
+    assert gov.last_refusal["reason"] == "lag" and gov.closed
+    assert second.paused_until is not None and second.paused_until > time.monotonic()
+    started = time.monotonic()
+    await run(second, chunk(0))
+    # Paused: refused at once ("shed"), dropped without engine traffic or a slot wait.
+    assert time.monotonic() - started < 0.04
+    assert gov.last_refusal["reason"] == "shed" and fake.streams == []
+    assert second.lost_chunks == 2
+    first.slot = None
+
+
+async def test_a_seat_freed_during_the_wait_is_taken(monkeypatch):
+    fake = await backend()
+    gov = governed(fake, monkeypatch)
+    monkeypatch.setattr(StreamTranscriber, "SLOT_WAIT_S", 1.0)
+    captions = asyncio.Queue()
+    first = fake.transcriber("a", "en", captions)
+    gov.admit(first)
+    second = fake.transcriber("b", "en", captions)
+    asyncio.get_running_loop().call_later(0.1, gov.release, first)  # a's track closed
+    await run(second, chunk(0, end=True))
+    assert second in gov.seats and fake.capacity_waits == 0
+    assert [e.message for e in events(captions) if e.final] == ["w"]
+
+
+async def test_observe_only_admits_everyone_and_records_the_refusal(monkeypatch):
+    fake = await backend()
+    gov = governed(fake, monkeypatch, thresholds=THRESHOLDS)
+    assert gov.observe_only
+    captions = asyncio.Queue()
+    first = fake.transcriber("a", "en", captions)
+    gov.admit(first)
+    second = fake.transcriber("b", "en", captions)
+    await run(second, chunk(0, end=True))
+    assert gov.last_refusal["reason"] == "ceiling" and second in gov.seats
+    assert [e.message for e in events(captions) if e.final] == ["w"]
+    assert fake.capacity_waits == 0 and second.paused_until is None
+
+
+async def test_a_closed_track_gives_its_seat_back():
+    fake = await backend()
+    gov = LoadGovernor(ceiling=2, thresholds=MEASURED, transcribers=fake.transcribers)
+    fake.governor = gov
+    track = fake.transcriber("a", "en", asyncio.Queue())
+    track.stream = EndedTrack()
+    gov.admit(track)
+    assert track in gov.seats
+    await track._run()
+    assert track not in gov.seats

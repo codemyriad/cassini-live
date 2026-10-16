@@ -535,3 +535,27 @@ def test_governor_ceiling_follows_a_resized_backend(monkeypatch):
     replacement = WorkerPool(3, worker_factory=FakeWorker)
     guard.replace_pool(replacement)
     assert guard.governor.ceiling == 3 and guard.governor.transcribers is replacement.transcribers
+
+
+def test_the_backend_carries_the_governor_which_observes_while_provisional():
+    from cassini_live.load import Thresholds
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    assert pool.governor is guard.governor and guard.governor.observe_only
+    assert guard.governor.on_reopen == pool.kick
+    measured = Thresholds(provisional=False, measured_on="2026-10-16")
+    live = SafetyController(pool, CapacityAssessment(pool), thresholds=measured)
+    assert pool.governor is live.governor and not live.governor.observe_only
+
+
+async def test_whistle_kick_hands_an_idle_worker_to_a_parked_waiter():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    await pool.start()
+    pool.admission_limit = 0  # as if admission had held every worker back
+    waiter = asyncio.create_task(pool.acquire_wait(timeout=1))
+    await asyncio.sleep(0.01)
+    pool.admission_limit = 1
+    pool.kick()
+    assert await asyncio.wait_for(waiter, 0.5) in pool.workers
+    await pool.close()

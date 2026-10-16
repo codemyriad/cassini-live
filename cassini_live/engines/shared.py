@@ -178,6 +178,8 @@ class SharedEngine:
         self.closed = False
         # Installed by the safety controller: why a host must not spawn now, or None.
         self.start_check = None
+        # Installed by the safety controller: per-speaker admission (load.LoadGovernor).
+        self.governor = None
         self.failures = 0
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
@@ -249,6 +251,11 @@ class SharedEngine:
         slot = Slot(next(n for n in range(1, len(used) + 2) if n not in used))
         self.leased.add(slot)
         return slot
+
+    def kick(self):
+        """Hand free slots to parked waiters, e.g. when admission reopens."""
+        if not self.closed:
+            self._offer()
 
     def _offer(self):
         while self.waiters and len(self.leased) < self.admission_limit:
@@ -500,7 +507,10 @@ class SharedEngine:
         return {
             "capacity": self.size,
             "available": self.available,
-            "admittedSpeakers": self.admission_limit,
+            # Seats held now; the structural ceiling before a governor is installed.
+            "admittedSpeakers": (
+                len(self.governor.seats) if self.governor is not None else self.admission_limit
+            ),
             "workers": 1 if self.ready else 0,
             "streamFailures": self.failures,
             "capacityWaits": self.capacity_waits,

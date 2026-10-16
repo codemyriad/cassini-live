@@ -6,7 +6,9 @@ captions fall behind. Pure and in-memory: `admit()` reads the sample cached by t
 tick plus transcriber fields, never a file. Until the staging lag run fixes the
 thresholds (`Thresholds.provisional`) the governor observes: nothing consults `admit()`
 yet (0.8.0 step 8), so the tick seats every live transcriber it first sees holding a
-lease, records the decision it would have taken and changes nothing.
+lease, records the decision it would have taken and changes nothing. Once the staging
+run clears `provisional`, transcribers ask `admit()` before every slot or worker wait
+(0.8.0 step 8) and a refusal holds that speaker off.
 """
 
 import logging
@@ -203,6 +205,8 @@ class LoadGovernor:
         self.shed_events = 0
         self.measuring = False
         self.tick_ms = 0.0
+        # Called when admission reopens, so parked slot waiters are handed a slot at once.
+        self.on_reopen = None
 
     @property
     def closed(self):
@@ -324,6 +328,8 @@ class LoadGovernor:
         elif now - self._calm_since >= LagMeter.WINDOW_S:
             LOGGER.info("Caption admission reopened after %s", self.closed_reason)
             self.closed_reason, self._calm_since = None, None
+            if self.on_reopen is not None:
+                self.on_reopen()
 
     def _shed(self, now):
         if self.lag_sustained < self.thresholds.lag_shed:

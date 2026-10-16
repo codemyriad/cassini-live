@@ -107,6 +107,8 @@ class WorkerPool:
         self.failure_circuit_open = False
         # Installed by the safety controller: why a worker must not spawn now, or None.
         self.start_check = None
+        # Installed by the safety controller: per-speaker admission (load.LoadGovernor).
+        self.governor = None
         self.generation = 0
         self.lag = LagMeter()
         # Every live transcriber on this backend; the load governor reads their lag.
@@ -143,6 +145,15 @@ class WorkerPool:
     def note_drop(self):
         self.dropped_chunks += 1
         self.last_pressure = time.monotonic()
+
+    def kick(self):
+        """Hand idle workers to parked waiters, e.g. when admission reopens."""
+        while self.waiters and len(self.leased) < self.admission_limit:
+            try:
+                worker = self.idle.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._offer(worker)
 
     def _offer(self, worker):
         # Hand the lease directly to the oldest live waiter. A returning speaker

@@ -286,6 +286,19 @@ def test_reopen_needs_half_the_threshold_for_one_full_window():
     assert gov.admit(Speaker()).admitted
 
 
+def test_reopen_kicks_parked_slot_waiters_once():
+    gov, clock = governor()
+    kicks = []
+    gov.on_reopen = lambda: kicks.append(clock.now)
+    (speaker,) = seated(gov, clock, 1)
+    speaker.speak(clock.now, lag=1.5)
+    gov.admit(Speaker())
+    sustain(gov, clock, [speaker], lag=0.1, seconds=6)
+    assert not gov.closed and len(kicks) == 1
+    sustain(gov, clock, [speaker], lag=0.1, seconds=3)
+    assert len(kicks) == 1
+
+
 def test_calm_window_restarts_when_lag_returns():
     gov, clock = governor()
     (speaker,) = seated(gov, clock, 1)

@@ -15,7 +15,7 @@ from contextlib import suppress
 
 from . import __version__, catalog
 from .diagnostics import process_usage
-from .load import LoadGovernor, per_speaker_mib
+from .load import THRESHOLDS, LoadGovernor, per_speaker_mib
 from .pool import CapacityError
 from .recovery import RecoveryJournal, RecoveryPolicy
 from .resources import advice, snapshot, start_problem, static_problem
@@ -64,8 +64,10 @@ class SafetyController:
         wall_clock=time.time,
         jitter=random.random,
         fatal_exit=os._exit,
+        thresholds=THRESHOLDS,
     ):
         self.pool, self.assessment, self.service = pool, assessment, service
+        self.thresholds = thresholds
         self.reader, self.clock, self.wall_clock, self.jitter = reader, clock, wall_clock, jitter
         self.policy = policy or RecoveryPolicy()
         self.fatal_exit = fatal_exit
@@ -105,15 +107,18 @@ class SafetyController:
 
     def _hook(self, pool):
         pool.start_check = self._start_check
-        # Observe-only until the staging lag run fixes the thresholds (step 8 wires admit()).
+        # Observe-only while the thresholds are provisional: transcribers ask admit() and
+        # are always admitted, and /status shows what would have been refused or shed.
         self.governor = LoadGovernor(
             ceiling=getattr(pool, "size", 0),
             per_speaker_mib=per_speaker_mib(self.engine_id),
-            observe_only=True,
+            thresholds=self.thresholds,
             transcribers=getattr(pool, "transcribers", None),
             clock=self.clock,
             wall_clock=self.wall_clock,
         )
+        self.governor.on_reopen = getattr(pool, "kick", None)
+        pool.governor = self.governor
         self._engine_cpu = None
 
     def _start_check(self):

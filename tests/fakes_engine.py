@@ -258,6 +258,7 @@ class FakeBackend:
         self.closed = True
         self.started = False
         self.start_check = None
+        self.governor = None
         self.failure_circuit_open = False
         self.failures = self.capacity_waits = self.dropped_chunks = 0
         self.scheduling_yields = 0
@@ -302,6 +303,9 @@ class FakeBackend:
 
     def note_drop(self):
         self.dropped_chunks += 1
+
+    def kick(self):
+        pass
 
     async def start(self):
         self.starts += 1

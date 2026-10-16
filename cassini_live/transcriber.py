@@ -16,6 +16,20 @@ from .talk.types import StreamEndedException, Transcript
 
 LOGGER = logging.getLogger(__name__)
 POOL = None  # Set by application lifespan before rooms can be created.
+# Decision 4: the only per-speaker channel Talk offers is the speaker's own preview line,
+# seen by every caption viewer in the room; the next partial replaces it.
+PAUSED_NOTICE = "Captions paused for this speaker while the server catches up"
+# Derived: a quarter of the 1 s monitor tick, so a seat freed or a reopen made by one tick
+# is noticed within that tick by a speaker parked on admission.
+ADMIT_POLL_S = 0.25
+
+
+class AdmissionRefused(CapacityError):
+    """The load governor refused this speaker; reason is its rule (lag, cpu, ...)."""
+
+    def __init__(self, reason):
+        super().__init__(f"Caption admission refused ({reason})")
+        self.reason = reason
 
 
 class WhistleTranscriber:
@@ -48,6 +62,7 @@ class WhistleTranscriber:
         # Hold-off and shed marks, written from step 8 on; nothing writes them yet.
         self.paused_until = None
         self.shed_reason = None
+        self.noticed_at = None  # monotonic time of the last paused notice
         if self.pool is not None:
             self.pool.transcribers.add(self)
 
@@ -57,6 +72,52 @@ class WhistleTranscriber:
 
     def has_lease(self):
         return self.worker is not None
+
+    @property
+    def governor(self):
+        return getattr(self.pool, "governor", None)
+
+    async def _admit(self, timeout):
+        """Ask the load governor before waiting for a worker or slot. A refused speaker
+        stays parked on admission for the same bounded wait as on a slot, so a seat freed
+        by a closing track or a reopen within it is taken at once."""
+        governor = self.governor
+        if governor is None:
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            decision = governor.admit(self)
+            if decision.admitted:
+                return
+            if decision.reason == "shed" or time.monotonic() >= deadline:
+                raise AdmissionRefused(decision.reason)
+            await asyncio.sleep(min(ADMIT_POLL_S, max(0, deadline - time.monotonic())))
+
+    async def _refused(self, error):
+        """A bounded wait ended without a worker, slot or seat: drop the piece."""
+        self.pool.capacity_waits += 1
+        self._note_drop()
+        governor = self.governor
+        reason = getattr(error, "reason", None)
+        if governor is not None and reason in {"lag", "cpu"}:
+            # Hold this speaker off rather than retrying every piece into the backlog.
+            governor.pause(self)
+        if reason is not None:
+            await self._notify_paused()
+        else:
+            await self._clear_preview()
+
+    async def _notify_paused(self):
+        if self.pending == PAUSED_NOTICE:
+            return
+        interval = getattr(getattr(self.governor, "thresholds", None), "notice_interval", 60)
+        now = time.monotonic()
+        if self.noticed_at is not None and now - self.noticed_at < interval:
+            await self._clear_preview()
+            return
+        self.noticed_at = now
+        await self.transcripts.put(Transcript(False, self.language, PAUSED_NOTICE, self.session_id))
+        self.pending = PAUSED_NOTICE
 
     async def connect(self):
         # Track arrival must never reserve recognition capacity or close a room.
@@ -161,6 +222,7 @@ class WhistleTranscriber:
         offset = 0
         while offset < len(chunk.samples):
             if self.worker is None:
+                await self._admit(timeout=2)
                 self.worker = await self.pool.acquire_wait(timeout=2)
                 self.lease_at = time.monotonic()
                 if time.monotonic() - chunk.created_at > 4:
@@ -245,11 +307,9 @@ class WhistleTranscriber:
                     await self._decode_audio(chunk)
                 if chunk.end:
                     await self._finish(chunk.end_reason)
-            except CapacityError:
+            except CapacityError as error:
                 # Bounded waiting per speaker; other speakers/rooms stay alive.
-                self.pool.capacity_waits += 1
-                self._note_drop()
-                await self._clear_preview()
+                await self._refused(error)
             except Exception as error:
                 LOGGER.warning(
                     "Caption recognition failed (%s); retrying next speech chunk",
@@ -280,6 +340,8 @@ class WhistleTranscriber:
             # A cancelled decoder leaves its queued chunks behind; none is pending any more.
             self.pending_since = None
             await self._release(healthy=False)
+            if self.governor is not None:
+                self.governor.release(self)  # a closed track gives its seat back at once
 
     async def shutdown(self):
         async with self.lock:
@@ -387,6 +449,7 @@ class StreamTranscriber(WhistleTranscriber):
 
     async def _decode_audio(self, chunk):
         if self.slot is None:
+            await self._admit(timeout=self.SLOT_WAIT_S)
             self.slot = await self.pool.acquire_slot(timeout=self.SLOT_WAIT_S)
             self.lease_at = time.monotonic()
             if time.monotonic() - chunk.created_at > 4:
@@ -429,10 +492,8 @@ class StreamTranscriber(WhistleTranscriber):
                     await self._decode_audio(chunk)
                 if chunk.end:
                     await self._finish(chunk.end_reason)
-            except CapacityError:
-                self.pool.capacity_waits += 1
-                self._note_drop()
-                await self._clear_preview()
+            except CapacityError as error:
+                await self._refused(error)
             except LateReply:
                 # The host lives on but this answer is lost: drop the piece and reopen the
                 # stream at the next one, so no native state spans a missing reply.

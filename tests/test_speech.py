@@ -374,3 +374,28 @@ async def test_expired_audio_is_dropped_without_joining_native_contexts():
     assert pool.status()["recentCapacityPressure"]
     assert [m["type"] for m in next(iter(pool.workers)).sent] == ["start", "audio", "end"] * 2
     await pool.close()
+
+
+async def test_whistle_asks_admission_before_taking_a_worker(monkeypatch):
+    from cassini_live.load import LoadGovernor, Thresholds
+
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    await pool.start()
+    pool.governor = LoadGovernor(
+        ceiling=1,
+        thresholds=Thresholds(provisional=False, measured_on="2026-10-16"),
+        transcribers=pool.transcribers,
+    )
+    pool.governor.tick({})
+    holder = WhistleTranscriber("a", "en", asyncio.Queue(), pool=pool)
+    pool.governor.admit(holder)
+    track = WhistleTranscriber("b", "en", asyncio.Queue(), pool=pool)
+    track.queue.put_nowait(SpeechChunk(np.ones(16000, dtype="<f4"), sequence=0))
+    track.queue.put_nowait(None)
+    # A free worker is not enough: the seat ceiling refuses after the bounded 2 s wait.
+    await asyncio.wait_for(track._decode(), 4)
+    assert pool.capacity_waits == 1 and pool.idle.qsize() == 2
+    assert all(not w.sent for w in pool.workers)
+    notice = track.transcripts.get_nowait()
+    assert not notice.final and notice.message == transcriber.PAUSED_NOTICE
+    await pool.close()
