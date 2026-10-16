@@ -472,3 +472,53 @@ async def test_cancelled_open_frees_the_host_stream(tmp_path):
         assert len(engine.streams) == 2
     finally:
         await engine.close()
+
+
+async def test_late_opens_never_leak_host_streams():
+    # Review 0.8.0: every open the host answered too late used to stay open on the host,
+    # so after max_streams of them it refused every new speaker on a healthy host.
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
+    await shared.start()
+    host = hosts[0]
+    for _ in range(shared.max_streams):
+        host.mute = True  # the reply comes after the timeout (here: never)
+        with pytest.raises(LateReply):
+            await shared.open_stream("en")
+        host.mute = False
+        await wait_for(lambda: not shared._orphans)
+    assert shared.streams == {} and shared.failures == 0
+    stream = await shared.open_stream("en")
+    assert stream.alive and shared.restarts == 0 and len(hosts) == 1
+    await shared.close()
+
+
+async def test_repeated_limit_refusals_restart_the_host_in_place():
+    # Defence in depth: streams the host holds without this side knowing (a leak this
+    # code did not foresee) must not refuse speakers until some unrelated restart.
+    shared, hosts = engine(max_streams=2)
+    await shared.start()
+    for leaked in (1001, 1002):
+        await hosts[0].send({"type": "open", "id": leaked, "language": "en"})
+    await asyncio.sleep(0.05)
+    for _ in range(shared.LIMIT_DESYNC - 1):
+        with pytest.raises(EngineStreamError, match="limit"):
+            await shared.open_stream("en")
+        assert shared.restarts == 0
+    with pytest.raises(EngineStreamError, match="limit"):
+        await shared.open_stream("en")
+    await wait_for(lambda: shared.restarts == 1 and shared.ready)
+    assert hosts[0].closed and len(hosts) == 2
+    assert (await shared.open_stream("en")).alive
+    await shared.close()
+
+
+async def test_a_full_host_is_no_desync():
+    shared, _ = engine(max_streams=1)
+    await shared.start()
+    await shared.open_stream("en")
+    for _ in range(shared.LIMIT_DESYNC + 1):
+        with pytest.raises(CapacityError):
+            await shared.open_stream("en")
+    assert shared.restarts == 0 and shared.failures == 0
+    await shared.close()

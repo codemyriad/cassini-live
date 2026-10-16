@@ -196,6 +196,9 @@ class SharedEngine:
         self.waiters = deque()
         self.streams = {}
         self._orphans: set[asyncio.Task] = set()
+        # Consecutive host `limit` refusals while this side holds fewer streams: the two
+        # stream counts disagree and only a host restart brings them back in step.
+        self.limit_refusals = 0
         self.pending = {}
         self.process = None
         self.ready = False
@@ -313,19 +316,44 @@ class SharedEngine:
                 stream.id, {"type": "open", "id": stream.id, "language": option}
             )
             if reply.get("type") != "opened":
+                self._refused_open(reply.get("code", "protocol"))
                 raise EngineStreamError(reply.get("code", "protocol"))
-        except asyncio.CancelledError:
-            # The host may already hold the native stream; free it, or it counts against
-            # max_streams until the host restarts.
+        except (asyncio.CancelledError, LateReply):
+            # The host may already hold the native stream (a late "opened" is ignored);
+            # free it, or it counts against max_streams until the host restarts.
             stream._closed()
-            task = asyncio.create_task(self._cancel_orphan(stream.id))
-            self._orphans.add(task)
-            task.add_done_callback(self._orphans.discard)
+            self._orphan(stream.id)
             raise
         except BaseException:
             stream._closed()
             raise
+        self.limit_refusals = 0
         return stream
+
+    # Derived: one refusal can race an orphan cancel still queued behind it on the host;
+    # three in a row with no cancel in flight cannot.
+    LIMIT_DESYNC = 3
+
+    def _refused_open(self, code):
+        """Restart the host in place when it keeps refusing opens for its stream limit.
+        open_stream already refuses at max_streams on this side, so a host `limit` means
+        the host holds streams this side does not know of; leaked there, they would refuse
+        every new speaker until some unrelated restart."""
+        if code != "limit" or self._orphans:
+            self.limit_refusals = 0
+            return
+        self.limit_refusals += 1
+        if self.limit_refusals >= self.LIMIT_DESYNC and self.process is not None:
+            self.limit_refusals = 0
+            LOGGER.warning(
+                "Speech engine host refuses streams it should have room for; restarting it"
+            )
+            self._host_failed(self.process, "stream count out of step")
+
+    def _orphan(self, stream_id):
+        task = asyncio.create_task(self._cancel_orphan(stream_id))
+        self._orphans.add(task)
+        task.add_done_callback(self._orphans.discard)
 
     async def _cancel_orphan(self, stream_id):
         with suppress(Exception):
