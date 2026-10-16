@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -119,6 +120,16 @@ class CapacityAssessment:
                 pool.lag.requests.extend(requests)
 
 
+class ServiceRefused(RuntimeError):
+    """The running service answered with an error status; detail is its reason."""
+
+    def __init__(self, method, path, status, detail):
+        super().__init__(
+            f"{method} {path} returned HTTP {status}" + (f": {detail}" if detail else "")
+        )
+        self.status, self.detail = status, detail
+
+
 def installed_request(method, path):
     connection = http.client.HTTPConnection(
         "127.0.0.1", int(os.environ.get("APP_PORT", "8080")), timeout=15
@@ -141,7 +152,11 @@ def installed_request(method, path):
         )
         response = connection.getresponse()
         if response.status != 200:
-            raise RuntimeError(f"{method} {path} returned HTTP {response.status}")
+            try:
+                detail = json.loads(response.read()).get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            raise ServiceRefused(method, path, response.status, detail)
         return json.loads(response.read())
     finally:
         connection.close()
@@ -181,6 +196,7 @@ def watch_line(status, error=None):
         "p95RequestSeconds": status.get("p95RequestSeconds"),
         "droppedSpeechChunks": status.get("droppedSpeechChunks"),
         "capacityWaits": status.get("capacityWaits"),
+        "pausedDrops": status.get("pausedDrops"),
         "hostRestarts": status.get("hostRestarts"),
         **{
             key: admission.get(key)
@@ -218,7 +234,17 @@ async def watch(seconds):
 async def measure_installed():
     """Ask the running service for a measurement, then wait for its result. Exit 0 iff
     at least one speaker passed."""
-    installed_request("POST", "/capacity/check")
+    try:
+        installed_request("POST", "/capacity/check")
+    except ServiceRefused as refused:
+        if refused.status != 409:
+            raise
+        # Calls in progress, a switch, captions not ready or a run already going.
+        print(
+            f"Capacity measurement not started: {refused.detail or 'the service is busy'}",
+            file=sys.stderr,
+        )
+        return 1
     started = time.monotonic()
     while True:
         status = installed_request("GET", "/status")

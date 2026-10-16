@@ -52,7 +52,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <variable>
         <name>CASSINI_LIVE_WORKERS</name>
         <display-name>Concurrent speaking segments (optional)</display-name>
-        <description>Leave empty for CPU quota sizing, up to four recognition workers. The installation check measures usable simultaneous speakers. Silent tracks do not reserve workers. With Nemotron: maximum simultaneous speakers. Range: 1 to 32.</description>
+        <description>Caps how many people can speak with captions at the same time (Whistle: recognition workers; Nemotron: simultaneous speakers). Leave empty to size from the CPU quota, up to four. A value above the CPU ceiling is clamped to it with a warning. Silent tracks do not count. Range: 1 to 32.</description>
       </variable>
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>

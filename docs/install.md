@@ -184,9 +184,12 @@ Call media and captions must not appear in the container filesystem or logs.
 With Whistle, the default is one recognition worker per two quota CPUs, capped
 at four. With Nemotron, one shared engine process serves up to four simultaneous
 speakers, depending on the CPU quota.
-`CASSINI_LIVE_WORKERS` can reduce this count; requesting more than the budget
-allows blocks startup. Speech waits briefly for workers, and sustained overload
-stops caption rooms. The Talk meeting itself continues without captions.
+`CASSINI_LIVE_WORKERS` can reduce this count; a value above the CPU ceiling is
+clamped to it, with a warning in the log and on the settings page. Speech waits
+briefly for workers. When captions fall behind, the newest speaker's captions
+pause for a few seconds while the others keep theirs; only an OOM kill or
+repeated engine crashes stop caption rooms. The Talk meeting itself continues
+without captions.
 
 ## Rollback
 

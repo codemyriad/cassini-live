@@ -304,8 +304,8 @@ async def test_watch_prints_one_json_line_per_second_from_status(monkeypatch, ca
     assert list(lines[0]) == [
         "at", "state", "lagSeconds", "lagSustainedSeconds", "captionAgeSeconds", "cpuStall",
         "cpuPressureAvg10", "engineDuty", "memoryUsedMiB", "memoryHeadroomMiB",
-        "p95RequestSeconds", "droppedSpeechChunks", "capacityWaits", "hostRestarts", "seats",
-        "speaking", "lastRefusal", "lastShed", "tickMs", "monitorTickMs",
+        "p95RequestSeconds", "droppedSpeechChunks", "capacityWaits", "pausedDrops", "hostRestarts",
+        "seats", "speaking", "lastRefusal", "lastShed", "tickMs", "monitorTickMs",
     ]  # fmt: skip
     assert lines[0]["engineDuty"] == 0.7 and lines[0]["hostRestarts"] == 0
     assert lines[0]["tickMs"] == 0.3 and lines[0]["monitorTickMs"] == 1.7
@@ -360,3 +360,13 @@ async def test_watch_survives_a_failed_read_and_keeps_its_cadence(monkeypatch, c
 
     monkeypatch.setattr(capacity, "installed_request", refused)
     assert await capacity.watch(1) == 1
+
+
+async def test_measure_cli_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
+    def refused(method, path):
+        raise capacity.ServiceRefused(method, path, 409, "Measuring needs every call to end")
+
+    monkeypatch.setattr(capacity, "installed_request", refused)
+    assert await capacity.measure_installed() == 1
+    err = capsys.readouterr().err
+    assert err.strip() == "Capacity measurement not started: Measuring needs every call to end"
