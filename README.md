@@ -64,9 +64,10 @@ system enforces the limits even if the application misbehaves. An interrupted
 call may need captions toggled back on once the service is ready.
 See [the safety policy and capacity test](docs/capacity.md).
 
-An optional [diagnostic video](docs/diagnostic-video.md) shows resource usage and
-measured caption headroom inside a call, including its own overhead. We enable
-it on our deployments; other installations default to off.
+An optional [diagnostic video](docs/diagnostic-video.md) shows, inside a call,
+how captions are made: each speaker's lane under their name, the caption lag,
+admission decisions and resource use, including its own overhead. We enable it
+on our deployments; other installations default to off.
 
 ## Try it
 

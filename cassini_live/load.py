@@ -200,6 +200,11 @@ class LoadGovernor:
         self.last_refusal = None
         self.last_shed = None
         self.last_shed_at = None
+        # For the diagnostic video only: the last decision with its inputs, and weak
+        # references to whom it and the last (would-be) shed concerned. Never exported in
+        # status(): the caption process resolves them to its own anonymous lanes.
+        self.last_decision = None
+        self.last_decision_ref = self.last_shed_ref = None
         self.shed_events = 0
         self.measuring = False
         self.tick_ms = 0.0
@@ -213,8 +218,10 @@ class LoadGovernor:
         now = self.clock() if now is None else now
         self.transcribers.add(transcriber)
         reason = self._refusal(transcriber, now)
+        self._record(transcriber, now, reason)
         if reason is None:
             self._seat(transcriber, now)
+            self.last_decision["seats"] = len(self.seats)
             return Decision(True)
         self.last_refusal = {"at": self.wall_clock(), "reason": reason}
         if reason in {"lag", "cpu"} and not self.closed:
@@ -229,6 +236,18 @@ class LoadGovernor:
         # Observing: the speaker goes on, so the seat count must keep matching reality.
         self._seat(transcriber, now)
         return Decision(True, reason)
+
+    def _record(self, transcriber, now, reason):
+        self.last_decision = {
+            "at": self.wall_clock(),
+            "reason": reason,
+            "seats": len(self.seats),
+            "ceiling": self.ceiling,
+            "lag": round(self._lag_now(now, excluding=transcriber), 2),
+            "cpuStall": self.cpu_stall,
+            "headroomMiB": headroom_mib(self.sample),
+        }
+        self.last_decision_ref = weakref.ref(transcriber)
 
     def _seat(self, transcriber, now):
         self.seats.setdefault(transcriber, now)
@@ -342,6 +361,7 @@ class LoadGovernor:
         # The interval applies to would-be sheds too, or observing would log every tick.
         self.last_shed_at = now
         self.last_shed = {"at": self.wall_clock(), "lag": round(self.lag_sustained, 2)}
+        self.last_shed_ref = weakref.ref(newest)
         self.shed_events += 1
         if self.observe_only:
             LOGGER.info(

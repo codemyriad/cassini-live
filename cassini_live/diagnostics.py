@@ -13,6 +13,11 @@ from pathlib import Path
 from .resources import snapshot
 
 LOGGER = logging.getLogger(__name__)
+# One sample per second, matching the governor's tick and the publisher's 1 fps.
+SAMPLE_S = 1.0
+# Stop the child after 6 s above 15 % of one CPU (three 2 s samples before 0.7.4).
+HIGH_SAMPLES = 6
+VERBS = {None: "admit", "shed": "keep paused"}
 
 
 def process_usage(pid):
@@ -56,19 +61,125 @@ class DiagnosticVideo:
             self._scribes[worker] = next(n for n in range(1, len(used) + 2) if n not in used)
         return self._scribes[worker]
 
-    def _lane_sample(self, pool, transcriber):
+    def _lane_sample(self, pool, transcriber, name=None, other=False, now=None):
+        """One lane. `name` only for the room that owns the video; other rooms' lanes are
+        marked `other` and carry no name."""
         gate = transcriber.gate
         held = getattr(transcriber, "worker", None)
         active = bool(getattr(gate, "active", False))
         queued = transcriber.queue.qsize() if hasattr(transcriber, "queue") else 0
-        return {
+        now = time.monotonic() if now is None else now
+        paused_until = getattr(transcriber, "paused_until", None)
+        sample = {
             "id": self._lane(transcriber),
             "active": active,
             "speech": getattr(gate, "chunks_emitted", 0),
             "lost": getattr(transcriber, "lost_chunks", 0),
             "scribe": self._scribe(pool, held),
             "waiting": held is None and queued > 0 and bool(pool.waiting),
+            "paused": paused_until is not None and paused_until > now,
+            "lag": self._lane_lag(transcriber, now),
         }
+        if other:
+            sample["other"] = True
+        elif name:
+            sample["name"] = name
+        return sample
+
+    @staticmethod
+    def _lane_lag(transcriber, now):
+        """Seconds this speaker's oldest undecoded audio waits: from the lease while
+        recognising (the governor's control lag), from the chunk while held."""
+        pending = getattr(transcriber, "pending_since", None)
+        if pending is None:
+            return 0.0 if getattr(transcriber, "worker", None) is not None else None
+        has_lease = getattr(transcriber, "has_lease", None)
+        if has_lease is not None and has_lease():
+            lease_at = getattr(transcriber, "lease_at", None) or pending
+            return round(max(0.0, now - max(pending, lease_at)), 2)
+        return round(max(0.0, now - pending), 2)
+
+    def _who(self, ref, owner, labels):
+        transcriber = ref() if ref is not None else None
+        if transcriber is None:
+            return "a speaker"
+        if transcriber in labels:
+            return labels[transcriber]
+        return "someone in another call"
+
+    def _decision(self, governor, owner, labels):
+        """The governor's latest decision or shed, in words, naming only this room."""
+        thresholds = governor.thresholds
+        decision, shed = governor.last_decision, governor.last_shed
+        if shed and (not decision or shed["at"] >= decision["at"]):
+            return {
+                "at": shed["at"],
+                "verb": "pause",
+                "who": self._who(governor.last_shed_ref, owner, labels),
+                "text": f"lag {shed['lag']:.1f} s ≥ shed {thresholds.lag_shed:.1f} for 5 s"
+                " · newest seat",
+            }
+        if not decision:
+            return None
+        reason, lag = decision["reason"], decision["lag"]
+        stall, headroom = decision["cpuStall"], decision["headroomMiB"]
+        if reason is None:
+            text = f"seat {decision['seats']} of {decision['ceiling']} · lag {lag:.1f} s"
+            text += f" < {thresholds.lag_admit:.1f}"
+            if stall is not None:
+                text += f" · stall {stall * 100:.0f}%"
+            if headroom is not None:
+                text += f" · {headroom / 1024:.1f} GiB free"
+        elif reason == "lag":
+            text = (
+                f"lag {lag:.1f} s ≥ admit {thresholds.lag_admit:.1f}"
+                f" · reopens under {thresholds.lag_admit / 2:.1f} s for 5 s"
+            )
+        elif reason == "cpu":
+            text = f"CPU stall {(stall or 0) * 100:.0f}% ≥ {thresholds.cpu_stall_admit * 100:.0f}%"
+        elif reason == "memory":
+            text = f"{headroom if headroom is not None else '?'} MiB free, under two speakers' need"
+        elif reason == "ceiling":
+            text = f"all {decision['ceiling']} seats taken"
+        else:
+            text = "held off after a pause"
+        return {
+            "at": decision["at"],
+            "verb": VERBS.get(reason, "hold"),
+            "who": self._who(governor.last_decision_ref, owner, labels),
+            "text": text,
+        }
+
+    @staticmethod
+    def _speakers(owner, clients):
+        """Every live transcriber with its room, and display labels for the owning room's
+        speakers only. Names cross the pipe for that room alone and are never logged."""
+        speakers = [
+            (c, sid, t) for c in clients for sid, t in list(getattr(c, "transcribers", {}).items())
+        ]
+        name = getattr(owner, "speaker_name", lambda _sid: None)
+        labels = {
+            # 40 characters bound the line the child reads (8 KiB pipe limit).
+            t: (name(sid) or "Participant")[:40]
+            for c, sid, t in speakers
+            if c is owner
+        }
+        return speakers, labels
+
+    def _lane_samples(self, pool, owner, speakers, labels, now):
+        # Ten lanes at most; the viewers' own room comes first.
+        ordered = sorted(speakers, key=lambda speaker: speaker[0] is not owner)
+        return [
+            self._lane_sample(pool, t, labels.get(t), c is not owner, now)
+            for c, _, t in ordered[:10]
+        ]
+
+    @staticmethod
+    def _cpu_weight():
+        try:
+            return int(Path("/sys/fs/cgroup/cpu.weight").read_text())
+        except (OSError, ValueError):
+            return None
 
     def start(self, token):
         if not self.enabled or self.task is not None:
@@ -144,6 +255,7 @@ class DiagnosticVideo:
             previous_host = self._host_cpu()
             previous_caption = self._caption_cpu()
             high = 0
+            weight = self._cpu_weight()
             while True:
                 if self.service.clients.get(token) is not owner or owner.defunct.is_set():
                     self.state = "stopped: caption room closed"
@@ -167,16 +279,26 @@ class DiagnosticVideo:
                 # Give module imports a short startup allowance. Thereafter the
                 # entire child (rendering, codec, WebRTC) must fit 0.15 CPU.
                 high = high + 1 if used > 0.15 and now - booted > 10 else 0
-                if rss > 128 * 1024**2 or (high >= 3 and now - booted > 10):
+                if rss > 128 * 1024**2 or (high >= HIGH_SAMPLES and now - booted > 10):
                     self.state = "paused: diagnostic budget exceeded"
                     return
                 pool = safety.pool
                 busy = pool.busy
                 remaining = max(0, pool.admission_limit - busy)
                 clients = list(self.service.clients.values())
-                transcribers = [
-                    t for c in clients for t in list(getattr(c, "transcribers", {}).values())
-                ]
+                speakers, labels = self._speakers(owner, clients)
+                transcribers = [t for _, _, t in speakers]
+                governor = getattr(safety, "governor", None)
+                admission = governor.status() if governor is not None else {}
+                if governor is not None:
+                    thresholds = governor.thresholds
+                    admission.update(
+                        lagAdmit=thresholds.lag_admit,
+                        lagShed=thresholds.lag_shed,
+                        cpuStallAdmit=thresholds.cpu_stall_admit,
+                        holdOff=thresholds.hold_off,
+                    )
+                lag_meter = getattr(pool, "lag", None)
                 ends = getattr(pool, "stream_ends", {})
                 sample = {
                     "engine": getattr(pool, "engine_id", "whistle"),
@@ -226,7 +348,19 @@ class DiagnosticVideo:
                     "waiting": pool.waiting,
                     "diagnosticCpu": round(used * 100, 2),
                     "diagnosticMiB": round(rss / 1024**2, 1),
-                    "lanes": [self._lane_sample(pool, t) for t in transcribers[:10]],
+                    "lanes": self._lane_samples(pool, owner, speakers, labels, now),
+                    "admission": admission,
+                    "decision": (
+                        self._decision(governor, owner, labels) if governor is not None else None
+                    ),
+                    "p95": lag_meter.p95() if lag_meter is not None else None,
+                    "threads": getattr(pool, "threads", 1),
+                    "segmentSeconds": max(
+                        (getattr(t, "SEGMENT_SECONDS", 0) for t in transcribers), default=None
+                    ),
+                    "cpuWeight": weight,
+                    "oomKills": data.get("oomKills", 0),
+                    "engineRestarts": getattr(pool, "restarts", getattr(pool, "failures", 0)),
                     "samplerMs": round((time.thread_time() - started) * 1000, 2),
                 }
                 process.stdin.write((json.dumps(sample) + "\n").encode())
@@ -247,7 +381,7 @@ class DiagnosticVideo:
                     return
                 previous_cpu, previous_time = cpu, now
                 previous_host, previous_caption = host, caption
-                await asyncio.sleep(2)
+                await asyncio.sleep(SAMPLE_S)
         except asyncio.CancelledError:
             self.state = self._stop_reason
             raise

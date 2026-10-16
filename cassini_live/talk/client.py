@@ -56,6 +56,9 @@ from websockets import connect
 from websockets.exceptions import WebSocketException
 
 LOGGER = logging.getLogger("lt.spreed_client")
+# Participant names for the diagnostic video: at most one Talk participants request per
+# room every 10 s. Unjustified beyond "join bursts coalesce"; names are cosmetic.
+NAMES_REFRESH_S = 10
 
 
 @dataclasses.dataclass
@@ -67,6 +70,19 @@ class PeerConnection:
 # How long to wait for an offer after sending a "requestoffer" before sending
 # another request for the same session id. In seconds.
 OFFER_REQUEST_COOLDOWN = 10
+
+
+def names_wanted() -> bool:
+	"""Names are read only for the opt-in diagnostic video, which alone shows them."""
+	return os.environ.get("CASSINI_LIVE_DEBUG_VIDEO", "").lower() in ("1", "true")
+
+
+def speaker_label(participant: dict) -> str:
+	"""Talk attendee -> the label the diagnostic video shows over that speaker's lane."""
+	name = str(participant.get("displayName") or "").strip()
+	if participant.get("actorType") in ("guests", "emails"):
+		return f"Guest · {name}" if name else "Guest"
+	return name or "Participant"
 
 
 class SpreedClient:
@@ -93,6 +109,13 @@ class SpreedClient:
 		self.targets: dict[str, Target] = {}
 		self.target_lock = asyncio.Lock()
 		self.nc_sid_map: dict[str, str] = {}  # {"nc_session_id": "session_id"}, use the same target lock
+		# Display names for the diagnostic video, read as the Nextcloud user who enabled
+		# captions here: {"nc_session_id": label}. Never logged; only this room's video
+		# shows them.
+		self.name_user: str | None = None
+		self.speaker_names: dict[str, str] = {}
+		self._names_at = 0.0
+		self._names_task: asyncio.Task | None = None
 		# the first target's Nextcloud session ID, used to defer the first target add until we join the call
 		self._nc_sid_wait_stash: dict[str, None] = {}
 		self.transcript_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
@@ -612,6 +635,55 @@ class SpreedClient:
 				}
 			})
 
+	def note_user(self, user_id: str | None):
+		"""Remember a Nextcloud user who is in this room, to read participant names as."""
+		if user_id and not self.name_user:
+			self.name_user = user_id
+			self.refresh_names()
+
+	def refresh_names(self):
+		"""Coalesce participant changes into at most one names request per NAMES_REFRESH_S."""
+		if not self.name_user or self._closing or self.defunct.is_set() or not names_wanted():
+			return
+		if self._names_task and not self._names_task.done():
+			return
+		self._names_task = asyncio.create_task(
+			self._refresh_names(), name=f"participant_names-{self.room_token}"
+		)
+
+	async def _refresh_names(self):
+		await asyncio.sleep(max(0.0, self._names_at + NAMES_REFRESH_S - time.monotonic()))
+		self._names_at = time.monotonic()
+		try:
+			nc = AsyncNextcloudApp()
+			await nc.set_user(self.name_user)
+			participants = await nc.ocs(
+				"GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{self.room_token}/participants"
+			)
+		except asyncio.CancelledError:
+			raise
+		except Exception as error:
+			# Names are cosmetic: the video falls back to generic labels. No names logged.
+			LOGGER.debug("Could not read participant names (%s)", type(error).__name__, extra={
+				"room_token": self.room_token,
+				"tag": "participants",
+			})
+			return
+		names = {}
+		for participant in participants if isinstance(participants, list) else []:
+			label = speaker_label(participant)
+			for nc_sid in participant.get("sessionIds") or []:
+				if isinstance(nc_sid, str):
+					names[nc_sid] = label
+		self.speaker_names = names
+
+	def speaker_name(self, session_id: str) -> str | None:
+		"""The display label for a signaling session in this room, if known."""
+		for nc_sid, sid in list(self.nc_sid_map.items()):
+			if sid == session_id:
+				return self.speaker_names.get(nc_sid)
+		return None
+
 	async def close(self):
 		async with self._shutdown_lock:
 			await self._close_connection()
@@ -625,6 +697,9 @@ class SpreedClient:
 			return
 
 		self._closing = True
+		if self._names_task and not self._names_task.done():
+			self._names_task.cancel()
+		self.speaker_names = {}
 
 		if self._deferred_close_task and not self._deferred_close_task.done():
 			LOGGER.debug("Cancelling deferred close task", extra={
@@ -1007,6 +1082,8 @@ class SpreedClient:
 						continue
 
 					# user connected, keep a map of Nextcloud session IDs to HPB session IDs
+					if user_desc.get("nextcloudSessionId") not in self.speaker_names:
+						self.refresh_names()
 					async with self.target_lock:
 						# not sure why a KeyError is hit when the monitor task is cancelled,
 						# adding a guard to prevent error logs

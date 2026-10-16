@@ -223,7 +223,7 @@ def create_app(
             raise HTTPException(400, "The active speech engine does not support this language")
 
     @app.post("/api/v1/call/transcribe")
-    async def transcribe_call(req: TranscribeRequest):
+    async def transcribe_call(req: TranscribeRequest, request: Request):
         nonlocal call_starts
         require_enabled()
         if req.translationTargetLangId:
@@ -247,6 +247,11 @@ def create_app(
             raise HTTPException(
                 503, "Could not connect captions to Talk; please try again"
             ) from error
+        # AppAPI names the requesting user; the diagnostic video reads this room's
+        # participant names as them. Guests have no user id and are skipped.
+        client = getattr(service, "clients", {}).get(req.roomToken)
+        if req.enable and client is not None and hasattr(client, "note_user"):
+            client.note_user(request.scope.get("username") or None)
         return {"message": "Captions enabled" if req.enable else "Captions disabled"}
 
     @app.post("/api/v1/call/set-language")

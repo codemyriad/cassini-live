@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import weakref
 from types import SimpleNamespace
 
 import av
@@ -294,7 +295,31 @@ def test_history_columns_turn_counters_into_lane_states():
         "lanes": {1: "speech", 2: "lost", 3: "waiting", 4: "speech"},
         "finals": 2,
         "drops": 1,
+        "lag": None,
+        "shed": False,
     }
+
+
+def test_history_columns_carry_lag_sheds_and_pauses():
+    previous = {"lanes": [{"id": 1, "speech": 3}], "admission": {"shedEvents": 2}}
+    data = {
+        "lanes": [{"id": 1, "speech": 4, "paused": True}],
+        "admission": {"shedEvents": 3, "lagSeconds": 2.4},
+    }
+    column = history_column(previous, data, 5.0)
+    assert column["lanes"] == {1: "paused"}
+    assert column["lag"] == 2.4 and column["shed"] is True
+    assert history_column(data, data, 6.0)["shed"] is False
+
+
+def test_one_frame_and_one_sample_per_second_over_two_minutes():
+    from cassini_live import diagnostic_video, diagnostics
+
+    assert diagnostic_video.FRAME_S == diagnostics.SAMPLE_S == 1.0
+    assert diagnostic_video.COLUMNS * diagnostic_video.FRAME_S == 120
+    assert diagnostic_video.COLUMNS * diagnostic_video.COLUMN_W == diagnostic_video.LANES_W
+    # The CPU stop rule still means six seconds above 15 % of one CPU.
+    assert diagnostics.HIGH_SAMPLES * diagnostics.SAMPLE_S == 6
 
 
 def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
@@ -316,7 +341,16 @@ def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
     samples = [video._lane_sample(pool, t) for t in (first, second, waiter)]
     assert [s["scribe"] for s in samples] == [1, 2, 0]
     assert [s["waiting"] for s in samples] == [False, False, True]
-    assert set(samples[0]) == {"id", "active", "speech", "lost", "scribe", "waiting"}
+    assert set(samples[0]) == {
+        "id",
+        "active",
+        "speech",
+        "lost",
+        "scribe",
+        "waiting",
+        "paused",
+        "lag",
+    }
     assert "secret-session" not in str(samples)
     # A replaced worker frees its number for the next one.
     pool.workers = {workers[1], replacement := object()}
@@ -329,6 +363,159 @@ def test_lanes_render_with_history_and_without_data():
     history = [{"t": time.monotonic(), "lanes": {1: "speech"}, "finals": 1, "drops": 0}]
     assert render(data, history).size == (WIDTH, HEIGHT)
     assert render({}).size == (WIDTH, HEIGHT)
+
+
+ADMISSION = {
+    "open": False,
+    "reason": "lag",
+    "seats": 2,
+    "ceiling": 4,
+    "lagSeconds": 1.3,
+    "cpuStall": 0.06,
+    "engineDuty": 0.97,
+    "shedEvents": 1,
+    "lagAdmit": 1.0,
+    "lagShed": 2.0,
+    "cpuStallAdmit": 0.2,
+    "holdOff": 10.0,
+}
+FULL = {
+    "engine": "nemotron-multilingual",
+    "quota": 4.0,
+    "limitMiB": 3072,
+    "captionMiB": 1340,
+    "vadActive": 3,
+    "capacity": 4,
+    "threads": 3,
+    "p95": 1.12,
+    "cpuWeight": 10,
+    "segmentSeconds": 8,
+    "admission": ADMISSION,
+    "decision": {"at": time.time(), "verb": "hold", "who": "Ana", "text": "lag 1.3 s"},
+    "lanes": [
+        {"id": 1, "name": "Ana Ferreira", "scribe": 1, "lag": 1.2},
+        {"id": 2, "name": "x" * 200, "paused": True},
+        {"id": 3, "waiting": True, "lag": 1.6},
+        {"id": 4, "other": True},
+    ],
+}
+
+
+@pytest.mark.parametrize("view", ["lanes", "pipeline"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        FULL,
+        {**FULL, "admission": {**ADMISSION, "observeOnly": True}},
+        {**FULL, "admission": {}, "decision": None, "lanes": []},
+        {},
+    ],
+    ids=["full", "observe", "no-governor", "empty"],
+)
+def test_both_views_render_full_observe_and_empty_data(data, view):
+    now = time.monotonic()
+    history = [
+        {
+            "t": now - 120 + i,
+            "lanes": {1: "speech", 2: "paused", 3: "waiting"},
+            "finals": i % 7 == 0,
+            "drops": 0,
+            "lag": 0.1 * (i % 30),
+            "shed": i == 90,
+        }
+        for i in range(130)
+    ]
+    assert render(data, history, view).size == (WIDTH, HEIGHT)
+
+
+def test_observe_only_decisions_are_worded_as_would(monkeypatch):
+    from cassini_live import diagnostic_video
+
+    drawn = []
+    real = diagnostic_video.ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, *args, **kwargs):
+        drawn.append(text)
+        return real(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(diagnostic_video.ImageDraw.ImageDraw, "text", spy)
+    render({**FULL, "admission": {**ADMISSION, "observeOnly": True}}, [], "lanes")
+    assert "Would hold new voices" in drawn and "would hold Ana" in drawn
+    assert "would hold: lag" in drawn
+    drawn.clear()
+    render(FULL, [], "lanes")
+    assert "Holding new voices" in drawn and "hold Ana" in drawn
+
+
+def test_names_cross_the_pipe_for_the_owning_room_only(monkeypatch):
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    video = DiagnosticVideo(SimpleNamespace())
+    pool = SimpleNamespace(workers=set(), waiting=0)
+
+    class Transcriber:
+        def __init__(self):
+            self.gate = SimpleNamespace(active=True, chunks_emitted=1)
+            self.lost_chunks, self.worker, self.paused_until = 0, None, None
+            self.pending_since = None
+            self.queue = SimpleNamespace(qsize=lambda: 0)
+
+    mine, theirs, unknown = Transcriber(), Transcriber(), Transcriber()
+    owner = SimpleNamespace(
+        transcribers={"s1": mine, "s3": unknown},
+        speaker_name={"s1": "Ana Ferreira"}.get,
+    )
+    other = SimpleNamespace(transcribers={"s2": theirs}, speaker_name={"s2": "Bob Secret"}.get)
+    speakers, labels = video._speakers(owner, [owner, other])
+    lanes = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    by_id = {lane["id"]: lane for lane in lanes}
+    assert by_id[video._lane(mine)]["name"] == "Ana Ferreira"
+    assert by_id[video._lane(unknown)]["name"] == "Participant"
+    assert by_id[video._lane(theirs)] == {**by_id[video._lane(theirs)], "other": True}
+    assert "name" not in by_id[video._lane(theirs)]
+    assert "Bob Secret" not in str(lanes) and "Bob Secret" not in str(labels)
+    # With more than ten speakers, the owning room's lanes are kept.
+    crowd = [SimpleNamespace(transcribers={f"x{i}": Transcriber()}) for i in range(12)]
+    speakers, labels = video._speakers(owner, [*crowd, owner])
+    lanes = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    assert len(lanes) == 10 and sum("name" in lane for lane in lanes) == 2
+
+
+def test_decision_line_names_only_the_owning_room():
+    from cassini_live.load import THRESHOLDS
+
+    video = DiagnosticVideo(SimpleNamespace())
+
+    class Box:  # SimpleNamespace is not weakly referenceable
+        pass
+
+    mine, theirs = Box(), Box()
+    governor = SimpleNamespace(
+        thresholds=THRESHOLDS,
+        last_decision={
+            "at": 10.0,
+            "reason": "lag",
+            "seats": 2,
+            "ceiling": 4,
+            "lag": 1.3,
+            "cpuStall": 0.05,
+            "headroomMiB": 1800,
+        },
+        last_decision_ref=weakref.ref(theirs),
+        last_shed=None,
+        last_shed_ref=None,
+    )
+    labels = {mine: "Ana Ferreira"}
+    decision = video._decision(governor, None, labels)
+    assert decision["verb"] == "hold" and decision["who"] == "someone in another call"
+    assert "lag 1.3 s ≥ admit 1.0" in decision["text"]
+    governor.last_decision = {**governor.last_decision, "reason": None, "at": 11.0}
+    governor.last_decision_ref = weakref.ref(mine)
+    decision = video._decision(governor, None, labels)
+    assert decision["verb"] == "admit" and decision["who"] == "Ana Ferreira"
+    assert decision["text"].startswith("seat 2 of 4 · lag 1.3 s < 1.0 · stall 5%")
+    governor.last_shed, governor.last_shed_ref = {"at": 12.0, "lag": 2.3}, weakref.ref(mine)
+    decision = video._decision(governor, None, labels)
+    assert decision["verb"] == "pause" and "shed 2.0" in decision["text"]
 
 
 async def test_publisher_end_is_logged_with_its_reason(monkeypatch, caplog):

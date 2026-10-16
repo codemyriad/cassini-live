@@ -1,4 +1,5 @@
-"""Isolated 0.5 fps VP8 diagnostic publisher; stdin contains aggregate metrics only."""
+"""Isolated 1 fps VP8 diagnostic publisher; stdin carries aggregate metrics and, for the
+owning room only, its speakers' display names."""
 
 import asyncio
 import fractions
@@ -32,20 +33,38 @@ WIDTH, HEIGHT = 960, 540
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 FONT = f"{FONT_DIR}/DejaVuSansCondensed.ttf"
 FONT_BOLD = f"{FONT_DIR}/DejaVuSansCondensed-Bold.ttf"
+FONT_ITALIC = f"{FONT_DIR}/DejaVuSansCondensed-Oblique.ttf"
 FONT_MONO = f"{FONT_DIR}/DejaVuSansMono.ttf"
 # Debian's fonts-dejavu-core lacks the condensed faces; degrade rather than fail.
 if not os.path.exists(FONT_BOLD):
     FONT, FONT_BOLD = f"{FONT_DIR}/DejaVuSans.ttf", f"{FONT_DIR}/DejaVuSans-Bold.ttf"
+if not os.path.exists(FONT_ITALIC):
+    FONT_ITALIC = FONT
 
-# Two minutes of history at one column per two-second sample.
-COLUMNS, COLUMN_W = 60, 12
-LANES_X, LANES_Y, LANES_W, LANES_H, LANE_GAP = 64, 218, COLUMNS * COLUMN_W, 212, 8
+# One frame and one metrics sample per second: the governor ticks once per second, so a
+# faster frame would repeat the same figures. Measured at 0.5 fps on staging: 1.5-4.9 %
+# of one CPU; per-frame cost is the same, so 1 fps stays under the 15 % stop rule.
+FRAME_S = 1.0
+# Two minutes of history at one 6 px column per one-second sample.
+COLUMNS, COLUMN_W = 120, 6
+LANES_X, LANES_Y, LANES_W = 32, 214, COLUMNS * COLUMN_W
+LANES_H, LANE_GAP = 152, 8  # Four 30 px lanes with 8 px gaps fill the band (mockup).
 NOW_X = LANES_X + LANES_W
-MEMORY_PAUSE = 0.8  # Safety controller stops captions at 80% of the memory budget.
+TAG_X, TAG_W = NOW_X + 12, WIDTH - 32 - NOW_X - 12
+GRAPH_Y, GRAPH_H = 372, 58
+# 0.7.3 still trips at 80 % of the memory budget (safety.py pressure_problem).
+MEMORY_PAUSE = 0.8
+# The lanes and pipeline views alternate; 20 s is long enough to read either one.
+VIEW_S = 20
+# A late joiner sees the feed within 4 s (it waited up to 2 s at 0.5 fps all-keyframe).
+KEYFRAME_EVERY = 4
+QUANTIZER = 40  # text stays legible at 960x540; see DashboardTrack for frame sizes
+NAME_MAX = 40  # characters; longer names are cut with an ellipsis before drawing
 
 BG = "#090909"
 LANE_BG = "#141413"
 TRACK_BG = "#262624"
+CHIP_BG = "#151514"
 TEXT_MAIN = "#e5e5d9"
 TEXT_SOFT = "#c9c9bf"
 TEXT_DIM = "#9d9d94"
@@ -62,13 +81,14 @@ RED = "#ff6f4c"
 RED_BG = "#2d1510"
 
 _FONTS = {}
-_BASE_IMAGE = None
+_BASE_IMAGES = {}
+_STRIPES = None
 
 
 def _font(kind, size):
     key = (kind, size)
     if key not in _FONTS:
-        path = {"regular": FONT, "bold": FONT_BOLD, "mono": FONT_MONO}[kind]
+        path = {"regular": FONT, "bold": FONT_BOLD, "italic": FONT_ITALIC, "mono": FONT_MONO}[kind]
         _FONTS[key] = ImageFont.truetype(path, size)
     return _FONTS[key]
 
@@ -104,44 +124,97 @@ def _saturn(image, x, y, size=32):
     image.paste(small, (x, y), small)
 
 
-def _base_image():
-    global _BASE_IMAGE
-    if _BASE_IMAGE is None:
+def _stripes():
+    """Amber diagonal hatching for paused speech, pasted through a mask per box."""
+    global _STRIPES
+    if _STRIPES is None:
+        tile = Image.new("RGB", (WIDTH, 40), AMBER_BG)
+        draw = ImageDraw.Draw(tile)
+        for x in range(-40, WIDTH + 40, 9):
+            draw.line((x, 40, x + 40, 0), fill=AMBER, width=4)
+        _STRIPES = tile
+    return _STRIPES
+
+
+def _paste_stripes(image, box):
+    x0, y0, x1, y1 = (int(v) for v in box)
+    if x1 <= x0 or y1 <= y0:
+        return
+    region = _stripes().crop((x0, 0, x1, min(40, y1 - y0)))
+    image.paste(region, (x0, y0))
+
+
+def _header(image, draw, data, pill, title=None):
+    x0 = 76 + _font("bold", 26).getlength("Cassini") + 12
+    if title:
+        _spaced(draw, x0 + 4, 46, title, _font("bold", 14), TEXT_DIM)
+    else:
+        label, ink, bg = pill
+        pill_font = _font("bold", 17)
+        x1 = x0 + 12 + 10 + 8 + pill_font.getlength(label) + 12
+        draw.rounded_rectangle((x0, 25, x1, 55), 15, fill=bg)
+        draw.ellipse((x0 + 12, 35, x0 + 22, 45), fill=ink)
+        draw.text((x0 + 30, 40), label, font=pill_font, fill=ink, anchor="lm")
+    clock = time.strftime("%H:%M:%S UTC", time.gmtime())
+    clock_font, text_font = _font("mono", 17), _font("regular", 17)
+    x = WIDTH - 32
+    draw.text((x, 40), clock, font=clock_font, fill=TEXT_DIM, anchor="rm")
+    x -= clock_font.getlength(clock) + 18
+    engine = data.get("engine", "whistle")
+    shape = ENGINE_LABELS.get(engine, engine)
+    quota, limit = data.get("quota"), data.get("limitMiB")
+    if quota and limit:
+        shape += f" · {float(quota):g} CPU · {int(limit) / 1024:.3g} GiB"
+    draw.text((x, 40), shape, font=text_font, fill=TEXT_SOFT, anchor="rm")
+    x -= text_font.getlength(shape) + 14
+    if (data.get("admission") or {}).get("observeOnly"):
+        badge = "observe only"
+        font = _font("mono", 13)
+        w = font.getlength(badge) + 18
+        draw.rounded_rectangle((x - w, 28, x, 52), 4, outline=OUTLINE, width=2)
+        draw.text((x - w / 2, 40), badge, font=font, fill=TEXT_DIM, anchor="mm")
+
+
+def _base_image(view):
+    if view not in _BASE_IMAGES:
         image = Image.new("RGB", (WIDTH, HEIGHT), BG)
         draw = ImageDraw.Draw(image)
-        _saturn(image, 32, 24)
+        _saturn(image, 32, 24, 34)
         draw.text((76, 40), "Cassini", font=_font("bold", 26), fill=TEXT_MAIN, anchor="lm")
-
-        _spaced(draw, 32, 206, "ONE LANE PER OPEN MIC", _font("bold", 16), TEXT_DIM)
-        # Swatch legend, right-aligned to the "now" line.
-        legend = _font("regular", 15)
-        items = [
-            ("fill", CYAN, "captioned"),
-            ("outline", WAITING, "waiting"),
-            ("fill", RED, "lost"),
-            ("mark", GOLD, "captions pause"),
-        ]
-        widths = [14 + 6 + legend.getlength(label) for _, _, label in items]
-        x = NOW_X - sum(widths) - 18 * (len(items) - 1)
-        for (kind, colour, label), w in zip(items, widths, strict=True):
-            if kind == "fill":
-                draw.rectangle((x, 193, x + 13, 206), fill=colour)
-            elif kind == "outline":
-                draw.rectangle((x, 193, x + 13, 206), outline=colour, width=3)
-            else:
-                draw.rectangle((x + 5, 190, x + 8, 209), fill=colour)
-            draw.text((x + 20, 206), label, font=legend, fill=TEXT_DIM, anchor="ls")
-            x += w + 18
-
-        draw.rectangle((LANES_X, 438, NOW_X - 1, 453), fill=LANE_BG)
-        draw.text((32, 446), "cc", font=_font("mono", 15), fill=GOLD, anchor="lm")
-        draw.rectangle((NOW_X, 214, NOW_X + 3, 457), fill=TEXT_DIM)
-        axis = _font("mono", 14)
-        draw.text((LANES_X, 476), "−2 min", font=axis, fill=TEXT_DIM, anchor="ls")
-        draw.text((LANES_X + LANES_W // 2, 476), "−1 min", font=axis, fill=TEXT_DIM, anchor="ms")
-        draw.text((NOW_X + 4, 476), "now", font=axis, fill=TEXT_DIM, anchor="rs")
-        _BASE_IMAGE = image
-    return _BASE_IMAGE
+        if view == "lanes":
+            _spaced(draw, 32, 206, "SPEAKERS, LAST TWO MINUTES", _font("bold", 14), TEXT_DIM)
+            legend = _font("regular", 15)
+            items = [
+                ("fill", CYAN, "captioned"),
+                ("outline", WAITING, "held"),
+                ("stripes", AMBER, "paused"),
+                ("fill", RED, "lost"),
+            ]
+            widths = [14 + 6 + legend.getlength(label) for _, _, label in items]
+            x = WIDTH - 32 - sum(widths) - 18 * (len(items) - 1)
+            for (kind, colour, label), w in zip(items, widths, strict=True):
+                box = (x, 193, x + 13, 206)
+                if kind == "fill":
+                    draw.rectangle(box, fill=colour)
+                elif kind == "outline":
+                    draw.rectangle(box, outline=colour, width=3)
+                else:
+                    _paste_stripes(image, (x, 193, x + 14, 207))
+                draw.text((x + 20, 206), label, font=legend, fill=TEXT_SOFT, anchor="ls")
+                x += w + 18
+            draw.rectangle((LANES_X, GRAPH_Y, NOW_X - 1, GRAPH_Y + GRAPH_H - 1), fill=LANE_BG)
+            draw.text(
+                (LANES_X + 8, GRAPH_Y + 2), "lag", font=_font("mono", 12), fill=GOLD, anchor="lt"
+            )
+            draw.rectangle((NOW_X - 1, LANES_Y, NOW_X + 1, GRAPH_Y + GRAPH_H - 1), fill=BAR_GREY)
+            axis = _font("mono", 13)
+            draw.text((LANES_X, 448), "−2 min", font=axis, fill=TEXT_DIM, anchor="ls")
+            draw.text(
+                (LANES_X + LANES_W // 2, 448), "−1 min", font=axis, fill=TEXT_DIM, anchor="ms"
+            )
+            draw.text((NOW_X, 448), "now", font=axis, fill=TEXT_DIM, anchor="rs")
+        _BASE_IMAGES[view] = image
+    return _BASE_IMAGES[view]
 
 
 ENGINE_LABELS = {
@@ -150,9 +223,35 @@ ENGINE_LABELS = {
     "nemotron-multilingual": "Nemotron ML",
 }
 
+REASONS = {
+    "lag": "lag",
+    "cpu": "CPU stall",
+    "memory": "memory",
+    "ceiling": "all seats taken",
+    "shed": "paused",
+}
+
 
 def _plural(n, one, many):
     return one if n == 1 else many
+
+
+def _seconds(value):
+    return "–" if value is None else f"{float(value):.1f} s"
+
+
+def _fit(text, font, width):
+    """Cut text with an ellipsis so it fits `width` pixels."""
+    if font.getlength(text) <= width:
+        return text
+    while text and font.getlength(text + "…") > width:
+        text = text[:-1]
+    return text + "…"
+
+
+def _admission(data):
+    admission = data.get("admission") or {}
+    return admission, bool(admission.get("observeOnly"))
 
 
 def _status(data, history):
@@ -161,32 +260,42 @@ def _status(data, history):
     recent = time.monotonic() - 60
     if any(c["drops"] for c in history if c["t"] >= recent):
         return "Audio lost", RED, RED_BG
+    admission, observing = _admission(data)
+    if admission and not admission.get("open", True):
+        return ("Would hold new voices" if observing else "Holding new voices"), AMBER, AMBER_BG
     if int(data.get("waiting", 0)):
         return "Speakers waiting", AMBER, AMBER_BG
-    if int(data.get("capacity", 0)) and int(data.get("spare", 0)) == 0:
-        return "At capacity", AMBER, AMBER_BG
     return "Captions live", CYAN, CYAN_BG
 
 
-def _hero(draw, x, number, colour):
-    big = _font("bold", 96)
-    draw.text((x, 122), number, font=big, fill=colour, anchor="lm")
-    return x + big.getlength(number) + 14
+def _hero(draw, x, number, colour, suffix=None, suffix_colour=None):
+    big = _font("bold", 84)
+    draw.text((x, 124), number, font=big, fill=colour, anchor="lm")
+    x += big.getlength(number)
+    if suffix:
+        small = _font("bold", 40) if suffix.startswith(" ") else big
+        draw.text(
+            (x, 124 + (20 if small is not big else 0)),
+            suffix,
+            font=small,
+            fill=suffix_colour or colour,
+            anchor="lm" if small is big else "ls",
+        )
+        x += small.getlength(suffix)
+    return x + 14
 
 
-def _label(draw, x, y, first, second):
-    font = _font("regular", 22)
-    draw.text((x, y), first, font=font, fill=TEXT_SOFT, anchor="lm")
-    draw.text((x, y + 26), second, font=font, fill=TEXT_SOFT, anchor="lm")
+def _label(draw, x, y, first, second, colour=TEXT_SOFT):
+    font = _font("regular", 21)
+    draw.text((x, y), first, font=font, fill=colour, anchor="lm")
+    draw.text((x, y + 25), second, font=font, fill=colour, anchor="lm")
 
 
-def _limit_bar(draw, right, label, fraction, mark=None, warn=0.6):
-    """Draw "label [bar] NN%" ending at `right`; return its left edge."""
-    value = f"{fraction * 100:.0f}%"
-    vfont, lfont = _font("mono", 14), _font("regular", 15)
-    x = right - vfont.getlength("100%")
-    draw.text((right, 522), value, font=vfont, fill=TEXT_SOFT, anchor="rd")
-    x -= 10 + 100
+def _limit_bar(draw, x, label, fraction, text, mark=None, warn=0.6):
+    """Draw "label [bar] text" starting at `x`; return its right edge."""
+    lfont, vfont = _font("regular", 15), _font("mono", 14)
+    draw.text((x, 522), label, font=lfont, fill=TEXT_MAIN, anchor="ld")
+    x += lfont.getlength(label) + 8
     draw.rectangle((x, 509, x + 99, 518), fill=TRACK_BG)
     clamped = max(0.0, min(1.0, fraction))
     if clamped > 0:
@@ -194,61 +303,93 @@ def _limit_bar(draw, right, label, fraction, mark=None, warn=0.6):
         draw.rectangle((x, 509, x + max(2, round(100 * clamped)) - 1, 518), fill=colour)
     if mark is not None:
         mx = x + round(100 * mark)
-        draw.rectangle((mx - 2, 505, mx + 1, 522), fill=GOLD)
-    x -= 8
-    draw.text((x, 522), label, font=lfont, fill=TEXT_MAIN, anchor="rd")
-    return x - lfont.getlength(label)
+        draw.rectangle((mx - 1, 505, mx + 1, 522), fill=GOLD)
+    x += 108
+    draw.text((x, 522), text, font=vfont, fill=TEXT_SOFT, anchor="ld")
+    return x + vfont.getlength(text)
 
 
-def render(data, history=()):
-    image = _base_image().copy()
+def _metric(draw, x, label, value, colour=TEXT_SOFT):
+    lfont, vfont = _font("regular", 15), _font("mono", 14)
+    draw.text((x, 522), label, font=lfont, fill=TEXT_MAIN, anchor="ld")
+    x += lfont.getlength(label) + 8
+    draw.text((x, 522), value, font=vfont, fill=colour, anchor="ld")
+    return x + vfont.getlength(value)
+
+
+def _percent(value):
+    return "–" if value is None else f"{float(value) * 100:.0f}%"
+
+
+def _lane_label(lane):
+    if lane.get("other"):
+        return "other call", "italic", TEXT_DIM
+    return (lane.get("name") or "Participant")[:NAME_MAX], "bold", TEXT_MAIN
+
+
+def render(data, history=(), view="lanes"):
+    if view == "pipeline":
+        return _render_pipeline(data, list(history))
+    return _render_lanes(data, list(history))
+
+
+def _render_lanes(data, history):
+    image = _base_image("lanes").copy()
     draw = ImageDraw.Draw(image)
-    history = list(history)
+    admission, observing = _admission(data)
+    _header(image, draw, data, _status(data, history))
 
-    # Header: status pill and clock.
-    label, ink, bg = _status(data, history)
-    pill_font = _font("bold", 17)
-    x0 = 76 + _font("bold", 26).getlength("Cassini") + 12
-    x1 = x0 + 12 + 10 + 8 + pill_font.getlength(label) + 12
-    draw.rounded_rectangle((x0, 25, x1, 55), 15, fill=bg)
-    draw.ellipse((x0 + 12, 35, x0 + 22, 45), fill=ink)
-    draw.text((x0 + 30, 40), label, font=pill_font, fill=ink, anchor="lm")
-    clock = time.strftime("%H:%M:%S UTC", time.gmtime())
-    clock_font = _font("mono", 17)
-    draw.text((WIDTH - 32, 40), clock, font=clock_font, fill=TEXT_DIM, anchor="rm")
-    engine = data.get("engine", "whistle")
-    draw.text(
-        (WIDTH - 32 - clock_font.getlength(clock) - 20, 40),
-        ENGINE_LABELS.get(engine, engine),
-        font=_font("regular", 17),
-        fill=TEXT_SOFT,
-        anchor="rm",
-    )
-
-    # Hero row: voices now, room for more, captions per minute.
+    # Hero row: voices now, seats taken of the ceiling, how far captions trail speech.
     voices = int(data.get("vadActive", 0))
     x = _hero(draw, 32, str(voices), CYAN)
-    _label(draw, x, 109, _plural(voices, "voice", "voices"), "heard now")
+    _label(draw, x, 112, _plural(voices, "voice", "voices"), "heard now")
 
-    spare = int(data.get("spare", 0))
-    capacity = int(data.get("capacity", 0))
-    busy = int(data.get("busy", 0))
-    x = _hero(draw, 339, f"+{spare}", TEXT_MAIN if spare else AMBER)
-    _label(draw, x, 99, f"more {_plural(spare, 'voice', 'voices')}", "fit now")
-    for i in range(min(capacity, 8)):
-        bx = x + i * 34
-        if i < busy:
-            draw.rectangle((bx, 146, bx + 27, 157), fill=CYAN)
+    seats = int(admission.get("seats", data.get("busy", 0)) or 0)
+    ceiling = int(admission.get("ceiling", data.get("capacity", 0)) or 0)
+    closed = bool(admission) and not admission.get("open", True)
+    x = _hero(draw, 288, str(seats), TEXT_MAIN, f"/{ceiling}", OUTLINE)
+    reason = REASONS.get(admission.get("reason"), admission.get("reason") or "")
+    if closed:
+        _label(
+            draw,
+            x,
+            100,
+            "seats taken",
+            ("would hold: " if observing else "holding: ") + reason,
+            AMBER,
+        )
+    else:
+        _label(draw, x, 100, "seats", "taken")
+    for i in range(min(ceiling, 8)):
+        bx = x + i * 32
+        if i < seats:
+            draw.rectangle((bx, 142, bx + 25, 153), fill=CYAN)
         else:
-            draw.rectangle((bx, 146, bx + 27, 157), outline=OUTLINE, width=3)
+            draw.rectangle((bx, 142, bx + 25, 153), outline=OUTLINE, width=3)
 
-    now = time.monotonic()
-    finals = sum(c["finals"] for c in history if c["t"] >= now - 60)
-    span = now - history[0]["t"] if history else 0
-    x = _hero(draw, 645, str(finals), GOLD)
-    _label(draw, x, 109, "captions", "per minute" if span >= 58 else "so far")
+    lag = admission.get("lagSeconds")
+    lag_admit = float(admission.get("lagAdmit") or 1.0)
+    lag_shed = float(admission.get("lagShed") or 2.0)
+    late = lag is not None and float(lag) >= lag_admit
+    colour = AMBER if late else GOLD
+    x = _hero(
+        draw,
+        610,
+        "–" if lag is None else f"{float(lag):.1f}",
+        colour,
+        None if lag is None else " s",
+    )
+    _label(draw, x, 100, "captions trail", "speech by")
+    # 0-3 s scale: the shed threshold sits two thirds along, the admit one a third.
+    scale = 130 / 3.0
+    draw.rectangle((x, 142, x + 129, 153), fill=TRACK_BG)
+    if lag:
+        draw.rectangle((x, 142, x + min(129, max(2, round(float(lag) * scale))), 153), fill=colour)
+    for value, mark in ((lag_admit, TEXT_SOFT), (lag_shed, RED)):
+        mx = x + round(min(3.0, value) * scale)
+        draw.rectangle((mx - 1, 138, mx, 157), fill=mark)
 
-    # Lanes: one per open mic, newest column against the "now" line.
+    # Lanes: one per open microphone, newest column against the "now" line.
     lanes = sorted(data.get("lanes", []), key=lambda lane: lane["id"])[:10]
     columns = history[-COLUMNS:]
     if not lanes:
@@ -259,18 +400,13 @@ def render(data, history=()):
             fill=TEXT_DIM,
             anchor="mm",
         )
-    lane_h = min(36, (LANES_H + LANE_GAP) // max(1, len(lanes)) - LANE_GAP)
-    tag_font = _font("bold", 18 if lane_h >= 30 else 15 if lane_h >= 20 else 12)
+    lane_h = min(30, (LANES_H + LANE_GAP) // max(1, len(lanes)) - LANE_GAP)
+    tag_font = _font("bold", 16 if lane_h >= 24 else 12)
+    tag_mono = _font("mono", 14 if lane_h >= 24 else 11)
+    chip_size = 15 if lane_h >= 24 else 11 if lane_h >= 14 else 9
     for row, lane in enumerate(lanes):
         y = LANES_Y + row * (lane_h + LANE_GAP)
         draw.rectangle((LANES_X, y, NOW_X - 1, y + lane_h - 1), fill=LANE_BG)
-        draw.text(
-            (32, y + lane_h / 2),
-            f"{row + 1:02d}",
-            font=_font("mono", min(15, lane_h)),
-            fill=TEXT_DIM,
-            anchor="lm",
-        )
         states = [c["lanes"].get(lane["id"]) for c in columns]
         start = 0
         for i in range(1, len(states) + 1):
@@ -279,55 +415,322 @@ def render(data, history=()):
             state = states[start]
             if state:
                 left = NOW_X - (len(states) - start) * COLUMN_W
-                right = NOW_X - (len(states) - i) * COLUMN_W - 3
+                right = NOW_X - (len(states) - i) * COLUMN_W - 2
                 box = (left, y, right, y + lane_h - 1)
                 if state == "waiting":
                     draw.rectangle(box, outline=WAITING, width=3)
+                elif state == "paused":
+                    _paste_stripes(image, (left, y, right + 1, y + lane_h))
                 else:
                     draw.rectangle(box, fill=RED if state == "lost" else CYAN)
             start = i
-        tag = (NOW_X + 12, y, NOW_X + 147, y + lane_h - 1)
-        if lane.get("scribe"):
-            draw.rectangle(tag, fill=CYAN)
-            draw.text(
-                (tag[0] + 10, y + lane_h / 2),
-                f"{'scribe' if engine == 'whistle' else 'slot'} {lane['scribe']}",
-                font=tag_font,
-                fill=CYAN_INK,
-                anchor="lm",
-            )
-        elif lane.get("waiting"):
+        # The speaker's name, over the lane's oldest end.
+        text, kind, ink = _lane_label(lane)
+        font = _font(kind, chip_size)
+        text = _fit(text, font, LANES_W // 2)
+        cw = font.getlength(text) + 16
+        ch = max(10, min(22, lane_h - 8))
+        cy = y + (lane_h - ch) / 2
+        draw.rounded_rectangle((LANES_X + 6, cy, LANES_X + 6 + cw, cy + ch), 3, fill=CHIP_BG)
+        draw.text((LANES_X + 14, y + lane_h / 2), text, font=font, fill=ink, anchor="lm")
+
+        tag = (TAG_X, y, TAG_X + TAG_W, y + lane_h - 1)
+        lane_lag = lane.get("lag")
+        lag_text = "" if lane_lag is None else _seconds(lane_lag)
+        slot = "scribe" if data.get("engine", "whistle") == "whistle" else "slot"
+        if lane.get("paused"):
             draw.rectangle(tag, outline=AMBER, width=3)
+            name, ink, value = "paused", AMBER, lag_text
+        elif lane.get("scribe"):
+            draw.rectangle(tag, fill=CYAN)
+            name, ink, value = f"{slot} {lane['scribe']}", CYAN_INK, lag_text
+        elif lane.get("waiting"):
+            draw.rectangle(tag, outline=WAITING, width=3)
+            name, ink, value = "held", CYAN, lag_text
+        else:
+            draw.rectangle(tag, outline=TRACK_BG, width=2)
+            name, ink, value = "idle", OUTLINE, ""
+        draw.text((TAG_X + 10, y + lane_h / 2), name, font=tag_font, fill=ink, anchor="lm")
+        if value:
             draw.text(
-                (tag[0] + 10, y + lane_h / 2), "waiting", font=tag_font, fill=AMBER, anchor="lm"
+                (TAG_X + TAG_W - 10, y + lane_h / 2), value, font=tag_mono, fill=ink, anchor="rm"
             )
 
-    # Caption lines sent, aligned with the lanes' columns.
-    for j, column in enumerate(columns):
-        if column["finals"]:
-            left = NOW_X - (len(columns) - j) * COLUMN_W + 3
-            draw.rectangle((left, 438, left + 5, 453), fill=GOLD)
+    # Lag graph: two minutes of control lag against the admit and shed lines.
+    def gy(value):
+        return GRAPH_Y + 50 - min(2.5, max(0.0, float(value))) * 18
 
-    # Footer: the tile's own cost, then the service's safety limits.
+    for value, mark in ((lag_admit, TEXT_SOFT), (lag_shed, RED)):
+        yy = round(gy(value))
+        for xx in range(LANES_X, NOW_X - 1, 8):
+            draw.line((xx, yy, min(xx + 3, NOW_X - 2), yy), fill=mark, width=1)
+    points = []
+    for j, column in enumerate(columns):
+        cx = NOW_X - (len(columns) - j) * COLUMN_W + COLUMN_W / 2
+        if column.get("shed"):
+            draw.rectangle((cx - 1, GRAPH_Y, cx + 1, GRAPH_Y + GRAPH_H - 1), fill=AMBER)
+        if column["finals"]:
+            draw.rectangle((cx - 2, GRAPH_Y + 52, cx + 2, GRAPH_Y + GRAPH_H - 1), fill=GOLD)
+        if column.get("lag") is not None:
+            points.append((cx, gy(column["lag"])))
+    if len(points) > 1:
+        draw.line(points, fill=GOLD, width=3, joint="curve")
+    legend = _font("mono", 12)
     draw.text(
-        (32, 522),
-        f"this tile: {float(data.get('diagnosticCpu', 0)):.0f}% CPU · "
+        (TAG_X - 2, GRAPH_Y + 10), f"shed {lag_shed:.1f} s", font=legend, fill=RED, anchor="lm"
+    )
+    draw.text(
+        (TAG_X - 2, GRAPH_Y + 28),
+        f"admit {lag_admit:.1f} s",
+        font=legend,
+        fill=TEXT_SOFT,
+        anchor="lm",
+    )
+    draw.text((TAG_X - 2, GRAPH_Y + 46), "▮ caption sent", font=legend, fill=GOLD, anchor="lm")
+
+    # Decision line: the governor's last admission decision and its inputs.
+    decision = data.get("decision")
+    draw.rectangle((32, 462, WIDTH - 33, 489), fill=LANE_BG)
+    mono = _font("mono", 14)
+    if decision:
+        x = 42
+        when = time.strftime("%H:%M:%S", time.gmtime(float(decision.get("at", 0))))
+        draw.text((x, 476), when, font=mono, fill=TEXT_DIM, anchor="lm")
+        x += mono.getlength(when) + 10
+        verb = decision.get("verb", "")
+        if observing and verb:
+            verb = "would " + verb
+        verb_text = f"{verb} {decision.get('who', '')}".strip()
+        ink = CYAN if decision.get("verb") == "admit" else AMBER
+        draw.text((x, 476), verb_text, font=mono, fill=ink, anchor="lm")
+        x += mono.getlength(verb_text) + 10
+        sans = _font("regular", 16)
+        detail = _fit(decision.get("text", ""), sans, WIDTH - 42 - x)
+        draw.text((x, 476), detail, font=sans, fill=TEXT_SOFT, anchor="lm")
+    else:
+        draw.text((42, 476), "No admission decision yet", font=mono, fill=TEXT_DIM, anchor="lm")
+
+    # Footer: memory against its limit, CPU stall, engine duty, reply p95, the tile's cost.
+    limit = int(data.get("limitMiB", 0) or 0)
+    used = int(data.get("captionMiB", 0) or 0)
+    x = _limit_bar(
+        draw,
+        32,
+        "Memory",
+        used / max(1, limit),
+        f"{used / 1024:.2f}/{limit / 1024:.3g} GiB" if limit else "–",
+        mark=MEMORY_PAUSE,
+    )
+    stall = admission.get("cpuStall")
+    x = _metric(draw, x + 20, "CPU stall", _percent(stall))
+    duty = admission.get("engineDuty")
+    x = _metric(
+        draw,
+        x + 20,
+        "Engine busy",
+        _percent(duty),
+        AMBER if duty is not None and float(duty) >= 0.9 else TEXT_SOFT,
+    )
+    _metric(draw, x + 20, "Reply p95", _seconds(data.get("p95")))
+    draw.text(
+        (WIDTH - 32, 522),
+        f"tile {float(data.get('diagnosticCpu', 0)):.0f}% · "
         f"{float(data.get('diagnosticMiB', 0)):.0f} MiB · "
         f"{float(data.get('kbps', 0)):.0f} kbit/s",
-        font=_font("mono", 14),
+        font=_font("mono", 13),
         fill=TEXT_DIM,
-        anchor="ld",
+        anchor="rd",
     )
-    quota = max(0.1, float(data.get("quota", 1.0) or 1.0))
-    cpu = float(data.get("captionCpu", 0.0)) / (quota * 100)
-    memory = int(data.get("captionMiB", 0)) / max(1, int(data.get("limitMiB", 1) or 1))
-    x = _limit_bar(draw, WIDTH - 32, "CPU", cpu, warn=0.85)
-    _limit_bar(draw, x - 24, "Memory", memory, mark=MEMORY_PAUSE)
     return image
 
 
+def _render_pipeline(data, history):
+    image = _base_image("pipeline").copy()
+    draw = ImageDraw.Draw(image)
+    admission, observing = _admission(data)
+    _header(image, draw, data, None, "HOW A CAPTION IS MADE")
+
+    now = time.monotonic()
+    finals = sum(c["finals"] for c in history if c["t"] >= now - 60)
+    span = now - history[0]["t"] if history else 0
+    lanes = data.get("lanes", [])
+    seats = int(admission.get("seats", data.get("busy", 0)) or 0)
+    ceiling = int(admission.get("ceiling", data.get("capacity", 0)) or 0)
+    closed = bool(admission) and not admission.get("open", True)
+    reason = REASONS.get(admission.get("reason"), admission.get("reason") or "")
+    lag_admit = float(admission.get("lagAdmit") or 1.0)
+    lag_shed = float(admission.get("lagShed") or 2.0)
+    stall_admit = float(admission.get("cpuStallAdmit") or 0.2)
+    duty = admission.get("engineDuty")
+    engine = data.get("engine", "whistle")
+    used = int(data.get("captionMiB", 0) or 0)
+    limit = int(data.get("limitMiB", 0) or 0)
+    held = ("would hold: " if observing else "holding: ") + reason
+    threads, size = int(data.get("threads", 1) or 1), int(data.get("capacity", 0) or 0)
+    if engine == "whistle":
+        shape = f"{size} {_plural(size, 'worker', 'workers')}"
+    else:
+        shape = f"1 process, {size} {_plural(size, 'slot', 'slots')}"
+    stages = [
+        (
+            "1 · LISTEN",
+            "Microphones",
+            str(int(data.get("vadActive", 0))),
+            f"voices of {len(lanes)} {_plural(len(lanes), 'mic', 'mics')}",
+            "voice gate per mic\n32 ms frames\nsilence ends a turn",
+            CYAN,
+        ),
+        (
+            "2 · CUT",
+            "Speech pieces",
+            "1 s",
+            f"per piece, {data.get('segmentSeconds', 8)} s max",
+            f"queue {int(data.get('queuedChunks', 0))} of {6 * max(1, len(lanes))}\n"
+            "older than 4 s:\ndropped, not late",
+            CYAN,
+        ),
+        (
+            "3 · ADMIT",
+            "Seats",
+            f"{seats}/{ceiling}",
+            held if closed else "admitting",
+            f"first voice: always\nthen lag < {lag_admit:.1f} s\n"
+            f"and stall < {stall_admit * 100:.0f}%",
+            AMBER if closed else CYAN,
+        ),
+        (
+            "4 · RECOGNISE",
+            "Engine",
+            _percent(duty),
+            f"busy, {threads} {_plural(threads, 'thread', 'threads')}",
+            f"{shape}\nreply p95 {_seconds(data.get('p95'))}\n"
+            f"{used / 1024:.2f} of {limit / 1024:.3g} GiB"
+            if limit
+            else "memory –",
+            AMBER if duty is not None and float(duty) >= 0.9 else CYAN,
+        ),
+        (
+            "5 · SEND",
+            "Captions",
+            str(finals),
+            "lines per minute" if span >= 58 else "lines so far",
+            f"trail speech {_seconds(admission.get('lagSeconds'))}\nvia Talk signaling\n"
+            "no audio leaves",
+            GOLD,
+        ),
+    ]
+    x = 32
+    for i, (step, name, big, unit, detail, ink) in enumerate(stages):
+        draw.rectangle((x, 84, x + 151, 297), fill=LANE_BG)
+        draw.rectangle((x, 84, x + 151, 87), fill=ink)
+        _spaced(draw, x + 14, 112, step, _font("bold", 13), TEXT_DIM, spacing=0.1)
+        draw.text((x + 14, 136), name, font=_font("bold", 21), fill=TEXT_MAIN, anchor="ls")
+        draw.text((x + 14, 184), big, font=_fit_font(big, 46, 124), fill=ink, anchor="ls")
+        draw.text(
+            (x + 14, 206),
+            _fit(unit, _font("regular", 15), 128),
+            font=_font("regular", 15),
+            fill=TEXT_SOFT,
+            anchor="ls",
+        )
+        for k, line in enumerate(detail.split("\n")):
+            font = _font("regular", 14)
+            draw.text(
+                (x + 14, 248 + k * 18),
+                _fit(line, font, 128),
+                font=font,
+                fill=TEXT_DIM,
+                anchor="ls",
+            )
+        x += 152
+        if i < len(stages) - 1:
+            draw.line((x + 4, 190, x + 25, 190), fill=OUTLINE, width=3)
+            draw.line([(x + 20, 183), (x + 29, 190), (x + 20, 197)], fill=OUTLINE, width=3)
+            x += 34
+
+    mono = _font("mono", 14)
+    draw.text((32, 331), "◆", font=mono, fill=AMBER, anchor="lm")
+    draw.text(
+        (52, 331),
+        "Admission decides per speaker, the moment they start talking. "
+        "A seat, once given, is kept.",
+        font=mono,
+        fill=TEXT_SOFT,
+        anchor="lm",
+    )
+
+    weight = data.get("cpuWeight")
+    quota = f"{float(data['quota']):g} CPU" if data.get("quota") else "–"
+    gib = f"{limit / 1024:.3g} GiB" if limit else "–"
+    panels = [
+        (
+            "THE KERNEL PROTECTS THE CALL",
+            [
+                f"cpu.max     {quota} hard cap",
+                f"cpu.weight  {weight if weight else '–'}, Talk 100: we yield",
+                f"memory.max  {gib}, no swap",
+                "OOM         engine dies, Talk lives",
+            ],
+        ),
+        (
+            "LAG KEEPS CAPTIONS USEFUL",
+            [
+                f"lag ≥ {lag_admit:.1f} s   hold new voices",
+                f"lag ≥ {lag_shed:.1f} s   for 5 s: pause the",
+                f"              newest speaker {admission.get('holdOff', 10):g} s",
+                f"lag < {lag_admit / 2:.1f} s   for 5 s: reopen",
+            ],
+        ),
+        (
+            "ONLY A CRASH STOPS CAPTIONS",
+            [
+                "engine died    restart, ~2 s",
+                "3 deaths/60 s  rest 2 min, doubling",
+                "OOM kill       rest 2 min",
+                f"since start    {int(data.get('engineRestarts', 0))} "
+                f"{_plural(int(data.get('engineRestarts', 0)), 'restart', 'restarts')} · "
+                f"{int(data.get('oomKills', 0))} OOM",
+            ],
+        ),
+    ]
+    small = _font("mono", 12)
+    for i, (title, lines) in enumerate(panels):
+        px = 32 + i * (288 + 16)
+        draw.rectangle((px, 356, px + 287, 487), fill=LANE_BG)
+        _spaced(draw, px + 14, 380, title, _font("bold", 13), TEXT_DIM, spacing=0.1)
+        for k, line in enumerate(lines):
+            draw.text(
+                (px + 14, 404 + k * 20),
+                _fit(line, small, 262),
+                font=small,
+                fill=TEXT_SOFT,
+                anchor="ls",
+            )
+
+    note = "This view alternates with the lanes view every 20 s."
+    if observing:
+        note = "0.7.3 observes these rules; nothing is held or paused yet."
+    draw.text((32, 522), note, font=_font("mono", 13), fill=TEXT_DIM, anchor="ld")
+    draw.text(
+        (WIDTH - 32, 522),
+        f"tile {float(data.get('diagnosticCpu', 0)):.0f}% · "
+        f"{float(data.get('diagnosticMiB', 0)):.0f} MiB · "
+        f"{float(data.get('kbps', 0)):.0f} kbit/s",
+        font=_font("mono", 13),
+        fill=TEXT_DIM,
+        anchor="rd",
+    )
+    return image
+
+
+def _fit_font(text, size, width):
+    while size > 20 and _font("bold", size).getlength(text) > width:
+        size -= 2
+    return _font("bold", size)
+
+
 def history_column(previous, data, now):
-    """One two-second column from cumulative counters; previous is the last sample."""
+    """One one-second column from cumulative counters; previous is the last sample."""
 
     def delta(new, old):
         # Counters restart when a speaker's gate is rebuilt (language change).
@@ -341,17 +744,24 @@ def history_column(previous, data, now):
         lost = delta(lane.get("lost", 0), old.get("lost", lane.get("lost", 0)))
         if lost:
             lanes[lane["id"]] = "lost"
+        elif lane.get("paused"):
+            lanes[lane["id"]] = "paused"
         elif lane.get("waiting"):
             lanes[lane["id"]] = "waiting"
         elif speech or lane.get("active"):
             lanes[lane["id"]] = "speech"
     finals = int(data.get("finals", 0))
     drops = int(data.get("drops", 0))
+    admission = data.get("admission") or {}
+    sheds = int(admission.get("shedEvents", 0) or 0)
+    before_sheds = int((previous.get("admission") or {}).get("shedEvents", sheds) or 0)
     return {
         "t": now,
         "lanes": lanes,
         "finals": delta(finals, int(previous.get("finals", finals))),
         "drops": delta(drops, int(previous.get("drops", drops))),
+        "lag": admission.get("lagSeconds"),
+        "shed": delta(sheds, before_sheds) > 0,
     }
 
 
@@ -364,17 +774,21 @@ class DashboardTrack(VideoStreamTrack):
         self.codec.width, self.codec.height = WIDTH, HEIGHT
         self.codec.pix_fmt = "yuv420p"
         self.codec.time_base = fractions.Fraction(1, 90000)
-        self.codec.framerate = fractions.Fraction(1, 2)
+        self.codec.framerate = fractions.Fraction(1, int(FRAME_S))
         self.codec.thread_count = 1
-        self.codec.bit_rate = 48000
-        self.codec.qmin = 36
-        self.codec.qmax = 36
+        # Measured on the 0.7.4 views: keyframes of 20-28 KiB at quantizer 40 (31 KiB at
+        # 36, too close to the 32 KiB frame cap), 2 KiB for an unchanged inter frame.
+        # One keyframe per KEYFRAME_EVERY frames averages about 70 kbit/s.
+        self.codec.bit_rate = 96000
+        self.codec.qmin = QUANTIZER
+        self.codec.qmax = QUANTIZER
         self.codec.options = {
             "deadline": "realtime",
             "cpu-used": "8",
             "lag-in-frames": "0",
-            "crf": "36",
+            "crf": str(QUANTIZER),
         }
+        self.view = None
         self.next_frame = 0
         self.origin = time.monotonic()
         self.frames = 0
@@ -388,12 +802,17 @@ class DashboardTrack(VideoStreamTrack):
 
     async def recv(self):
         await asyncio.sleep(max(0, self.next_frame - time.monotonic()))
-        self.next_frame = time.monotonic() + 2
-        frame = av.VideoFrame.from_image(render(self.data, self.history))
+        self.next_frame = time.monotonic() + FRAME_S
+        view = "lanes" if int((time.monotonic() - self.origin) // VIEW_S) % 2 == 0 else "pipeline"
+        frame = av.VideoFrame.from_image(render(self.data, self.history, view))
         frame.pts = int((time.monotonic() - self.origin) * 90000)
         frame.time_base = self.codec.time_base
-        # Each sparse frame is independent: late joiners need no keyframe queue.
-        frame.pict_type = av.video.frame.PictureType.I
+        # The packets bypass aiortc's encoder, so a viewer's keyframe request cannot be
+        # honoured: a periodic keyframe bounds a late joiner's wait instead. A view change
+        # redraws everything, so it starts a keyframe too.
+        if self.frames % KEYFRAME_EVERY == 0 or view != self.view:
+            frame.pict_type = av.video.frame.PictureType.I
+        self.view = view
         packets = self.codec.encode(frame)
         if len(packets) != 1 or packets[0].size > 32768:
             raise RuntimeError("Diagnostic frame exceeds budget")
@@ -490,7 +909,7 @@ async def main():
                                     "type": "offer",
                                     "sid": stream_id,
                                     "roomType": "video",
-                                    "bitrate": 64000,
+                                    "bitrate": 128000,  # headroom over the ~80 kbit/s 1 fps feed
                                     "videocodec": "vp8",
                                     "payload": {
                                         "nick": "Cassini · diagnostics",

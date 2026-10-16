@@ -292,3 +292,18 @@ def test_status_keeps_its_shape_and_exports_the_observing_admission_block(header
     }  # fmt: skip
     assert admission["observeOnly"] is True and admission["open"] is True
     assert admission["seats"] == 0 and admission["ceiling"] == 2
+
+
+def test_the_requesting_user_is_remembered_for_participant_names(headers):
+    app, service = make_app()
+    seen = []
+    service.clients["room1"] = type(
+        "Room", (), {"note_user": lambda self, user: seen.append(user)}
+    )()
+    client = TestClient(app)
+    req = {"roomToken": "room1", "ncSessionId": "session1"}
+    assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 200
+    assert seen == ["alice"]
+    req["enable"] = False
+    assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 200
+    assert seen == ["alice"]
