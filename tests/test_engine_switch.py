@@ -433,6 +433,19 @@ async def test_restore_falls_back_to_whistle(tmp_path, monkeypatch, problem):
         assert stored.engine == "whistle" and stored.last_error["code"] == "restore_failed"
 
 
+@pytest.mark.parametrize("host_memory", [5120 * MIB, None])
+async def test_installation_advice_never_defers_a_restore(tmp_path, monkeypatch, host_memory):
+    # Review 0.8.0: host RAM under twice the container (or unreadable) is advice since
+    # Decision 5; treating it as blocking fell back to Whistle at every restart.
+    data = {**DATA, "memoryLimitBytes": 3072 * MIB, "hostMemoryBytes": host_memory}
+    h = make(tmp_path, monkeypatch, data=data, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    advice = h.manager._assess("nemotron-en", h.manager._host_facts(fresh=True))
+    assert advice.eligible and advice.advisory
+    await h.manager.restore()
+    assert h.manager.active == "nemotron-en" and h.settings.read().last_error is None
+
+
 async def test_deferred_engine_returns_once_the_limits_allow_it(tmp_path, monkeypatch):
     unhardened = {**DATA, "memoryLimitBytes": 2048 * MIB}
     h = make(tmp_path, monkeypatch, data=unhardened, ready=("nemotron-en",),

@@ -62,6 +62,10 @@ class HostFacts:
 _flags: dict[Path, frozenset[str]] = {}
 
 
+# Reason codes that are installation advice (Decision 5), never a reason to refuse an engine.
+ADVICE_CODES = frozenset({"host_memory", "budget"})
+
+
 def cpu_flags(cpuinfo=Path("/proc/cpuinfo")) -> frozenset[str]:
     if cpuinfo not in _flags:
         flags: frozenset[str] = frozenset()

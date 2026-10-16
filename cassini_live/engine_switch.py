@@ -274,7 +274,9 @@ class EngineManager:
         except Exception as error:
             LOGGER.warning("Could not assess %s (%s)", engine, type(error).__name__)
             return True, f"Could not check whether {name} can run here."
-        reasons = [r for r in result.reasons if r.code not in DOWNLOAD_REASONS]
+        # Advice (host RAM under twice the container, unreadable host memory) never defers.
+        ignored = DOWNLOAD_REASONS | eligibility.ADVICE_CODES
+        reasons = [r for r in result.reasons if r.code not in ignored]
         if reasons:
             return True, f"{name} cannot run here yet: {reasons[0].message}"
         return None
