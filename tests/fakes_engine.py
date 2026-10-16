@@ -257,8 +257,7 @@ class FakeBackend:
         self.admission_limit = size
         self.closed = True
         self.started = False
-        self.resource_check = None
-        self.load_check = None
+        self.start_check = None
         self.failure_circuit_open = False
         self.failures = self.capacity_waits = self.dropped_chunks = 0
         self.scheduling_yields = 0
@@ -306,7 +305,7 @@ class FakeBackend:
 
     async def start(self):
         self.starts += 1
-        if self.load_check and (problem := self.load_check()):
+        if self.start_check and (problem := self.start_check()):
             raise CapacityError(problem)
         if self.start_gate is not None:
             # Like a real host load, a close() during start wins.
@@ -326,9 +325,6 @@ class FakeBackend:
         self.closed = False
         self.started = True
         self.admission_limit = self.size
-        if self.resource_check and self.resource_check():
-            await self.close()
-            raise CapacityError("Speech engine exhausted the resource headroom")
 
     async def close(self):
         self.closes += 1

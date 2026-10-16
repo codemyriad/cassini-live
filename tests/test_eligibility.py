@@ -26,7 +26,6 @@ GOOD = HostFacts(
 CASES = {
     "limits_missing": dict(swap_limit_bytes=None),
     "memory_limit": dict(memory_limit_bytes=2 * GIB),
-    "host_memory": dict(host_memory_bytes=5 * GIB),
     "cpu_quota": dict(cpu_quota=0.5),
     "cpu_instructions": dict(cpu_flags=frozenset({"sse4_2", "avx"})),
     "architecture": dict(arch="riscv64"),
@@ -69,8 +68,8 @@ def test_messages_carry_numbers_from_the_catalog():
         "(3.0 GiB recommended)."
     )
     assert reasons["host_memory"].message == (
-        "The host has 4.0 GiB of RAM. Nemotron English needs at least 4.5 GiB, twice the "
-        "container limit."
+        "The host has 4.0 GiB of RAM. Nemotron English runs best with at least 4.5 GiB, "
+        "twice the container limit."
     )
     assert reasons["cpu_quota"].message == (
         "The CPU quota is 0.5 CPUs. Nemotron English needs at least 1 CPU."
@@ -102,7 +101,17 @@ def test_every_failing_rule_is_reported():
 
 def test_host_memory_follows_a_larger_container_limit():
     facts = dataclasses.replace(GOOD, memory_limit_bytes=4 * GIB, host_memory_bytes=7 * GIB)
-    assert codes(assess(catalog.get("nemotron-en"), facts, ABSENT)) == ["host_memory"]
+    result = assess(catalog.get("nemotron-en"), facts, ABSENT)
+    assert codes(result) == ["host_memory"]
+    # Advice since 0.8.0 (Decision 5): the container's own limit protects the host.
+    assert result.eligible and result.advisory
+
+
+def test_small_host_memory_alone_is_advice_not_a_block():
+    result = assess(
+        catalog.get("nemotron-en"), dataclasses.replace(GOOD, host_memory_bytes=5 * GIB), ABSENT
+    )
+    assert result.eligible and result.advisory and codes(result) == ["host_memory"]
 
 
 def test_unknown_network_does_not_disable():

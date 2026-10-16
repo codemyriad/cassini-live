@@ -196,53 +196,54 @@ def limits(root=Path("/sys/fs/cgroup")):
     return {k: data[k] for k in ("effectiveCpus", "memoryLimitBytes", "affinityCpus")}
 
 
-def budget_problem(data, workers, engine_id="whistle"):
+def static_problem(data, workers, engine_id="whistle"):
+    """Why this container can never run the engine as configured, or None.
+
+    Only rules the kernel cannot enforce for us block (0.8.0 Decision 5): finite cgroup v2
+    limits with swap off, a worker count within the CPU ceiling, and the measured memory
+    floor. Half-host and PID-count rules are advice (see advice())."""
     cpu, memory, processes = data["cpuQuotaCpus"], data["memoryLimitBytes"], data["pidsLimit"]
     if not cpu or not memory or not processes or data["swapLimitBytes"] != 0:
         return "Set finite cgroup v2 CPU, memory and PID limits, and disable container swap"
-    if cpu > data["affinityCpus"] / 2:
-        return "Reserve at least half the available CPU capacity for the host"
-    host_memory = data["hostMemoryBytes"]
-    if not host_memory or memory > host_memory / 2:
-        return "Reserve at least half the host memory outside the caption container"
-    if processes > 256:
-        return "The caption container PID limit must be at most 256"
     engine = catalog.get(engine_id)
     if engine.kind == "worker_pool":
-        if not 1 <= workers <= min(4, max(1, int(cpu // 2))):
+        if not 1 <= workers <= catalog.worker_ceiling(engine_id, cpu):
             return "Requested recognition workers exceed the CPU budget (maximum four)"
         if memory < (384 + workers * 192) * MIB:
             return "The memory budget is too small for the requested recognition workers"
-    else:
-        needs = engine.requirements
-        if not 1 <= workers <= catalog.worker_ceiling(engine_id, cpu):
-            return f"Requested simultaneous speakers exceed the CPU budget for {engine.name}"
-        if cpu < needs.min_cpu_quota:
-            return f"{engine.name} needs a CPU quota of at least {needs.min_cpu_quota:g} CPU"
-        if memory < catalog.memory_floor_mib(engine_id, workers) * MIB:
-            return (
-                f"The memory budget is too small for {engine.name}: set at least "
-                f"{_gib(catalog.memory_floor_mib(engine_id, workers))} GiB "
-                f"({_gib(needs.recommended_memory_mib)} GiB recommended)"
-            )
-    return pressure_problem(data)
+        return None
+    needs = engine.requirements
+    if not 1 <= workers <= catalog.worker_ceiling(engine_id, cpu):
+        return f"Requested simultaneous speakers exceed the CPU budget for {engine.name}"
+    if cpu < needs.min_cpu_quota:
+        return f"{engine.name} needs a CPU quota of at least {needs.min_cpu_quota:g} CPU"
+    if memory < catalog.memory_floor_mib(engine_id, workers) * MIB:
+        return (
+            f"The memory budget is too small for {engine.name}: set at least "
+            f"{_gib(catalog.memory_floor_mib(engine_id, workers))} GiB "
+            f"({_gib(needs.recommended_memory_mib)} GiB recommended)"
+        )
+    return None
+
+
+def advice(data):
+    """Installation advice that no longer blocks captions (0.8.0 Decision 5): the kernel's
+    limits protect the host, so these only make the host more comfortable."""
+    notes = []
+    cpu, memory, processes = data["cpuQuotaCpus"], data["memoryLimitBytes"], data["pidsLimit"]
+    if cpu and cpu > data["affinityCpus"] / 2:
+        notes.append("Reserve at least half the available CPU capacity for the host")
+    host_memory = data["hostMemoryBytes"]
+    if memory and (not host_memory or memory > host_memory / 2):
+        notes.append("Reserve at least half the host memory outside the caption container")
+    if processes and processes > 256:
+        notes.append("Keep the caption container PID limit at most 256")
+    return notes
 
 
 def _gib(mib):
     # Rounded up: the value is a requirement, so the shown figure must be enough.
     return f"{math.ceil(mib / 1024 * 10 - 1e-9) / 10:.1f}".removesuffix(".0")
-
-
-def load_problem(data, engine_id):
-    """Loading a shared model must not itself push the container into the 80% trip."""
-    engine = catalog.get(engine_id)
-    if engine.kind == "worker_pool":
-        return None
-    memory = data.get("memoryLimitBytes")
-    current = data.get("memoryFraction", 0) * (memory or 0)
-    if not memory or current + engine.requirements.model_mib * MIB > 0.8 * memory:
-        return f"Not enough free container memory to load {engine.name}"
-    return pressure_problem(data)
 
 
 def charged_bytes(data):
@@ -269,7 +270,7 @@ def headroom_mib(data):
 
 def start_problem(data, engine_id, rss_mib=None, workers=1):
     """Why an engine must not load now, or None: a start stays clear of the kernel's OOM
-    killer, not of a fraction of the budget. Nothing consults this yet (0.8.0 step 6).
+    killer, not of a fraction of the budget.
 
     rss_mib is the last resident size the engine's host reported; the catalog's model_mib
     stands in before a first load. Whistle's workers are spawned one at a time, so workers
@@ -297,25 +298,3 @@ def start_problem(data, engine_id, rss_mib=None, workers=1):
     if headroom < need:
         return f"Not enough memory to load {engine.name}: {need} MiB needed, {headroom} MiB free"
     return None
-
-
-def pressure_problem(data):
-    if not data.get("monitoringAvailable", False):
-        return "Resource pressure counters cannot be read safely"
-    if data["memoryFraction"] >= 0.8:
-        return "Caption memory budget is nearly exhausted"
-    if data["pidsFraction"] >= 0.8:
-        return "Caption process/thread budget is nearly exhausted"
-    available, total = data["hostAvailableBytes"], data["hostMemoryBytes"]
-    if available is None or total is None:
-        return "Host memory headroom cannot be established"
-    if available < max(256 * MIB, total * 0.1):
-        return "Host memory is under pressure"
-    return None
-
-
-def signature(data):
-    return tuple(
-        data[k]
-        for k in ("cpuQuotaCpus", "affinityCpus", "memoryLimitBytes", "swapLimitBytes", "pidsLimit")
-    )

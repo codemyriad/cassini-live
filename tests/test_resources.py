@@ -215,7 +215,7 @@ def test_reads_enforced_budget_and_refuses_missing_counters(tmp_path, monkeypatc
     (tmp_path / "pressure").mkdir()
     (tmp_path / "pressure/cpu").write_text("some avg10=1.25 avg60=4.50 avg300=2.00 total=50\n")
     data = resources.snapshot(tmp_path, tmp_path)
-    assert resources.budget_problem(data, 2) is None
+    assert resources.static_problem(data, 2) is None
     assert data["cpuQuotaCpus"] == 4 and data["swapLimitBytes"] == 0
     assert data["throttledPeriods"] == 2 and data["cpuPeriods"] == 10
     assert data["throttledUsec"] == 321000
@@ -223,34 +223,28 @@ def test_reads_enforced_budget_and_refuses_missing_counters(tmp_path, monkeypatc
     (tmp_path / "pressure/cpu").unlink()
     assert resources.snapshot(tmp_path, tmp_path)["hostCpuPressure"] is None
     (tmp_path / "memory.current").unlink()
-    assert "cannot be read" in resources.budget_problem(resources.snapshot(tmp_path, tmp_path), 2)
+    unreadable = resources.snapshot(tmp_path, tmp_path)
+    assert not unreadable["monitoringAvailable"]
+    assert "cannot be read" in resources.start_problem(unreadable, "whistle")
 
 
-def test_whistle_budget_is_unchanged_and_nemotron_needs_its_floor():
+def test_static_rules_block_and_half_host_rules_only_advise():
     from tests.test_safety import SAFE
 
     MIB = resources.MIB
     for workers in (1, 2, 3):
-        assert resources.budget_problem(SAFE, workers) == resources.budget_problem(
+        assert resources.static_problem(SAFE, workers) == resources.static_problem(
             SAFE, workers, "whistle"
         )
     small = {**SAFE, "memoryLimitBytes": 2048 * MIB}
-    assert "2.3 GiB" in resources.budget_problem(small, 1, "nemotron-en")
+    assert "2.3 GiB" in resources.static_problem(small, 1, "nemotron-en")
     roomy = {**SAFE, "memoryLimitBytes": 3072 * MIB}
-    assert resources.budget_problem(roomy, 4, "nemotron-en") is None
-    assert "CPU budget" in resources.budget_problem(roomy, 5, "nemotron-multilingual")
+    assert resources.static_problem(roomy, 4, "nemotron-en") is None
+    assert "CPU budget" in resources.static_problem(roomy, 5, "nemotron-multilingual")
     one_cpu = {**roomy, "cpuQuotaCpus": 0.5, "effectiveCpus": 0.5}
-    assert resources.budget_problem(one_cpu, 1, "nemotron-en")
-
-
-def test_load_problem_keeps_the_model_below_the_trip():
-    from tests.test_safety import SAFE
-
-    MIB = resources.MIB
-    data = {**SAFE, "memoryLimitBytes": 3072 * MIB, "memoryFraction": 0.2}
-    assert resources.load_problem(data, "whistle") is None
-    assert resources.load_problem(data, "nemotron-en") is None
-    assert "Not enough free" in resources.load_problem(
-        {**data, "memoryFraction": 0.5}, "nemotron-en"
-    )
-    assert resources.load_problem({**data, "memoryFraction": 0.9}, "nemotron-en")
+    assert resources.static_problem(one_cpu, 1, "nemotron-en")
+    # Decision 5: these were blockers in 0.7.x and are advice now.
+    greedy = {**SAFE, "cpuQuotaCpus": 8, "memoryLimitBytes": 8192 * MIB, "pidsLimit": 500}
+    assert resources.static_problem(greedy, 1) is None
+    assert len(resources.advice(greedy)) == 3
+    assert resources.advice(SAFE) == []

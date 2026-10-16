@@ -139,7 +139,7 @@ async def test_real_calibration_cancellation_cleans_up_decoder_leases():
     await pool.close()
 
 
-async def test_startup_check_blocks_calls_until_it_passes(monkeypatch, headers):
+async def test_startup_load_blocks_calls_until_the_engine_is_ready(monkeypatch, headers):
     from httpx import ASGITransport, AsyncClient
 
     from cassini_live.app import create_app
@@ -156,32 +156,43 @@ async def test_startup_check_blocks_calls_until_it_passes(monkeypatch, headers):
 
     gate = asyncio.Event()
 
-    async def scenario(pool, count):
-        await gate.wait()
-        return {"passed": True, "speakers": count}
+    class SlowWorker(FakeWorker):
+        async def start(self):
+            await gate.wait()
+            await super().start()
 
-    monkeypatch.setattr(capacity, "scenario", scenario)
-    pool = WorkerPool(1, worker_factory=FakeWorker)
+    pool = WorkerPool(1, worker_factory=SlowWorker)
     config = Config(None, 1, "secret", "")
     service = CaptionService(config)
     service.discover = AsyncMock()
     service.request = AsyncMock()
     app = create_app(config, pool, service, nc_factory=Nextcloud, safety_factory=safe_factory)
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            request = {"roomToken": "room", "ncSessionId": "session"}
-            assert (
-                await client.post("/api/v1/call/transcribe", headers=headers, json=request)
-            ).status_code == 503
-            service.request.assert_not_awaited()
-            gate.set()
-            async with asyncio.timeout(2):
-                while app.state.safety.state == "checking":
-                    await asyncio.sleep(0.01)
-            assert (
-                await client.post("/api/v1/call/transcribe", headers=headers, json=request)
-            ).status_code == 200
-            service.request.assert_awaited_once()
+    request = {"roomToken": "room", "ncSessionId": "session"}
+    entered, leave = asyncio.Event(), asyncio.Event()
+
+    async def lifespan():
+        async with app.router.lifespan_context(app):
+            entered.set()
+            await leave.wait()
+
+    # The lifespan waits for the first outcome, so calls arrive while the engine loads.
+    running = asyncio.create_task(lifespan())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with asyncio.timeout(2):
+            while getattr(app.state, "safety", None) is None or app.state.safety.phase != "loading":
+                await asyncio.sleep(0.01)
+        refused = await client.post("/api/v1/call/transcribe", headers=headers, json=request)
+        assert refused.status_code == 503 and int(refused.headers["Retry-After"]) >= 1
+        service.request.assert_not_awaited()
+        gate.set()
+        async with asyncio.timeout(2):
+            await entered.wait()
+        assert app.state.safety.state == "ready"
+        accepted = await client.post("/api/v1/call/transcribe", headers=headers, json=request)
+        assert accepted.status_code == 200
+        service.request.assert_awaited_once()
+    leave.set()
+    await running
     assert pool.closed
 
 

@@ -176,8 +176,8 @@ class SharedEngine:
         self.multilingual = len(engine.languages) > 1
         self.admission_limit = size
         self.closed = False
-        self.resource_check = None
-        self.load_check = None
+        # Installed by the safety controller: why a host must not spawn now, or None.
+        self.start_check = None
         self.failures = 0
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
@@ -426,7 +426,7 @@ class SharedEngine:
         ]
 
     async def _spawn(self):
-        if self.load_check and (problem := self.load_check()):
+        if self.start_check and (problem := self.start_check()):
             raise CapacityError(problem)
         generation = self.generation
         env = {**os.environ, "OMP_NUM_THREADS": "1", "ORT_DISABLE_TELEMETRY": "1"}
@@ -437,8 +437,6 @@ class SharedEngine:
             message = await asyncio.wait_for(host.receive(), self.ready_timeout)
             if message.get("type") != "ready":
                 raise RuntimeError("Speech engine did not become ready")
-            if self.resource_check and self.resource_check():
-                raise CapacityError("Speech engine exhausted the resource headroom")
         except BaseException:
             await host.close()
             raise

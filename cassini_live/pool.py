@@ -80,7 +80,6 @@ class Worker:
 
 class WorkerPool:
     engine_id = "whistle"
-    load_check = None
     # One process per worker: engine duty is sampled for the shared host only.
     host_pid = None
 
@@ -106,7 +105,8 @@ class WorkerPool:
         self.leased = set()
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
-        self.resource_check = None
+        # Installed by the safety controller: why a worker must not spawn now, or None.
+        self.start_check = None
         self.generation = 0
         self.lag = LagMeter()
         # Every live transcriber on this backend; the load governor reads their lag.
@@ -156,16 +156,13 @@ class WorkerPool:
         self.idle.put_nowait(worker)
 
     async def _new(self):
-        if self.resource_check and self.resource_check():
-            raise CapacityError("Insufficient resource headroom for a recognition worker")
+        if self.start_check and (problem := self.start_check()):
+            raise CapacityError(problem)
         generation = self.generation
         worker = self.worker_factory(self.weights)
         self.workers.add(worker)
         try:
             await worker.start()
-            if self.resource_check and self.resource_check():
-                await worker.close()
-                raise CapacityError("Recognition worker exhausted the resource headroom")
         except BaseException:
             await worker.close()
             self.workers.discard(worker)

@@ -179,7 +179,7 @@ async def test_audio_burst_keeps_recent_audio_without_killing_stream(
 
 async def test_worker_pool_backend_members():
     pool = WorkerPool(2, worker_factory=FakeWorker)
-    assert pool.engine_id == "whistle" and pool.load_check is None
+    assert pool.engine_id == "whistle" and pool.start_check is None
     pool.closed = True
     pool.resize(3)
     assert pool.size == 3 and pool.idle.maxsize == 3

@@ -79,7 +79,7 @@ WAITING_PHASES = frozenset({"waiting_headroom", "cooling_down"})
 
 
 def _failure_code(reason):
-    if "did not finish in time" in reason:
+    if "did not load in time" in reason or "did not finish in time" in reason:
         return "timeout"
     if "Capacity check" in reason or "speaking budget" in reason:
         return "capacity_failed"
@@ -478,7 +478,7 @@ class EngineManager:
             if ok or _failure_code(why) != "timeout":
                 return ok, why
             safety = self.safety
-            if safety.state == "checking" and safety.attempt_started is not None:
+            if safety.phase == "loading" and safety.attempt_started is not None:
                 timeout = safety.attempt_started + self.check_timeout - safety.clock()
                 if timeout > 0:
                     continue  # The attempt began late in the wait; give it its full time.

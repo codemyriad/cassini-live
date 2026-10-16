@@ -308,7 +308,7 @@ def create_app(
             raise HTTPException(409, "Capacity check requires no active caption rooms")
         if manager.busy:
             raise HTTPException(409, "A speech engine change is in progress")
-        if safety.lock.locked() or safety.state == "checking":
+        if safety.lock.locked() or safety.phase == "loading":
             return {"state": safety.state}
         try:
             await safety.recheck()

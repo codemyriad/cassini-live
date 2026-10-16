@@ -171,20 +171,12 @@ async def test_admission_limit_bounds_slots():
     await shared.close()
 
 
-async def test_load_check_refusal_prevents_the_spawn():
+async def test_start_check_refusal_prevents_the_spawn():
     shared, hosts = engine()
-    shared.load_check = lambda: "Not enough free container memory"
-    with pytest.raises(CapacityError, match="free container memory"):
+    shared.start_check = lambda: "Not enough memory to load Nemotron English"
+    with pytest.raises(CapacityError, match="Not enough memory"):
         await shared.start()
     assert hosts == [] and shared.closed
-
-
-async def test_resource_check_after_load_closes_the_host():
-    shared, hosts = engine()
-    shared.resource_check = lambda: "pressure"
-    with pytest.raises(CapacityError):
-        await shared.start()
-    assert hosts[0].closed and shared.process is None
 
 
 async def test_ready_failure_and_timeout():
@@ -313,10 +305,10 @@ async def test_spaced_exits_do_not_open_the_circuit():
     await shared.close()
 
 
-async def test_restart_load_check_failure_opens_the_circuit():
+async def test_restart_start_check_failure_opens_the_circuit():
     shared, hosts = engine()
     await shared.start()
-    shared.load_check = lambda: "no memory"
+    shared.start_check = lambda: "The caption memory limit was exceeded"
     hosts[0].crash()
     await wait_for(lambda: shared.failure_circuit_open)
     assert len(hosts) == 1

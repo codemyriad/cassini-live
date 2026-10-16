@@ -55,8 +55,8 @@ class Backend(Protocol):
     size: int
     admission_limit: int
     closed: bool
-    resource_check: Callable[[], str | None] | None
-    load_check: Callable[[], str | None] | None
+    # Why an engine process must not spawn now, or None; consulted before every spawn.
+    start_check: Callable[[], str | None] | None
     failure_circuit_open: bool
     failures: int
     capacity_waits: int

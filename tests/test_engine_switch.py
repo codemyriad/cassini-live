@@ -227,12 +227,15 @@ async def test_corrupt_download_fails_verification(h):
     assert status.error["code"] == "hash_mismatch" and h.manager.active == "whistle"
 
 
-async def test_capacity_failure_rolls_back(h):
-    h.passes["nemotron-en"] = False
+async def test_refused_load_rolls_back(h):
+    from cassini_live.pool import CapacityError
+
+    refused = CapacityError("Not enough memory to load Nemotron English")
+    h.start_errors["nemotron-en"] = refused
     await h.manager.request_switch("nemotron-en")
     status = await finished(h)
     assert status.state == "failed" and status.rolled_back
-    assert status.error["code"] == "capacity_failed"
+    assert status.error == {"code": "load_failed", "message": str(refused)}
     assert h.manager.active == "whistle" and h.safety.engine_id == "whistle"
     await until(lambda: h.safety.state == "ready")
     saved = h.settings.read()
@@ -242,7 +245,7 @@ async def test_capacity_failure_rolls_back(h):
 
 async def test_load_failure_with_failed_rollback(h):
     h.start_errors["nemotron-en"] = RuntimeError("boom")
-    h.passes["whistle"] = False
+    h.start_errors["whistle"] = RuntimeError("boom too")
     await h.manager.request_switch("nemotron-en")
     status = await finished(h)
     assert status.state == "failed" and not status.rolled_back
@@ -462,12 +465,12 @@ def test_unreadable_settings_fall_back(tmp_path, monkeypatch):
     assert h.settings.read().last_error["code"] == "settings"
 
 
-async def test_restored_engine_rolls_back_when_its_first_check_fails(tmp_path, monkeypatch):
+async def test_restored_engine_rolls_back_when_its_first_load_fails(tmp_path, monkeypatch):
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
              settings=EngineSettings(engine="nemotron-en"))
+    h.start_errors["nemotron-en"] = RuntimeError("boom")
     await h.manager.restore()
     assert h.safety.engine_id == "nemotron-en"
-    h.passes["nemotron-en"] = False
     try:
         await h.manager.start_safety()
         await until(lambda: h.manager.status.state == "failed")
@@ -486,7 +489,7 @@ async def test_later_trip_does_not_roll_back(tmp_path, monkeypatch):
         await h.manager.start_safety()
         await until(lambda: h.safety.state == "ready")
         await asyncio.sleep(0.01)
-        h.data["memoryFraction"] = 0.9
+        h.data["oomKills"] += 1
         await until(lambda: h.safety.state != "ready")
         await asyncio.sleep(0.05)
         assert h.manager.active == "nemotron-en" and h.manager.status.state == "idle"
@@ -499,8 +502,8 @@ async def test_disable_during_restore_rollback_does_not_stick(tmp_path, monkeypa
     """Disabling during the restore rollback ends the change; re-enabling starts captions."""
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
              settings=EngineSettings(engine="nemotron-en"))
+    h.start_errors["nemotron-en"] = RuntimeError("boom")
     await h.manager.restore()
-    h.passes["nemotron-en"] = False
     gate = asyncio.Event()
     original = h.manager.backend_factory
     def gated(engine_id, **kw):
@@ -581,47 +584,44 @@ async def test_restore_waits_out_the_recovery_cooldown(tmp_path, monkeypatch):
         await h.safety.close()
 
 
-def slow_calibration(monkeypatch, seconds):
-    async def scenario(pool, count):
-        await asyncio.sleep(seconds)
-        return {"passed": True, "speakers": count}
+def slow_load(h, seconds):
+    """The next backends the manager builds take `seconds` to load once started."""
+    original = h.manager.backend_factory
 
-    monkeypatch.setattr(capacity, "scenario", scenario)
+    def factory(engine_id, **kwargs):
+        backend = original(engine_id, **kwargs)
+        gate = backend.start_gate = asyncio.Event()
+        start = backend.start
+
+        async def delayed():
+            asyncio.get_running_loop().call_later(seconds, gate.set)
+            await start()
+
+        backend.start = delayed
+        return backend
+
+    h.manager.backend_factory = factory
 
 
-async def test_restore_times_the_check_from_the_attempt_not_the_cooldown(tmp_path, monkeypatch):
+async def test_restore_times_the_load_from_the_attempt_not_the_cooldown(tmp_path, monkeypatch):
     """A cooldown ending late in a wait must not roll back the load that follows it."""
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
              settings=EngineSettings(engine="nemotron-en"))
-    h.safety.policy = replace(h.safety.policy, headroom_window=0.2)
     h.safety.journal.write(1, time.time() + 1.5, False, "previous run")
-    slow_calibration(monkeypatch, 0.3)
+    slow_load(h, 0.8)
     await h.manager.restore()
     try:
         await h.manager.start_safety()
-        await until(lambda: h.safety.state == "checking")
+        await until(lambda: h.safety.phase == "loading")
         async with asyncio.timeout(4):
             while h.safety.state != "ready":
                 await asyncio.sleep(0.01)
-        # The check ran past check_timeout=2 measured from start_safety, but not from its start.
-        assert h.safety.attempt_started + 0.4 < h.safety.clock()
+        # The load ran past check_timeout=2 measured from start_safety, but not from its start.
+        assert h.safety.attempt_started + 0.7 < h.safety.clock()
         assert h.manager.active == "nemotron-en" and "rolling_back" not in h.changes
     finally:
         await h.manager.stop()
         await h.safety.close()
-
-
-async def test_switch_times_the_check_from_the_attempt_not_the_headroom_wait(h, monkeypatch):
-    h.safety.policy = replace(h.safety.policy, headroom_window=1.2)
-    h.data["cpuPressureRecent"] = 30  # Pressure left by the engine that just stopped.
-    slow_calibration(monkeypatch, 0.3)
-    await h.manager.request_switch("nemotron-en")
-    await until(lambda: h.manager.status.state == "checking")
-    await asyncio.sleep(0.1)
-    h.data["cpuPressureRecent"] = 0
-    async with asyncio.timeout(5):
-        status = await finished(h)
-    assert status.state == "succeeded" and h.manager.active == "nemotron-en"
 
 
 async def test_a_deferred_engine_counts_as_in_use(tmp_path, monkeypatch):
