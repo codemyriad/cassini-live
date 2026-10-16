@@ -154,7 +154,10 @@ re-reads routes only on a version change.
 An AppAPI update recreates the container without its swap and PID limits until
 you re-apply them. If Cassini Live starts in that state, it runs Whistle and
 says why, but keeps a selected Nemotron engine: it returns by itself at the next
-start with suitable limits. Until then its files cannot be removed. To stay on
+start with suitable limits. The same happens when, at startup, the container's
+free memory cannot hold Nemotron but can hold Whistle: Whistle captions calls
+and Nemotron returns at the next start where it fits. Until then its files
+cannot be removed. To stay on
 Whistle instead, choose Whistle in Administration settings or click "Keep using
 Whistle" on the settings page. A missing or damaged model, by contrast, switches
 the choice back to Whistle for good.

@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-from . import catalog, eligibility, engines
+from . import catalog, eligibility, engines, resources
 from .config import LANGUAGE_NAMES, LANGUAGES
 from .eligibility import NetworkProbe, Reason
 from .model_store import ModelError, ModelStore
@@ -281,7 +281,30 @@ class EngineManager:
         reasons = [r for r in result.reasons if r.code not in ignored]
         if reasons:
             return True, f"{name} cannot run here yet: {reasons[0].message}"
+        if problem := self._only_whistle_fits(engine):
+            return True, f"{problem}."
         return None
+
+    def _only_whistle_fits(self, engine):
+        """Why `engine` does not fit in the container's free memory now while Whistle
+        would, else None. Such a start falls back to Whistle with the choice kept
+        (restore_deferred) instead of leaving every call without captions."""
+        try:
+            data = self.safety.reader()
+            same = self.safety.engine_id == engine
+            rss = getattr(self.safety.pool, "rss_mib", None) if same else None
+            problem = resources.start_problem(data, engine, rss)
+            if problem is None or not problem.startswith("Not enough memory"):
+                return None
+            workers = self._size(catalog.DEFAULT_ENGINE)
+            if resources.static_problem(data, workers, catalog.DEFAULT_ENGINE) or (
+                resources.start_problem(data, catalog.DEFAULT_ENGINE, workers=workers)
+            ):
+                return None
+        except Exception as error:
+            LOGGER.warning("Could not check whether %s fits (%s)", engine, type(error).__name__)
+            return None
+        return problem
 
     async def start_safety(self) -> None:
         async with self.lock:
@@ -298,7 +321,11 @@ class EngineManager:
         if ok or not self.safety.desired_enabled:
             return
         if self.safety.phase == "configuration":
-            return  # A host problem that would block Whistle as well, not the engine.
+            # The engine does not fit the free memory now: Whistle may, as at an unhardened
+            # start. Any other configuration problem would block Whistle as well.
+            if problem := self._only_whistle_fits(engine):
+                await self._defer_restore(engine, f"{problem}.")
+            return
         async with self.lock:
             if self.busy or self.active != engine:
                 return
@@ -311,6 +338,22 @@ class EngineManager:
             except asyncio.CancelledError:
                 await self._abandon(engine, catalog.DEFAULT_ENGINE)
                 raise
+
+    async def _defer_restore(self, engine, why):
+        async with self.lock:
+            if self.busy or self.active != engine:
+                return
+            LOGGER.warning("%s Falling back to Whistle until it fits", why)
+            await self.safety.close(reason="Changing the speech engine")
+            self.safety.replace_pool(self._backend(catalog.DEFAULT_ENGINE))
+            self.active = catalog.DEFAULT_ENGINE
+            self._save(engine=engine, pending=None, last_error=self._error(
+                "restore_deferred",
+                f"{why} {_name(engine)} stays selected and returns when Cassini Live "
+                "restarts with enough free memory.",
+                engine,
+            ))
+            await self.safety.start()
 
     async def stop(self) -> None:
         for task in (self.watch, self.task):

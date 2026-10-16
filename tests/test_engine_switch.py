@@ -706,3 +706,56 @@ async def test_explicit_workers_above_the_ceiling_are_clamped_not_blocking(
     finally:
         await h.manager.stop()
         await h.safety.close()
+
+
+# Nemotron needs about 1.5 GiB free to load; Whistle's two workers need 384 MiB.
+CROWDED = {**DATA, "memoryCurrentBytes": 1672 * MIB}  # 1400 MiB free of 3 GiB
+
+
+async def test_restore_defers_an_engine_that_does_not_fit_while_whistle_does(
+    tmp_path, monkeypatch
+):
+    h = make(tmp_path, monkeypatch, data=CROWDED, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    stored = h.settings.read()
+    assert h.manager.active == "whistle" and h.manager.deferred == "nemotron-en"
+    assert stored.engine == "nemotron-en" and stored.last_error["code"] == "restore_deferred"
+    assert "Not enough memory to load" in stored.last_error["message"]
+    roomy = make(tmp_path, monkeypatch, ready=("nemotron-en",))  # the next restart fits
+    await roomy.manager.restore()
+    assert roomy.manager.active == "nemotron-en" and roomy.manager.panel()["lastError"] is None
+
+
+async def test_a_fit_refusal_after_restore_falls_back_to_whistle(tmp_path, monkeypatch):
+    # Review 0.8.0: the refusal is phase "configuration", which _watch_restore took for a
+    # host problem blocking Whistle too, so no call had captions although Whistle fits.
+    h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    assert h.manager.active == "nemotron-en"
+    h.data.update(CROWDED)  # memory filled between the restore check and the load
+    try:
+        await h.manager.start_safety()
+        await until(lambda: h.manager.active == "whistle" and h.safety.state == "ready")
+        stored = h.settings.read()
+        assert stored.engine == "nemotron-en" and stored.last_error["code"] == "restore_deferred"
+        assert h.safety.engine_id == "whistle" and h.manager.deferred == "nemotron-en"
+    finally:
+        await h.manager.stop()
+        await h.safety.close()
+
+
+async def test_a_fit_refusal_with_no_room_for_whistle_either_stays_blocked(tmp_path, monkeypatch):
+    h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    h.data["memoryCurrentBytes"] = 2900 * MIB
+    try:
+        await h.manager.start_safety()
+        await until(lambda: h.safety.phase == "configuration")
+        await h.manager.watch
+        assert h.manager.active == "nemotron-en" and h.settings.read().last_error is None
+    finally:
+        await h.manager.stop()
+        await h.safety.close()
