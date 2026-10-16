@@ -34,6 +34,10 @@ class ResourceRefused(RuntimeError):
     pass
 
 
+class TrackBudgetFull(ResourceRefused):
+    """The audio-track ceiling is reached: only the track asking goes without captions."""
+
+
 class TrackLease:
     def __init__(self, owner):
         self.owner = owner
@@ -43,6 +47,7 @@ class TrackLease:
         if not self.released:
             self.owner.tracks.discard(self)
             self.released = True
+            self.owner._track_freed()
 
 
 def _legacy_check(saved):
@@ -203,16 +208,27 @@ class SafetyController:
         self.require_ready()
         if len(self.tracks) >= self.max_tracks:
             self.last_refusal = "Caption audio-track budget reached"
-            raise ResourceRefused(self.last_refusal)
+            raise TrackBudgetFull(self.last_refusal)
 
     def reserve_track(self):
+        """One audio track's share of the hard ceiling. Refused, only that participant
+        goes without captions: the room and its captioned speakers stay, and the room
+        asks again when a lease frees (_track_freed) or at the participant's next offer."""
         self.require_ready()
         if len(self.tracks) >= self.max_tracks:
             self.last_refusal = "Caption audio-track budget reached"
-            raise ResourceRefused(self.last_refusal)
+            raise TrackBudgetFull(self.last_refusal)
         lease = TrackLease(self)
         self.tracks.add(lease)
         return lease
+
+    def _track_freed(self):
+        if self.state != "ready" or len(self.tracks) >= self.max_tracks:
+            return
+        for client in list(getattr(self.service, "clients", {}).values()):
+            retry = getattr(client, "retry_refused_tracks", None)
+            if retry is not None:
+                retry()
 
     async def start(self, *, fresh=False):
         async with self.lock:

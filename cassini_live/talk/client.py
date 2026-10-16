@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.rtcconfiguration import RTCConfiguration, RTCIceServer
 from aiortc.sdp import candidate_from_sdp
-from ..safety import ResourceRefused
+from ..safety import ResourceRefused, TrackBudgetFull
 from .audio_stream import AudioStream
 from .constants import (
 	CALL_LEAVE_TIMEOUT,
@@ -81,6 +81,9 @@ class SpreedClient:
 		self.backend_url: str | None = None
 		self.admission = None
 		self._track_leases = set()
+		# Participants refused a caption track at the hard ceiling; asked again when a lease frees.
+		self._refused_tracks: set[str] = set()
+		self._offer_retries: set[asyncio.Task] = set()
 		self._accepting_offers = set()
 		self._shutdown_lock = asyncio.Lock()
 		self._closing = False
@@ -938,6 +941,7 @@ class SpreedClient:
 					async with self.peer_connection_lock:
 						peer = self.peer_connections.pop(left_sid, None)
 						self._offer_requested.pop(left_sid, None)
+						self._refused_tracks.discard(left_sid)
 					if peer is not None:
 						had_participant = True
 						with suppress(Exception):
@@ -998,6 +1002,7 @@ class SpreedClient:
 						async with self.peer_connection_lock:
 							peer = self.peer_connections.pop(user_desc["sessionId"], None)
 							self._offer_requested.pop(user_desc["sessionId"], None)
+							self._refused_tracks.discard(user_desc["sessionId"])
 						if peer is not None:
 							with suppress(Exception):
 								await peer.pc.close()
@@ -1178,6 +1183,17 @@ class SpreedClient:
 			try:
 				lease = self.admission.reserve_track()
 				self._track_leases.add(lease)
+				self._refused_tracks.discard(spkr_sid)
+			except TrackBudgetFull:
+				# Only this participant goes without captions; the room and its speakers keep theirs.
+				if spkr_sid not in self._refused_tracks:
+					self._refused_tracks.add(spkr_sid)
+					LOGGER.warning("Caption track budget reached; no captions for this participant until a track frees", extra={
+						"session_id": spkr_sid,
+						"room_token": self.room_token,
+						"tag": "participants",
+					})
+				return
 			except ResourceRefused:
 				if not self._close_task:
 					self._close_task = asyncio.create_task(self.close())
@@ -1199,6 +1215,17 @@ class SpreedClient:
 			raise
 		finally:
 			self._accepting_offers.discard(spkr_sid)
+
+	def retry_refused_tracks(self):
+		"""A caption track lease freed: ask each participant refused one to offer again."""
+		if self._closing or self.defunct.is_set() or self._close_task or not self._refused_tracks:
+			return
+		for sid in list(self._refused_tracks):
+			if sid not in self.peer_connections and sid not in self._accepting_offers:
+				self._offer_requested[sid] = time.monotonic()
+				task = asyncio.create_task(self.send_offer_request(sid))
+				self._offer_retries.add(task)
+				task.add_done_callback(self._offer_retries.discard)
 
 	async def _accept_offer(self, message, spkr_sid, lease):
 		ice_servers = []

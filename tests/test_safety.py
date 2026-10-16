@@ -167,27 +167,69 @@ async def test_repeated_worker_failure_stops_replacement_loop():
     await pool.close()
 
 
-async def test_track_budget_refuses_before_peer_allocation(monkeypatch):
+async def test_track_budget_refuses_only_that_participant(monkeypatch, caplog):
+    # Review 0.8.0: with no room cap, a refused eleventh track used to close the whole
+    # room and evict its ten captioned speakers. Now only the eleventh goes without.
     from cassini_live.talk import client as transport
     from cassini_live.talk.types import HPBSettings
 
     settings = HPBSettings(server="ws://unused/spreed", stunservers=[], turnservers=[])
     client = transport.SpreedClient("room", settings, "en", None)
     pool = WorkerPool(1, worker_factory=FakeWorker)
-    client.admission = safe_factory(pool, CapacityAssessment(pool))
+    service = SimpleNamespace(clients={"room": client})
+    client.admission = SafetyController(
+        pool, CapacityAssessment(pool), service, reader=lambda: dict(SAFE)
+    )
     client.admission.state = "ready"
-    for _ in range(10):
-        client.admission.reserve_track()
+    leases = [client.admission.reserve_track() for _ in range(10)]
     client.close = AsyncMock()
+    requested = []
+    client.send_offer_request = AsyncMock(side_effect=requested.append)
 
     def unexpected_allocation(*args, **kwargs):
         pytest.fail("Peer connection allocated beyond the track budget")
 
     monkeypatch.setattr(transport, "RTCPeerConnection", unexpected_allocation)
-    await client.handle_offer({"message": {"sender": {"sessionid": "eleventh"}}})
-    await client._close_task
-    client.close.assert_awaited_once()
-    assert not client.peer_connections
+    for _ in range(2):
+        await client.handle_offer({"message": {"sender": {"sessionid": "eleventh"}}})
+    assert client._close_task is None and not client.close.await_count
+    assert not client.peer_connections and client._refused_tracks == {"eleventh"}
+    assert caplog.text.count("Caption track budget reached") == 1  # logged once
+    assert len(client.admission.tracks) == 10  # the hard ceiling holds
+
+    leases[0].release()  # a captioned speaker leaves: the refused one is asked again
+    await asyncio.sleep(0)
+    assert requested == ["eleventh"]
+
+    async def accepted(message, sid, lease):
+        assert lease in client.admission.tracks
+
+    client._accept_offer = accepted
+    offer = {"sender": {"sessionid": "eleventh"}, "data": {"payload": {"sdp": "m=audio 9"}}}
+    await client.handle_offer({"message": offer})
+    assert client._refused_tracks == set() and len(client.admission.tracks) == 10
+
+
+async def test_track_retry_skips_a_participant_already_connecting():
+    from cassini_live.talk.client import SpreedClient
+    from cassini_live.talk.types import HPBSettings
+
+    settings = HPBSettings(server="ws://unused/spreed", stunservers=[], turnservers=[])
+    client = SpreedClient("room", settings, "en", None)
+    client._refused_tracks.add("gone")
+    client.peer_connections["gone"] = SimpleNamespace(pc=None)  # being re-offered already
+    client.send_offer_request = AsyncMock()
+    client.retry_refused_tracks()
+    await asyncio.sleep(0)
+    client.send_offer_request.assert_not_awaited()
+
+
+def test_a_service_outage_still_refuses_the_room():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    with pytest.raises(ResourceRefused) as refused:
+        guard.reserve_track()
+    assert type(refused.value) is ResourceRefused  # not ready: the room closes as before
 
 
 async def test_invalid_offer_releases_reserved_track():
