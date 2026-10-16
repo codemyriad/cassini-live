@@ -13,7 +13,7 @@ Talk's caption menu → Nextcloud Talk → authenticated AppAPI request
                                            ↓
                              Silero VAD + bounded speech queue
                                            ↓
-                              leased exclusive Whistle worker
+         leased exclusive Whistle worker, or a Nemotron speaking slot
                                            ↓
                            committed text + replaceable pending text
                                            ↓
@@ -60,10 +60,14 @@ received frames. Its pinned model is included at build time; runtime never downl
 A full queue discards its oldest chunk. Queued chunks older than four seconds are also
 discarded, including a second age check after waiting for a worker. Sequence
 numbers force recognition to flush across gaps rather than splice discontinuous
-audio. Capture continues while a failed recognizer is replaced. Workers are
-leased only for speech, with two-second bounded capacity waits; exhausting
-actual resource pressure closes caption rooms through the safety controller.
-Excess speaking demand drops audio without restarting the service. FIFO futures directly hand returning workers to
+audio. Capture continues while a failed recognizer is replaced. Before a
+worker or slot is leased for a segment, the speaker asks the load governor
+(`load.py`) for a seat: it decides from live lag, memory headroom and CPU stall,
+never from a file read on this path. Workers are leased only for speech, with
+two-second bounded waits for a seat or a worker. When captions fall behind for
+five seconds, the governor pauses the newest speaker, which ends its segment in
+its own task. Excess speaking demand drops audio without restarting the
+service; only an OOM kill or repeated engine crashes close caption rooms. FIFO futures directly hand returning workers to
 waiting speakers, including safe return of leases if cancellation races handoff.
 With waiters, a recognizer prefers a VAD pause already buffered between one and
 two seconds of supplied audio, otherwise it cuts at two seconds. The remainder
@@ -74,6 +78,64 @@ Uncontended segments prefer a pause after 14 seconds and end at 15 seconds
 pauses, duration limits, scheduling pauses, forced handoffs and audio gaps.
 Stop flushes partial audio and the recogniser's final words;
 transport teardown drains captions before sending `bye`, subject to timeouts.
+
+## Speech engines
+
+An administrator chooses one engine for the whole server in **Administration
+settings → Assistant → Cassini Live**. The form is an AppAPI
+declarative settings form. AppAPI sends the app no event when an administrator
+saves it, so `settings_sync.py` reads the stored value every three seconds and
+drives `engine_switch.py`. Nextcloud cannot grey out an option or refresh the
+form by itself. The app therefore writes eligibility and progress into the
+option labels and the status text, and registers the form again when they
+change (at most every three seconds, and in 5% download steps). An invalid choice
+is written back to the active engine, with the reason in the status text.
+`admin_form.py` builds the form from plain data and has no side effects.
+
+A switch checks eligibility, downloads and verifies the model while the old
+engine keeps serving, closes caption rooms, and is done once the new engine has
+loaded. A failed load rolls back to the previous engine. The choice is saved in the app's persistent storage and
+restored at startup, after the model files are verified again.
+
+The Whistle path is unchanged: one worker subprocess per simultaneous speaker,
+as described above, with two-second handoffs.
+
+The Nemotron engines run in **one shared engine-host subprocess**. The supervisor
+never imports `sherpa_onnx`; only `cassini_live/engine_host.py` does.
+
+```text
+supervisor (FastAPI, aiortc, Silero VAD, safety)        engine host subprocess (oom_score_adj=1000)
+  Transcriber(track) --open/audio/commit/finish-->       one sherpa_onnx.OnlineRecognizer (model loaded once)
+                     <--opened/result/closed (id)--     one OnlineStream per speaking track
+                                                         decode loop: ready streams -> decode_streams(batch)
+```
+
+The host is a separate process so that the kernel kills it, and not the
+supervisor, when memory runs out. It also keeps inference off the event loop and
+keeps sherpa-onnx's ONNX Runtime apart from the one Silero uses.
+
+The stream protocol is JSON lines on stdin and stdout, with a stream id in
+every message and exactly one reply per request:
+
+| Request | Reply | Effect |
+|---|---|---|
+| `open` (id, language) | `opened` | New stream. The multilingual model gets the room language or `auto`. |
+| `audio` (id, at most 1 s of float32 PCM) | `result` (pending text) | Decodes every ready stream in one batch, at most four. |
+| `commit` (id) | `result` (final text) | Ends a caption line after a pause in speech. The stream stays open. |
+| `finish` (id) | `result` (final text) | Adds 1.2 s of silence, ends the input and frees the stream. |
+| `cancel` (id) | `closed` | Frees the stream without decoding. |
+
+A stream stays open across pauses in speech and ends only when its track stops
+or changes language. A per-stream error closes that stream only; the death of
+the host counts towards the same three-failures-a-minute circuit breaker as
+Whistle workers. Admission uses speaking slots: their number is the measured
+`testedSpeakers`, and there is no two-second preemption. Nemotron English
+advertises only English (and `auto`, which means English) to Talk.
+
+The Nemotron models are downloaded on demand into
+`APP_PERSISTENT_STORAGE/models/<engine>/`, pinned by the SHA-256 of every
+extracted file, and stored with their license and notice files. The image
+contains only Whistle.
 
 ## Verification boundaries
 
@@ -90,11 +152,11 @@ transport teardown drains captions before sending `bye`, subject to timeouts.
   process reaping. No microphone or hosted inference is used.
 - Container build and offline model smoke test: bundled model and engine load
   without registry access. The image is tested on the local amd64 host.
-- Status page: desktop and mobile browser render, readiness response, navigation
-  link and JavaScript errors. Preview status uses a development fixture.
+- Settings form: unit tests build the form from fixed engine data and check
+  labels, defaults, status text and value parsing. No browser test covers it.
 
 Staging validation on Nextcloud 34 and its Talk HPB verified HaRP certificate
-installation, lifecycle, the embedded page, and a browser call with recorded
+installation, lifecycle, the former embedded status page, and a browser call with recorded
 speech producing native Talk captions. A user also confirmed live captions.
 Other supported server versions, ARM64 runtime and broad multilingual accuracy
 remain separate checks.
@@ -104,23 +166,25 @@ runs a paced ten-track meeting through real VAD and Whistle (set
 `NEEDLE3_LIB_PATH` to the native engine). Add `--speakers 2` for overlap.
 This fixture bypasses WebRTC; it is not a substitute for a real Talk call.
 
-## Capacity assessment
+## Capacity measurement
 
-`cassini_live.capacity` exercises the actual gate, queues and preloaded worker
-pool using the bundled public-domain fixture. Startup runs the assessment in
-the background while `/status` and the page show `checking`. Caption requests receive HTTP 503 until the workload passes and the resource
-controller admits calls. Admission then uses the measured speaking budget. The compatibility wake endpoint rejects browser users
-and active/in-flight caption rooms; it cannot force a reload or bypass cooldowns. Simulated counters do not contaminate live
-call health. Results remain in memory and are remeasured after restart.
+`cassini_live.capacity` exercises the actual gate, queues and loaded engine
+using the bundled public-domain fixture, only when an administrator asks (the
+settings page, or `--installed --measure` from the container). It refuses while
+any call has captions or is being set up, and calls asking during the run get
+HTTP 503 with Retry-After. The governor neither seats nor sheds its synthetic
+speakers, and simulated counters and latencies do not contaminate live call
+health. The result is shown and kept in memory; admission never reads it.
 
 The standalone CLI uses its own pool for testing an image before installation.
-The installed CLI reads status without creating an additional competing pool. See [assessment criteria](capacity.md).
+See [load, admission and capacity](capacity.md).
 
 ## Automatic recovery
 
-One supervisor owns model loading, calibration, ready-state monitoring and
-recovery. Cheap headroom checks precede any expensive retry; exponential backoff
-is persisted before loading models. Disable cancels this supervisor and awaits
+One supervisor owns model loading, ready-state monitoring and recovery. A
+memory fit check precedes every engine process start, restarts included, and
+refuses a load into a container the kernel has just OOM-killed; exponential
+backoff is persisted before loading models. Disable cancels this supervisor and awaits
 cleanup. Worker generations reject stale returns after a restart. Room close
 tasks remain tracked and shielded from caller cancellation, and pending joins
 recheck their room generation before accepting subscriptions.

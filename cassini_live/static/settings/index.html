@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Cassini Live settings</title>
+  <link rel="stylesheet" href="app.css?v={{VERSION}}">
+  <script src="app.js?v={{VERSION}}" defer></script>
+</head>
+<body>
+  <a class="skip" href="#engines">Skip to speech engines</a>
+  <header class="page-header">
+    <div class="wrap">
+      <h1>Cassini Live</h1>
+      <p class="subtitle">Speech engine and caption service</p>
+      <p><a id="back" href="../../../../../settings/admin/ai">Back to Administration settings</a></p>
+    </div>
+  </header>
+
+  <main class="wrap" id="main">
+    <noscript>
+      <p class="notice">This page needs JavaScript. The engine can also be changed in
+        Administration settings &gt; Assistant.</p>
+    </noscript>
+
+    <div id="notice" class="notice" role="alert" hidden></div>
+    <p id="action-result" class="message success" role="status" aria-live="polite" hidden></p>
+
+    <section id="overview" aria-labelledby="overview-title">
+      <h2 id="overview-title" tabindex="-1">Status</h2>
+      <p id="live" role="status" aria-live="polite">Loading the current state…</p>
+      <dl class="facts" id="overview-facts">
+        <div><dt>Active engine</dt><dd id="active-engine">–</dd></div>
+        <div><dt>Captions</dt><dd><span id="captions-spinner" class="spinner" aria-hidden="true" hidden></span><span id="captions">–</span></dd></div>
+        <div><dt>Speakers</dt><dd id="speakers">–</dd></div>
+        <div><dt>Last measurement</dt><dd><span id="capacity-spinner" class="spinner" aria-hidden="true" hidden></span><span id="capacity">–</span></dd></div>
+        <div><dt>Calls with captions</dt><dd id="calls">–</dd></div>
+      </dl>
+      <div class="actions">
+        <button type="button" id="measure" class="secondary"><span class="spinner" aria-hidden="true" hidden></span><span class="label">Measure capacity</span></button>
+      </div>
+      <p id="measure-why" class="muted" hidden></p>
+      <div id="last-error" class="message warning" hidden></div>
+      <div id="last-refusal" class="message warning" hidden>
+        <p id="last-refusal-text"></p>
+        <ul id="last-refusal-reasons" hidden></ul>
+      </div>
+    </section>
+
+    <section id="change" aria-labelledby="change-title" hidden>
+      <h2 id="change-title" tabindex="-1">Current change</h2>
+      <ol id="steps" class="steps">
+        <li data-step="validating"><span class="spinner" aria-hidden="true"></span><span class="step-label">Checking requirements</span></li>
+        <li data-step="downloading"><span class="spinner" aria-hidden="true"></span><span class="step-label">Downloading</span></li>
+        <li data-step="verifying"><span class="spinner" aria-hidden="true"></span><span class="step-label">Verifying files</span></li>
+        <li data-step="stopping"><span class="spinner" aria-hidden="true"></span><span class="step-label">Stopping captions</span></li>
+        <li data-step="loading"><span class="spinner" aria-hidden="true"></span><span class="step-label">Loading the engine</span></li>
+        <li data-step="rolling_back"><span class="spinner" aria-hidden="true"></span><span class="step-label">Restoring the previous engine</span></li>
+      </ol>
+      <div id="progress-box" class="progress-box" hidden>
+        <label for="progress" id="progress-label">Download progress</label>
+        <progress id="progress"></progress>
+      </div>
+      <p id="change-text"></p>
+      <p id="result" hidden></p>
+      <p id="result-time" class="muted" hidden></p>
+      <div class="actions">
+        <button type="button" id="cancel" class="secondary" hidden><span class="spinner" aria-hidden="true" hidden></span><span class="label">Cancel the change</span></button>
+      </div>
+    </section>
+
+    <section id="engines" aria-labelledby="engines-title">
+      <h2 id="engines-title">Speech engines</h2>
+      <p class="muted">One engine serves the whole server. Changing it stops captions in active calls while the new engine loads (seconds when its files are on disk).</p>
+      <ul id="engine-list" class="cards"></ul>
+    </section>
+
+    <section id="server" aria-labelledby="server-title">
+      <h2 id="server-title">This server</h2>
+      <dl class="facts">
+        <div><dt>Memory limit</dt><dd id="host-memory-limit">–</dd></div>
+        <div><dt>Host memory</dt><dd id="host-memory">–</dd></div>
+        <div><dt>CPU quota</dt><dd id="host-cpu">–</dd></div>
+        <div><dt>Free disk</dt><dd id="host-disk">–</dd></div>
+        <div><dt>CPU features</dt><dd id="host-flags">–</dd></div>
+      </dl>
+      <p id="measurements" class="muted"></p>
+    </section>
+  </main>
+
+  <footer class="wrap page-footer">
+    <p>Cassini Live <span id="version">{{VERSION}}</span> ·
+      <a id="docs" href="https://github.com/codemyriad/cassini-live/blob/main/docs/install.md#choose-a-speech-engine" target="_blank" rel="noopener noreferrer">Documentation<span class="visually-hidden"> (opens in a new tab)</span></a></p>
+  </footer>
+</body>
+</html>

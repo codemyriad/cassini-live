@@ -37,6 +37,7 @@ ENV PATH="/app/.venv/bin:$PATH" APP_HOST=0.0.0.0 APP_PORT=8080 \
     CASSINI_LIVE_WEIGHTS=/opt/whistle/whistle.cact \
     CASSINI_WHISTLE_CPU_SHIM=/opt/whistle/libcassini_cpu_limit.so \
     CASSINI_WHISTLE_THREADS=2 PYTHONDONTWRITEBYTECODE=1
+# Nemotron models are never baked in: administrators download them on demand.
 # HaRP installs certificates with docker exec as the image's default user.
 # The entrypoint drops privileges before starting FRP or the caption service.
 EXPOSE 8080

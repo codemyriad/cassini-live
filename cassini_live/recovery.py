@@ -8,39 +8,22 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .resources import MIB, budget_problem
+from . import __version__
 
 
 @dataclass(frozen=True)
 class RecoveryPolicy:
+    # Shortened waits approved by Silvio (2026-10-15). Only a crash waits now: a load is
+    # attempted as soon as the limits allow it, with no headroom or capacity windows.
     base: float = 120
     cap: float = 3600
-    insufficient: float = 900
-    headroom_window: float = 180
-    stable_window: float = 1800
+    stable_window: float = 600  # unjustified; resets the failure count after a calm run
     poll: float = 15
     monitor: float = 1
 
     def delay(self, failures, jitter=random.random):
         # Positive jitter preserves the minimum cooldown and caps retry frequency.
         return min(self.cap, self.base * 2 ** min(max(failures - 1, 0), 10)) * (1 + 0.2 * jitter())
-
-
-def recovery_problem(data, workers):
-    if problem := budget_problem(data, workers):
-        return problem
-    if data.get("hostCpuPressure") is None or data["hostCpuPressure"] >= 20:
-        return "Waiting for readable, low host CPU pressure"
-    if data["memoryFraction"] >= 0.6 or data["pidsFraction"] >= 0.6:
-        return "Waiting for memory and process headroom"
-    reserve = max(256 * MIB, data["hostMemoryBytes"] * 0.1)
-    if data["hostAvailableBytes"] - workers * 192 * MIB < reserve * 1.5:
-        return "Waiting for sustained host memory headroom"
-    # PSI measures time stalled, including contention outside this container.
-    if (data.get("cpuPressure") is None or data.get("memoryPressure") is None
-            or data["cpuPressure"] >= 20 or data["memoryPressure"] >= 1):
-        return "Waiting for host CPU and memory pressure to settle"
-    return None
 
 
 class RecoveryJournal:
@@ -66,12 +49,18 @@ class RecoveryJournal:
             raise ValueError("Invalid retry time")
         return data
 
-    def write(self, failures, next_attempt, pending, reason):
+    def write(self, failures, next_attempt, pending, reason, last_trip=None, running=False):
         data = dict(
             failures=failures,
             nextAttemptAt=next_attempt,
             attemptInProgress=pending,
+            # Only a clean stop or a trip clears it: a boot that finds it
+            # set follows a process death while the engine ran, which counts as a failure.
+            engineRunning=running,
+            # Older readers ignore it; a boot of another version clears an interrupted load.
+            appVersion=__version__,
             reason=reason,
+            lastTrip=last_trip,
             updatedAt=time.time(),
         )
         self.data = data

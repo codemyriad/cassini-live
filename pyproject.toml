@@ -1,7 +1,7 @@
 [project]
 name = "cassini-live"
-version = "0.6.1"
-description = "Local Whistle captions for Nextcloud Talk"
+version = "0.8.1"
+description = "Local live captions for Nextcloud Talk"
 requires-python = ">=3.12,<3.14"
 license = "AGPL-3.0-or-later"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
   "websockets>=15,<16",
   "onnxruntime>=1.20,<2",
   "pillow>=11,<13",
+  "sherpa-onnx==1.13.8",
+  # Native runtime (libonnxruntime.so); uv resolves sherpa-onnx from its sdist without it.
+  "sherpa-onnx-core==1.13.8",
 ]
 
 [dependency-groups]
@@ -22,7 +25,7 @@ dev = ["pytest>=8,<9", "pytest-asyncio>=1,<2", "httpx>=0.28,<0.29", "ruff>=0.14,
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["integration: requires real Whistle weights"]
+markers = ["integration: requires real Whistle weights or a Nemotron model directory"]
 
 [tool.ruff]
 target-version = "py312"

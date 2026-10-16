@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .transcriber import WhistleTranscriber
+from .load import LagMeter, control_lag
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -68,7 +68,7 @@ async def scenario(pool, speakers, *, participants=10, speed=1.3):
         for i in range(speakers, participants)
     ]
     captions = asyncio.Queue()
-    tracks = [WhistleTranscriber(str(i), "en", captions, pool=pool) for i in range(participants)]
+    tracks = [pool.transcriber(str(i), "en", captions) for i in range(participants)]
     decoders = [asyncio.create_task(t._decode()) for t in tracks]
     finals = [[] for _ in range(speakers)]
     first = [None] * speakers
@@ -94,12 +94,19 @@ async def scenario(pool, speakers, *, participants=10, speed=1.3):
 
     collector = asyncio.create_task(collect())
     timed_out = False
+    # Lag as the governor measures it (load.py), sampled every feed step over the tracks of
+    # this scenario only; the per-request meter is swapped out so synthetic requests never
+    # reach the live status figures, and each scenario reports its own p95.
+    lag, max_lag, sustained = LagMeter(), 0.0, 0.0
+    live_requests, pool.lag = pool.lag, LagMeter()
     try:
         async with asyncio.timeout(30):
             for offset in range(0, len(samples), 320):
-                max_feed_lag = max(
-                    max_feed_lag, time.monotonic() - started - offset / 16000 / speed
-                )
+                now = time.monotonic()
+                max_feed_lag = max(max_feed_lag, now - started - offset / 16000 / speed)
+                current = control_lag(tracks, now)
+                lag.observe(current, now)
+                max_lag, sustained = max(max_lag, current), max(sustained, lag.sustained(now))
                 await asyncio.gather(
                     *(t._put_audio(inputs[i][offset : offset + 320]) for i, t in enumerate(tracks))
                 )
@@ -118,9 +125,10 @@ async def scenario(pool, speakers, *, participants=10, speed=1.3):
         for task in decoders:
             task.cancel()
         await asyncio.gather(collector, *decoders, return_exceptions=True)
-        # Cancellation may leave native streams in progress. Replace them before
+        # Cancellation may leave native streams in progress. Drop them before
         # returning the pool to calls, never reuse their pending protocol replies.
-        await asyncio.gather(*(t._release(healthy=False) for t in tracks))
+        await asyncio.gather(*(t.abort() for t in tracks))
+        requests, pool.lag = pool.lag, live_requests
     elapsed = time.monotonic() - started
     reference = ((FIXTURES / "jfk.txt").read_text() + " ") * 2
     errors = [word_error_rate(reference, " ".join(f)) for f in finals]
@@ -159,4 +167,8 @@ async def scenario(pool, speakers, *, participants=10, speed=1.3):
         "workerFailures": differences[0],
         "capacityTimeouts": differences[1],
         "droppedChunks": differences[2],
+        # Reported, never a pass criterion: the staging run sizes the thresholds from them.
+        "maxLagSeconds": round(max_lag, 3),
+        "lagSustainedSeconds": round(sustained, 3),
+        "p95RequestSeconds": round(requests.p95(), 3),
     }

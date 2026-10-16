@@ -4,19 +4,24 @@
   <!-- Talk hardcodes this ID; Cassini Live replaces the official caption ExApp. -->
   <id>live_transcription</id>
   <name>Cassini Live</name>
-  <summary>Private, multilingual live captions for Nextcloud Talk, powered by Whistle.</summary>
+  <summary>Private live captions for Nextcloud Talk, with a choice of speech engines.</summary>
   <description><![CDATA[Turn on captions in Talk and follow the conversation in real time.
-Whistle recognises English, German, French, Spanish, Italian, Dutch and Polish on your CPU.
-Language detection is automatic. Audio and captions stay on your infrastructure; no account,
-API key, GPU, recording or end-user configuration is needed.
+Audio and captions stay on your infrastructure; no account, API key, GPU, recording or
+end-user configuration is needed.
+
+Whistle is bundled: it recognises English, German, French, Spanish, Italian, Dutch and Polish
+on your CPU, with automatic language detection. Administrators can switch the whole server to
+an optional, more accurate Nemotron engine in Administration settings > Assistant:
+Nemotron English (NVIDIA Open Model License) or Nemotron Multilingual (OpenMDW-1.1). Their models are downloaded on request, not shipped in the image, and need
+at least 2.25 GiB of container memory (3 GiB recommended) and twice that of host memory.
 
 Requires Talk's high-performance backend, AppAPI and a deploy daemon. Supply the HPB internal
-secret once in deploy options; its URL is discovered from Talk. Whistle is bundled in the image.
+secret once in deploy options; its URL is discovered from Talk.
 
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.6.1</version>
+  <version>0.8.1</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -30,7 +35,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.6.1</image-tag>
+      <image-tag>0.8.1</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -47,7 +52,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <variable>
         <name>CASSINI_LIVE_WORKERS</name>
         <display-name>Concurrent speaking segments (optional)</display-name>
-        <description>Leave empty for CPU quota sizing, up to four recognition workers. The installation check measures usable simultaneous speakers. Silent tracks do not reserve workers. Range: 1 to 32.</description>
+        <description>Caps how many people can speak with captions at the same time (Whistle: recognition workers; Nemotron: simultaneous speakers). Leave empty to size from the CPU quota, up to four. A value above the CPU ceiling is clamped to it with a warning. Silent tracks do not count. Range: 1 to 32.</description>
       </variable>
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>
@@ -55,11 +60,17 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
         <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 0.5 fps; stops under resource pressure. Default off.</description>
       </variable>
     </environment-variables>
-    <!-- Native caption endpoints are server-to-server, never browser-proxied. -->
+    <!-- Native caption endpoints are server-to-server, never browser-proxied. The settings
+         page and its API are admin-only; the app checks methods and CSRF itself. -->
     <routes>
-      <route><url>^status$</url><verb>GET</verb><access_level>USER</access_level></route>
-      <route><url>^ui\/live\.(js|css)$</url><verb>GET</verb><access_level>USER</access_level></route>
-      <route><url>^img\/app\.svg$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <route><url>^/?status$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <route><url>^/?settings/(index\.html|app\.js|app\.css)$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/licenses/[A-Za-z0-9.-]+\.txt$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/state$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/engine$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/cancel$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/capacity$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/models/[a-z0-9-]+$</url><verb>DELETE</verb><access_level>ADMIN</access_level></route>
     </routes>
   </external-app>
 </info>

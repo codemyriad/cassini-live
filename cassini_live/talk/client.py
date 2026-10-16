@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.rtcconfiguration import RTCConfiguration, RTCIceServer
 from aiortc.sdp import candidate_from_sdp
-from ..safety import ResourceRefused
+from ..safety import ResourceRefused, TrackBudgetFull
 from .audio_stream import AudioStream
 from .constants import (
 	CALL_LEAVE_TIMEOUT,
@@ -48,6 +48,7 @@ from .meta_translator import MetaTranslator
 from .models import LANGUAGE_MAP
 from nc_py_api import AsyncNextcloudApp
 from ..transcriber import WhistleTranscriber
+from ..transcriber import create as create_transcriber
 from .utils import get_ssl_context, hmac_sha256, sanitize_websocket_url
 from websockets import ClientConnection
 from websockets import State as WsState
@@ -55,6 +56,9 @@ from websockets import connect
 from websockets.exceptions import WebSocketException
 
 LOGGER = logging.getLogger("lt.spreed_client")
+# Participant names for the diagnostic video: at most one Talk participants request per
+# room every 10 s. Unjustified beyond "join bursts coalesce"; names are cosmetic.
+NAMES_REFRESH_S = 10
 
 
 @dataclasses.dataclass
@@ -66,6 +70,14 @@ class PeerConnection:
 # How long to wait for an offer after sending a "requestoffer" before sending
 # another request for the same session id. In seconds.
 OFFER_REQUEST_COOLDOWN = 10
+
+
+def speaker_label(participant: dict) -> str:
+	"""Talk attendee -> the label the diagnostic video shows over that speaker's lane."""
+	name = str(participant.get("displayName") or "").strip()
+	if participant.get("actorType") in ("guests", "emails"):
+		return f"Guest · {name}" if name else "Guest"
+	return name or "Participant"
 
 
 class SpreedClient:
@@ -80,6 +92,9 @@ class SpreedClient:
 		self.backend_url: str | None = None
 		self.admission = None
 		self._track_leases = set()
+		# Participants refused a caption track at the hard ceiling; asked again when a lease frees.
+		self._refused_tracks: set[str] = set()
+		self._offer_retries: set[asyncio.Task] = set()
 		self._accepting_offers = set()
 		self._shutdown_lock = asyncio.Lock()
 		self._closing = False
@@ -92,6 +107,16 @@ class SpreedClient:
 		self.targets: dict[str, Target] = {}
 		self.target_lock = asyncio.Lock()
 		self.nc_sid_map: dict[str, str] = {}  # {"nc_session_id": "session_id"}, use the same target lock
+		# Display names for the diagnostic video, read as the latest Nextcloud user who
+		# enabled captions here, only while this room owns the running video:
+		# {"nc_session_id": label}. Never logged.
+		self.name_user: str | None = None
+		self.names_shown = False
+		self.speaker_names: dict[str, str] = {}
+		self._names_at = 0.0
+		self._names_again = False
+		self._names_app: AsyncNextcloudApp | None = None
+		self._names_task: asyncio.Task | None = None
 		# the first target's Nextcloud session ID, used to defer the first target add until we join the call
 		self._nc_sid_wait_stash: dict[str, None] = {}
 		self.transcript_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
@@ -611,6 +636,87 @@ class SpreedClient:
 				}
 			})
 
+	def note_user(self, user_id: str | None):
+		"""Read participant names as the latest Nextcloud user who enabled captions here."""
+		if user_id and user_id != self.name_user:
+			self.name_user = user_id
+			self.refresh_names()
+
+	def show_names(self, shown: bool):
+		"""Names are read and kept only while this room's diagnostic video runs."""
+		self.names_shown = shown
+		if shown:
+			self.refresh_names()
+			return
+		if self._names_task and not self._names_task.done():
+			self._names_task.cancel()
+		self._names_again = False
+		self.speaker_names = {}
+
+	def refresh_names(self):
+		"""Coalesce participant changes into at most one names request per NAMES_REFRESH_S.
+		A change while a request is out gets one more request after it."""
+		if not self.name_user or not self.names_shown or self._closing or self.defunct.is_set():
+			return
+		if self._names_task and not self._names_task.done():
+			self._names_again = True
+			return
+		self._names_task = asyncio.create_task(
+			self._refresh_names(), name=f"participant_names-{self.room_token}"
+		)
+
+	async def _refresh_names(self):
+		while True:
+			await asyncio.sleep(max(0.0, self._names_at + NAMES_REFRESH_S - time.monotonic()))
+			if not self.name_user or not self.names_shown:
+				return
+			# Changes from here on may be missing from this reply: they ask for another.
+			self._names_again = False
+			self._names_at = time.monotonic()
+			await self._read_names(self.name_user)
+			if not self._names_again:
+				return
+
+	async def _read_names(self, user_id: str):
+		try:
+			# One app per room: nc_py_api reads capabilities when its user changes, so
+			# only the first request as a user costs a second one.
+			if self._names_app is None:
+				self._names_app = AsyncNextcloudApp()
+			await self._names_app.set_user(user_id)
+			participants = await self._names_app.ocs(
+				"GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{self.room_token}/participants"
+			)
+		except asyncio.CancelledError:
+			raise
+		except Exception as error:
+			# Names are cosmetic: the video falls back to generic labels. No names logged.
+			LOGGER.debug("Could not read participant names (%s)", type(error).__name__, extra={
+				"room_token": self.room_token,
+				"tag": "participants",
+			})
+			# Refused (left the room, lost access): the next user to enable captions
+			# here is asked instead.
+			if getattr(error, "status_code", None) in (403, 404) and self.name_user == user_id:
+				self.name_user = None
+			return
+		if not self.names_shown:
+			return
+		names = {}
+		for participant in participants if isinstance(participants, list) else []:
+			label = speaker_label(participant)
+			for nc_sid in participant.get("sessionIds") or []:
+				if isinstance(nc_sid, str):
+					names[nc_sid] = label
+		self.speaker_names = names
+
+	def speaker_name(self, session_id: str) -> str | None:
+		"""The display label for a signaling session in this room, if known."""
+		for nc_sid, sid in list(self.nc_sid_map.items()):
+			if sid == session_id:
+				return self.speaker_names.get(nc_sid)
+		return None
+
 	async def close(self):
 		async with self._shutdown_lock:
 			await self._close_connection()
@@ -624,6 +730,9 @@ class SpreedClient:
 			return
 
 		self._closing = True
+		if self._names_task and not self._names_task.done():
+			self._names_task.cancel()
+		self.speaker_names = {}
 
 		if self._deferred_close_task and not self._deferred_close_task.done():
 			LOGGER.debug("Cancelling deferred close task", extra={
@@ -937,6 +1046,7 @@ class SpreedClient:
 					async with self.peer_connection_lock:
 						peer = self.peer_connections.pop(left_sid, None)
 						self._offer_requested.pop(left_sid, None)
+						self._refused_tracks.discard(left_sid)
 					if peer is not None:
 						had_participant = True
 						with suppress(Exception):
@@ -997,6 +1107,7 @@ class SpreedClient:
 						async with self.peer_connection_lock:
 							peer = self.peer_connections.pop(user_desc["sessionId"], None)
 							self._offer_requested.pop(user_desc["sessionId"], None)
+							self._refused_tracks.discard(user_desc["sessionId"])
 						if peer is not None:
 							with suppress(Exception):
 								await peer.pc.close()
@@ -1006,6 +1117,8 @@ class SpreedClient:
 						continue
 
 					# user connected, keep a map of Nextcloud session IDs to HPB session IDs
+					if user_desc.get("nextcloudSessionId") not in self.speaker_names:
+						self.refresh_names()
 					async with self.target_lock:
 						# not sure why a KeyError is hit when the monitor task is cancelled,
 						# adding a guard to prevent error logs
@@ -1177,6 +1290,17 @@ class SpreedClient:
 			try:
 				lease = self.admission.reserve_track()
 				self._track_leases.add(lease)
+				self._refused_tracks.discard(spkr_sid)
+			except TrackBudgetFull:
+				# Only this participant goes without captions; the room and its speakers keep theirs.
+				if spkr_sid not in self._refused_tracks:
+					self._refused_tracks.add(spkr_sid)
+					LOGGER.warning("Caption track budget reached; no captions for this participant until a track frees", extra={
+						"session_id": spkr_sid,
+						"room_token": self.room_token,
+						"tag": "participants",
+					})
+				return
 			except ResourceRefused:
 				if not self._close_task:
 					self._close_task = asyncio.create_task(self.close())
@@ -1198,6 +1322,17 @@ class SpreedClient:
 			raise
 		finally:
 			self._accepting_offers.discard(spkr_sid)
+
+	def retry_refused_tracks(self):
+		"""A caption track lease freed: ask each participant refused one to offer again."""
+		if self._closing or self.defunct.is_set() or self._close_task or not self._refused_tracks:
+			return
+		for sid in list(self._refused_tracks):
+			if sid not in self.peer_connections and sid not in self._accepting_offers:
+				self._offer_requested[sid] = time.monotonic()
+				task = asyncio.create_task(self.send_offer_request(sid))
+				self._offer_retries.add(task)
+				task.add_done_callback(self._offer_retries.discard)
 
 	async def _accept_offer(self, message, spkr_sid, lease):
 		ice_servers = []
@@ -1282,7 +1417,7 @@ class SpreedClient:
 
 				stream = AudioStream(track)
 				async with weakself().transcriber_lock:
-					weakself().transcribers[spkr_sid] = WhistleTranscriber(
+					weakself().transcribers[spkr_sid] = create_transcriber(
 						spkr_sid,
 						weakself().room_lang_id,
 						weakself().transcript_queue,
@@ -1294,7 +1429,7 @@ class SpreedClient:
 						await weakself().transcribers[spkr_sid].connect()
 						await weakself().transcribers[spkr_sid].start(stream=stream)
 					except Exception:
-						LOGGER.exception("Could not start Whistle caption stream.",
+						LOGGER.exception("Could not start caption stream.",
 							extra={
 
 								"session_id": spkr_sid,

@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from nc_py_api.ex_app.integration_fastapi import anc_app
 
+from cassini_live import __version__
 from cassini_live.app import create_app
 from cassini_live.config import Config, websocket_url
 from cassini_live.pool import WorkerPool
@@ -191,3 +192,118 @@ async def test_startup_connection_failure_recovers_without_admin(monkeypatch):
         assert service.enabled and len(pool.workers) == 1
         assert service.discover.await_count == 2
     assert pool.closed
+
+
+def make_engine_app(engine_id):
+    from tests.fakes_engine import FakeBackend
+
+    config = Config(None, 2, "secret", "")
+    service = CaptionService(config)
+    service.enabled = True
+    service.settings = object()
+    service.request = AsyncMock()
+    app = create_app(config, FakeBackend(engine_id, 2), service)
+    app.state.safety.state = "ready"
+    return app, service
+
+
+@pytest.mark.parametrize(
+    "engine, languages",
+    [
+        ("whistle", {"auto", "en", "de", "fr", "es", "it", "nl", "pl"}),
+        ("nemotron-multilingual", {"auto", "en", "de", "fr", "es", "it", "nl", "pl"}),
+        ("nemotron-en", {"auto", "en"}),
+    ],
+)
+def test_languages_follow_the_active_engine(headers, engine, languages):
+    app, _ = make_engine_app(engine)
+    client = TestClient(app)
+    assert set(client.get("/api/v1/languages", headers=headers).json()) == languages
+    caps = client.get("/capabilities", headers=headers).json()["live_transcription"]
+    assert set(caps["live_transcription"]["supported_languages"]) == languages
+    status = client.get("/status", headers=headers).json()
+    assert status["engine"]["id"] == engine and status["engine"]["switchState"] == "idle"
+    assert status["languages"] == status["engine"]["languages"]
+    assert status["engine"]["name"] == status["model"]
+
+
+def test_english_engine_refuses_other_languages(headers):
+    app, service = make_engine_app("nemotron-en")
+    client = TestClient(app)
+    req = {"roomToken": "room1", "ncSessionId": "session1", "langId": "de"}
+    response = client.post("/api/v1/call/transcribe", headers=headers, json=req)
+    assert response.status_code == 400 and "does not support" in response.json()["detail"]
+    response = client.post(
+        "/api/v1/call/set-language", headers=headers, json={"roomToken": "room1", "langId": "de"}
+    )
+    assert response.status_code == 400
+    req["langId"] = "auto"
+    assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 200
+
+
+def test_capacity_check_waits_for_an_engine_switch(headers):
+    app, _ = make_app()
+    app.state.manager.status.state = "downloading"
+    headers["AUTHORIZATION-APP-API"] = base64.b64encode(b":test-exapp-secret").decode()
+    response = TestClient(app).post("/capacity/check", headers=headers)
+    assert response.status_code == 409
+
+
+def test_enable_removes_the_legacy_page_and_registers_no_menu(headers):
+    app, service = make_app()
+    service.discover = AsyncMock()
+    nc = AsyncMock()
+    nc.ui.top_menu.unregister.side_effect = OSError("Not registered")
+    app.dependency_overrides[anc_app] = lambda: nc
+    client = TestClient(app)
+    for path in ("/ui/live.js", "/ui/live.css", "/img/app.svg"):
+        assert client.get(path, headers=headers).status_code == 404
+    response = client.put("/enabled?enabled=true", headers=headers)
+    assert response.json() == {"error": ""}
+    assert service.enabled
+    nc.ui.resources.delete_script.assert_awaited_once_with("top_menu", "live", "ui/live")
+    nc.ui.top_menu.unregister.assert_awaited_once_with("live")
+    paths = [call.args[1] for call in nc.ocs.await_args_list]
+    assert not any("ui/top-menu" in p or "ui/script" in p for p in paths)
+
+
+def test_manifest_routes():
+    from scripts import check_manifest
+
+    check_manifest.main()
+
+
+def test_status_keeps_its_shape_and_exports_the_observing_admission_block(headers):
+    app, _ = make_app()
+    status = TestClient(app).get("/status", headers=headers).json()
+    assert status["version"] == __version__
+    for key in ("capacityAssessment", "resourceSafety", "diagnosticVideo", "engine"):
+        assert key in status
+    assert status["lagSeconds"] == 0.0 and status["p95RequestSeconds"] == 0.0
+    safety = status["resourceSafety"]
+    assert safety["cpuHealth"] == {} and safety["state"] == "ready"
+    admission = safety["admission"]
+    assert set(admission) == {
+        "open", "reason", "seats", "ceiling", "speaking", "paused", "lagSeconds",
+        "lagSustainedSeconds", "captionAgeSeconds", "cpuStall", "cpuPressureAvg10",
+        "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryStatAvailable",
+        "pressureAvailable", "engineDuty", "lastRefusal", "lastShed", "shedEvents",
+        "measuring", "tickMs", "observeOnly",
+    }  # fmt: skip
+    assert admission["observeOnly"] is True and admission["open"] is True
+    assert admission["seats"] == 0 and admission["ceiling"] == 2
+
+
+def test_the_requesting_user_is_remembered_for_participant_names(headers):
+    app, service = make_app()
+    seen = []
+    service.clients["room1"] = type(
+        "Room", (), {"note_user": lambda self, user: seen.append(user)}
+    )()
+    client = TestClient(app)
+    req = {"roomToken": "room1", "ncSessionId": "session1"}
+    assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 200
+    assert seen == ["alice"]
+    req["enable"] = False
+    assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 200
+    assert seen == ["alice"]

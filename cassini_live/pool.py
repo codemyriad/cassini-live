@@ -6,8 +6,11 @@ import logging
 import os
 import sys
 import time
+import weakref
 from collections import Counter, deque
 from contextlib import suppress
+
+from .load import LagMeter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +79,10 @@ class Worker:
 
 
 class WorkerPool:
+    engine_id = "whistle"
+    # One process per worker: engine duty is sampled for the shared host only.
+    host_pid = None
+
     def __init__(self, size, weights=None, worker_factory=Worker):
         self.size = size
         self.weights = weights
@@ -85,6 +92,7 @@ class WorkerPool:
         self.closed = False
         self.failures = 0
         self.capacity_waits = 0
+        self.paused_drops = 0
         self.dropped_chunks = 0
         self.waiters = deque()
         self.scheduling_yields = 0
@@ -98,8 +106,14 @@ class WorkerPool:
         self.leased = set()
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
-        self.resource_check = None
+        # Installed by the safety controller: why a worker must not spawn now, or None.
+        self.start_check = None
+        # Installed by the safety controller: per-speaker admission (load.LoadGovernor).
+        self.governor = None
         self.generation = 0
+        self.lag = LagMeter()
+        # Every live transcriber on this backend; the load governor reads their lag.
+        self.transcribers = weakref.WeakSet()
 
     @property
     def available(self):
@@ -109,9 +123,38 @@ class WorkerPool:
     def waiting(self):
         return sum(not future.done() for future in self.waiters)
 
+    @property
+    def busy(self):
+        return len(self.leased)
+
+    def is_idle(self):
+        return self.idle.qsize() == self.size
+
+    def resize(self, size):
+        if not self.closed:
+            raise RuntimeError("Resize the worker pool only while it is closed")
+        self.size = size
+        self.idle = asyncio.Queue(maxsize=size)
+
+    def transcriber(self, session_id, language, transcript_queue, *translation_hooks):
+        from .transcriber import WhistleTranscriber
+
+        return WhistleTranscriber(
+            session_id, language, transcript_queue, *translation_hooks, pool=self
+        )
+
     def note_drop(self):
         self.dropped_chunks += 1
         self.last_pressure = time.monotonic()
+
+    def kick(self):
+        """Hand idle workers to parked waiters, e.g. when admission reopens."""
+        while self.waiters and len(self.leased) < self.admission_limit:
+            try:
+                worker = self.idle.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._offer(worker)
 
     def _offer(self, worker):
         # Hand the lease directly to the oldest live waiter. A returning speaker
@@ -125,16 +168,13 @@ class WorkerPool:
         self.idle.put_nowait(worker)
 
     async def _new(self):
-        if self.resource_check and self.resource_check():
-            raise CapacityError("Insufficient resource headroom for a recognition worker")
+        if self.start_check and (problem := self.start_check()):
+            raise CapacityError(problem)
         generation = self.generation
         worker = self.worker_factory(self.weights)
         self.workers.add(worker)
         try:
             await worker.start()
-            if self.resource_check and self.resource_check():
-                await worker.close()
-                raise CapacityError("Recognition worker exhausted the resource headroom")
         except BaseException:
             await worker.close()
             self.workers.discard(worker)
@@ -245,6 +285,7 @@ class WorkerPool:
             "workers": len(self.workers),
             "streamFailures": self.failures,
             "capacityWaits": self.capacity_waits,
+            "pausedDrops": self.paused_drops,
             "droppedSpeechChunks": self.dropped_chunks,
             "speechGating": True,
             "speechDetector": "silero-v6.2.1",
@@ -254,4 +295,7 @@ class WorkerPool:
             "recentCapacityPressure": bool(
                 self.last_pressure and time.monotonic() - self.last_pressure < 60
             ),
+            "engine": self.engine_id,
+            "lagSeconds": self.lag.last(),
+            "p95RequestSeconds": self.lag.p95(),
         }

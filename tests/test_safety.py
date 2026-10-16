@@ -8,13 +8,14 @@ import pytest
 from cassini_live import capacity
 from cassini_live.capacity import CapacityAssessment
 from cassini_live.pool import CapacityError, WorkerPool
-from cassini_live.resources import MIB, budget_problem
-from cassini_live.safety import ResourceRefused, SafetyController
+from cassini_live.resources import MIB, static_problem
+from cassini_live.safety import ResourceRefused, SafetyController, TrackBudgetFull
 from tests.test_streaming import FakeWorker
 
 SAFE = {
     "pressureAvailable": True,
     "cpuPressure": 0,
+    "cpuPressureRecent": 0,
     "hostCpuPressure": 0,
     "memoryPressure": 0,
     "monitoringAvailable": True,
@@ -22,6 +23,12 @@ SAFE = {
     "affinityCpus": 8,
     "effectiveCpus": 4.0,
     "memoryLimitBytes": 2048 * MIB,
+    "memoryCurrentBytes": 410 * MIB,
+    "memoryFileBytes": 0,
+    "memoryShmemBytes": 0,
+    "memoryStatAvailable": True,
+    "cpuStallUsec": 0,
+    "hostCpuStallUsec": 0,
     "swapLimitBytes": 0,
     "pidsLimit": 128,
     "hostMemoryBytes": 8192 * MIB,
@@ -38,103 +45,99 @@ def safe_factory(pool, assessment, service=None):
     return SafetyController(pool, assessment, service, reader=lambda: dict(SAFE))
 
 
+@pytest.fixture(autouse=True)
+def no_automatic_capacity_check(monkeypatch):
+    async def scenario(pool, count):
+        raise AssertionError("0.8.0 never runs the capacity check automatically")
+
+    monkeypatch.setattr(capacity, "scenario", scenario)
+
+
 @pytest.mark.parametrize(
-    "change",
+    "change,reason",
     [
-        {"monitoringAvailable": False},
-        {"cpuQuotaCpus": None},
-        {"memoryLimitBytes": None},
-        {"pidsLimit": None},
-        {"swapLimitBytes": 1},
-        {"cpuQuotaCpus": 8},
-        {"memoryLimitBytes": 8192 * MIB},
-        {"pidsLimit": 500},
-        {"hostAvailableBytes": 10 * MIB},
-        {"memoryFraction": 0.85},
-        {"pidsFraction": 0.9},
-        {"hostAvailableBytes": None},
+        ({"cpuQuotaCpus": None}, "finite cgroup v2"),
+        ({"memoryLimitBytes": None}, "finite cgroup v2"),
+        ({"pidsLimit": None}, "finite cgroup v2"),
+        ({"swapLimitBytes": 1}, "disable container swap"),
+        ({"memoryLimitBytes": 512 * MIB}, "memory budget is too small"),
+        ({"memoryCurrentBytes": 2000 * MIB}, "Not enough memory to load Whistle"),
+        ({"memoryCurrentBytes": None}, "cannot be read"),
     ],
 )
-async def test_unsafe_installation_never_loads_a_model(change):
+async def test_unsafe_installation_never_loads_a_model(change, reason):
     pool = WorkerPool(2, worker_factory=FakeWorker)
     pool.start = AsyncMock()
     data = {**SAFE, **change}
     guard = SafetyController(pool, CapacityAssessment(pool), reader=lambda: data)
     await guard.start()
-    assert guard.state in {"blocked", "recovering"}
+    assert guard.state == "blocked" and guard.admin_action and reason in guard.reason
     pool.start.assert_not_awaited()
     with pytest.raises(ResourceRefused):
         guard.require_ready()
     await guard.close()
 
 
-def test_requested_workers_must_fit_budget():
-    assert budget_problem(SAFE, 3)
-    assert budget_problem({**SAFE, "memoryLimitBytes": 512 * MIB}, 2)
-    assert budget_problem(SAFE, 2) is None
-
-
-async def test_measured_speaking_limit_is_enforced_even_with_idle_workers(monkeypatch):
-    async def scenario(pool, count):
-        return {"passed": count == 1, "speakers": count}
-
-    monkeypatch.setattr(capacity, "scenario", scenario)
-    pool = WorkerPool(2, worker_factory=FakeWorker)
-    guard = safe_factory(pool, CapacityAssessment(pool))
+@pytest.mark.parametrize(
+    "change,advice",
+    [
+        ({"cpuQuotaCpus": 8, "effectiveCpus": 8}, "half the available CPU"),
+        ({"memoryLimitBytes": 8192 * MIB}, "half the host memory"),
+        ({"pidsLimit": 500}, "PID limit"),
+        ({"monitoringAvailable": False, "memoryFraction": 0.85, "pidsFraction": 0.9}, None),
+        ({"hostAvailableBytes": 10 * MIB}, None),
+        ({"hostAvailableBytes": None}, None),
+    ],
+)
+async def test_advice_and_pressure_never_block_captions(change, advice):
+    # Decisions 5 and 6: half-host and PID rules are advice; host memory is no gate.
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    data = {**SAFE, **change}
+    guard = SafetyController(pool, CapacityAssessment(pool), reader=lambda: data)
     try:
         await guard.start()
-        with pytest.raises(ResourceRefused):
-            guard.require_ready()
-        async with asyncio.timeout(2):
-            while guard.state == "checking":
-                await asyncio.sleep(0.01)
-        assert guard.state == "ready" and pool.admission_limit == 1
-        one = pool.acquire()
-        assert pool.idle.qsize() == 1
-        with pytest.raises(CapacityError):
-            await pool.acquire_wait(timeout=0.01)
-        await pool.release(one)
-        assert pool.available == 1
+        assert guard.state == "ready" and pool.workers
+        notes = guard.status()["advice"]
+        assert any(advice in n for n in notes) if advice else notes == []
     finally:
         await guard.close()
 
 
-@pytest.mark.parametrize(
-    "change,reason",
-    [
-        ({"memoryFraction": 0.9}, "memory budget"),
-        ({"pidsFraction": 0.9}, "process/thread"),
-        ({"hostAvailableBytes": MIB}, "Host memory"),
-        ({"cpuQuotaCpus": 2}, "limits changed"),
-        ({"oomKills": 1}, "memory limit"),
-    ],
-)
-async def test_pressure_stops_rooms_and_workers_and_waits_before_recovery(
-    monkeypatch, change, reason
-):
-    async def scenario(pool, count):
-        return {"passed": True, "speakers": count}
+def test_requested_workers_must_fit_budget():
+    assert static_problem(SAFE, 3)
+    assert static_problem({**SAFE, "memoryLimitBytes": 512 * MIB}, 2)
+    assert static_problem(SAFE, 2) is None
 
-    monkeypatch.setattr(capacity, "scenario", scenario)
+
+async def test_start_is_ready_in_load_time_with_every_worker_admitted():
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    try:
+        await guard.start()
+        # start() returns once the engine is loaded: no synthetic speakers ran.
+        assert guard.state == "ready" and guard.reason == "Captions are ready"
+        assert pool.admission_limit == 2 and len(pool.workers) == 2
+        assert guard.assessment.result["state"] == "not_tested"
+    finally:
+        await guard.close()
+
+
+async def test_an_oom_kill_stops_rooms_and_workers_and_waits_before_recovery():
     data = deepcopy(SAFE)
     pool = WorkerPool(1, worker_factory=FakeWorker)
     service = SimpleNamespace(stop_rooms=AsyncMock())
     guard = SafetyController(pool, CapacityAssessment(pool), service, reader=lambda: dict(data))
     await guard.start()
-    async with asyncio.timeout(2):
-        while guard.state == "checking":
-            await asyncio.sleep(0.01)
-    data.update(change)
+    assert guard.state == "ready"
+    data["oomKills"] += 1
     async with asyncio.timeout(2):
         while pool.workers or not service.stop_rooms.await_count:
             await asyncio.sleep(0.01)
-    assert guard.state == "recovering" and reason in guard.reason
-    assert not pool.workers
+    assert guard.state == "recovering" and "memory limit" in guard.reason
     await asyncio.sleep(0.01)
     service.stop_rooms.assert_awaited_once()
-    data.update(SAFE)
     await asyncio.sleep(0.02)
-    assert guard.state == "recovering"  # Cooldown still holds after pressure clears.
+    assert guard.state == "recovering"  # The cooldown holds.
     await guard.close()
 
 
@@ -142,14 +145,14 @@ def test_track_reservations_are_atomic_and_released_once():
     pool = WorkerPool(1, worker_factory=FakeWorker)
     guard = safe_factory(pool, CapacityAssessment(pool))
     guard.state = "ready"
-    leases = [guard.reserve_track() for _ in range(10)]
+    leases = [guard.reserve_track() for _ in range(guard.max_tracks)]
     with pytest.raises(ResourceRefused):
         guard.reserve_track()
     leases[0].release()
     leases[0].release()
-    assert len(guard.tracks) == 9
+    assert len(guard.tracks) == guard.max_tracks - 1
     guard.reserve_track()
-    assert len(guard.tracks) == 10
+    assert len(guard.tracks) == guard.max_tracks
 
 
 async def test_repeated_worker_failure_stops_replacement_loop():
@@ -164,27 +167,70 @@ async def test_repeated_worker_failure_stops_replacement_loop():
     await pool.close()
 
 
-async def test_track_budget_refuses_before_peer_allocation(monkeypatch):
+async def test_track_budget_refuses_only_that_participant(monkeypatch, caplog):
+    # Review 0.8.0: with no room cap, a refused track over the budget used to close the
+    # whole room and evict its captioned speakers. Now only that participant goes without.
     from cassini_live.talk import client as transport
     from cassini_live.talk.types import HPBSettings
 
     settings = HPBSettings(server="ws://unused/spreed", stunservers=[], turnservers=[])
     client = transport.SpreedClient("room", settings, "en", None)
     pool = WorkerPool(1, worker_factory=FakeWorker)
-    client.admission = safe_factory(pool, CapacityAssessment(pool))
+    service = SimpleNamespace(clients={"room": client})
+    client.admission = SafetyController(
+        pool, CapacityAssessment(pool), service, reader=lambda: dict(SAFE)
+    )
     client.admission.state = "ready"
-    for _ in range(10):
-        client.admission.reserve_track()
+    ceiling = client.admission.max_tracks
+    leases = [client.admission.reserve_track() for _ in range(ceiling)]
     client.close = AsyncMock()
+    requested = []
+    client.send_offer_request = AsyncMock(side_effect=requested.append)
 
     def unexpected_allocation(*args, **kwargs):
         pytest.fail("Peer connection allocated beyond the track budget")
 
     monkeypatch.setattr(transport, "RTCPeerConnection", unexpected_allocation)
-    await client.handle_offer({"message": {"sender": {"sessionid": "eleventh"}}})
-    await client._close_task
-    client.close.assert_awaited_once()
-    assert not client.peer_connections
+    for _ in range(2):
+        await client.handle_offer({"message": {"sender": {"sessionid": "over_budget"}}})
+    assert client._close_task is None and not client.close.await_count
+    assert not client.peer_connections and client._refused_tracks == {"over_budget"}
+    assert caplog.text.count("Caption track budget reached") == 1  # logged once
+    assert len(client.admission.tracks) == ceiling  # the hard ceiling holds
+
+    leases[0].release()  # a captioned speaker leaves: the refused one is asked again
+    await asyncio.sleep(0)
+    assert requested == ["over_budget"]
+
+    async def accepted(message, sid, lease):
+        assert lease in client.admission.tracks
+
+    client._accept_offer = accepted
+    offer = {"sender": {"sessionid": "over_budget"}, "data": {"payload": {"sdp": "m=audio 9"}}}
+    await client.handle_offer({"message": offer})
+    assert client._refused_tracks == set() and len(client.admission.tracks) == ceiling
+
+
+async def test_track_retry_skips_a_participant_already_connecting():
+    from cassini_live.talk.client import SpreedClient
+    from cassini_live.talk.types import HPBSettings
+
+    settings = HPBSettings(server="ws://unused/spreed", stunservers=[], turnservers=[])
+    client = SpreedClient("room", settings, "en", None)
+    client._refused_tracks.add("gone")
+    client.peer_connections["gone"] = SimpleNamespace(pc=None)  # being re-offered already
+    client.send_offer_request = AsyncMock()
+    client.retry_refused_tracks()
+    await asyncio.sleep(0)
+    client.send_offer_request.assert_not_awaited()
+
+
+def test_a_service_outage_still_refuses_the_room():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    with pytest.raises(ResourceRefused) as refused:
+        guard.reserve_track()
+    assert type(refused.value) is ResourceRefused  # not ready: the room closes as before
 
 
 async def test_invalid_offer_releases_reserved_track():
@@ -209,37 +255,30 @@ async def test_invalid_offer_releases_reserved_track():
     assert not client._accepting_offers
 
 
-@pytest.mark.parametrize("cause", ["throttled", "failures"])
-async def test_sustained_overload_trips_circuit(monkeypatch, cause):
-    async def scenario(pool, count):
-        return {"passed": True, "speakers": count}
-
-    monkeypatch.setattr(capacity, "scenario", scenario)
+async def test_the_failure_circuit_trips_and_cpu_throttling_does_not():
     data = deepcopy(SAFE)
+    data["throttledUsec"] = 0
     pool = WorkerPool(1, worker_factory=FakeWorker)
     guard = SafetyController(pool, CapacityAssessment(pool), reader=lambda: dict(data))
     await guard.start()
     try:
-        async with asyncio.timeout(2):
-            while guard.state == "checking":
-                await asyncio.sleep(0.01)
-        if cause == "dropped":
-            for _ in range(3):
-                pool.note_drop()
-        elif cause == "failures":
-            pool.failure_circuit_open = True
-        async with asyncio.timeout(5):
+        for _ in range(4):
+            data["cpuPeriods"] += 10
+            data["throttledPeriods"] += 10
+            data["throttledUsec"] += 900_000
+            data["hostCpuPressure"] = 90
+            await asyncio.sleep(1.05)
+        assert guard.state == "ready"  # throttling is the governor's business, not a trip
+        pool.failure_circuit_open = True
+        async with asyncio.timeout(3):
             while guard.state == "ready":
-                if cause == "throttled":
-                    data["cpuPeriods"] += 10
-                    data["throttledPeriods"] += 10
-                await asyncio.sleep(0.1)
-        assert guard.state == "recovering"
+                await asyncio.sleep(0.05)
+        assert guard.state == "recovering" and "Repeated" in guard.reason
     finally:
         await guard.close()
 
 
-async def test_monitor_read_failure_during_preload_reaps_worker():
+async def test_a_refused_second_worker_reaps_the_first():
     workers = []
 
     def factory(weights):
@@ -252,47 +291,325 @@ async def test_monitor_read_failure_during_preload_reaps_worker():
             raise OSError("Counters became unreadable")
         return None
 
-    pool = WorkerPool(1, worker_factory=factory)
-    pool.resource_check = check
+    pool = WorkerPool(2, worker_factory=factory)
+    pool.start_check = check
     with pytest.raises(OSError):
         await pool.start()
     assert workers[0].process.returncode is not None
     assert not pool.workers and pool.closed
 
 
-@pytest.mark.parametrize(
-    "usec,host,lag,expected",
-    [
-        (80000, 1, 0.01, None),
-        (210000, 1, 0.01, "quota stalls"),
-        (None, 1, 0.01, "severity unavailable"),
-        (80000, 21, 0.01, "Host CPU pressure"),
-        (80000, None, 0.01, "monitoring is unavailable"),
-        (80000, 1, 0.6, "event loop"),
-    ],
-)
-def test_cpu_guard_distinguishes_brief_quota_enforcement_from_pressure(usec, host, lag, expected):
-    from cassini_live.safety import cpu_pressure_reason
+async def test_a_restart_after_an_oom_kill_is_refused():
+    from tests.fakes_engine import FakeBackend
 
-    before = {"cpuPeriods": 0, "throttledPeriods": 0, "throttledUsec": 0}
-    after = {
-        "cpuPeriods": 10,
-        "throttledPeriods": 10,
-        "throttledUsec": usec,
-        "hostCpuPressure": host,
-    }
-    result = cpu_pressure_reason(before, after, 1, lag)
-    assert result is None if expected is None else expected in result
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("nemotron-en", 1), data)
+    try:
+        await guard.start()
+        assert guard.state == "ready" and guard.oom_baseline == 0
+        assert guard._start_check() is None
+        data["oomKills"] = 1  # the kernel killed the host before the next tick
+        assert guard._start_check() == "The caption memory limit was exceeded"
+        await wait_for(lambda: guard.state != "ready")
+        assert "memory limit" in guard.reason
+    finally:
+        await guard.close()
 
 
-def test_throttle_severity_uses_actual_elapsed_time():
-    from cassini_live.safety import cpu_pressure_reason
+def engine_guard(pool, data):
+    from dataclasses import replace
 
-    before = {"cpuPeriods": 0, "throttledPeriods": 0, "throttledUsec": 0}
-    after = {
-        "cpuPeriods": 20,
-        "throttledPeriods": 20,
-        "throttledUsec": 300000,
-        "hostCpuPressure": 0,
-    }
-    assert cpu_pressure_reason(before, after, 2, 0) is None
+    from cassini_live.recovery import RecoveryPolicy
+
+    return SafetyController(
+        pool,
+        CapacityAssessment(pool),
+        reader=lambda: dict(data),
+        policy=replace(RecoveryPolicy(), monitor=0.005, poll=0.005),
+        jitter=lambda: 0,
+    )
+
+
+async def wait_for(predicate):
+    async with asyncio.timeout(2):
+        while not predicate():
+            await asyncio.sleep(0.002)
+
+
+@pytest.fixture
+def passing():
+    """Kept for the tests' signatures: nothing runs the capacity check any more."""
+
+
+async def test_replace_pool_only_while_stopped_and_outcomes(passing):
+    from cassini_live import transcriber
+    from tests.fakes_engine import FakeBackend
+
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("whistle", 1), data)
+    await guard.start()
+    assert await guard.wait_outcome(2) == (True, "Captions are ready")
+    with pytest.raises(RuntimeError):
+        guard.replace_pool(FakeBackend("nemotron-en", 1))
+    await guard.close(reason="Changing the speech engine")
+    assert guard.reason == "Changing the speech engine"
+    backend = FakeBackend("nemotron-en", 1)
+    guard.replace_pool(backend)
+    assert guard.engine_id == "nemotron-en" and transcriber.POOL is backend
+    assert guard.assessment.pool is backend and backend.start_check() is None
+    try:
+        await guard.start(fresh=True)
+        assert (await guard.wait_outcome(2))[0]
+        data["oomKills"] += 1
+        await wait_for(lambda: guard.state != "ready")
+    finally:
+        await guard.close()
+        transcriber.POOL = None
+
+
+async def test_outcome_reports_blocked_trip_and_close(passing):
+    from tests.fakes_engine import FakeBackend
+
+    guard = engine_guard(FakeBackend("nemotron-en", 1), SAFE)  # 2 GiB: below the floor
+    await guard.start()
+    ok, why = await guard.wait_outcome(2)
+    assert not ok and "memory budget is too small for Nemotron English" in why
+    await guard.close()
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("nemotron-en", 1, start_error=RuntimeError("x")), data)
+    await guard.start()
+    ok, why = await guard.wait_outcome(2)
+    assert not ok and guard.state == "recovering"
+    assert why == "Nemotron English could not be loaded"
+    await guard.close()
+    refused = CapacityError("Not enough memory to load Nemotron English")
+    guard = engine_guard(FakeBackend("nemotron-en", 1, start_error=refused), data)
+    await guard.start()
+    assert await guard.wait_outcome(2) == (False, str(refused))
+    await guard.close()
+    guard = engine_guard(FakeBackend("nemotron-en", 1, start_gate=asyncio.Event()), data)
+    starting = asyncio.create_task(guard.start())  # Blocks while the model loads.
+    await wait_for(lambda: guard.phase == "loading")
+    waiter = asyncio.create_task(guard.wait_outcome(2))
+    await guard.close()
+    assert await waiter == (False, "Caption service stopped")
+    await starting
+    assert await engine_guard(FakeBackend(), data).wait_outcome(0.01) == (
+        False,
+        "Caption service has not started",
+    )
+
+
+async def test_fresh_start_ignores_cooldown_but_not_budget(passing):
+    from tests.fakes_engine import FakeBackend
+
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    guard = engine_guard(FakeBackend("whistle", 1), data)
+    guard.journal.write(3, guard.wall_clock() + 3600, False, "Tripped")
+    await guard.start()
+    assert guard.state == "recovering" and guard.phase == "cooling_down"
+    await guard.close()
+    await guard.start(fresh=True)
+    assert (await guard.wait_outcome(2))[0] and guard.failures <= 1
+    await guard.close()
+    guard.journal.write(3, guard.wall_clock() + 3600, False, "Tripped")
+    data["memoryLimitBytes"] = 256 * MIB
+    await guard.start(fresh=True)
+    assert not (await guard.wait_outcome(2))[0] and guard.state == "blocked"
+    await guard.close()
+
+
+async def test_auto_size_resizes_through_the_backend(passing):
+    from tests.fakes_engine import FakeBackend
+
+    data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
+    backend = FakeBackend("nemotron-en", 1)
+    guard = engine_guard(backend, data)
+    guard.auto_size = True
+    await guard.start()
+    await guard.wait_outcome(2)
+    assert backend.size == 4  # 3 recognizer threads on 4 CPUs, two seats each, capped at four
+    await guard.close()
+
+
+@pytest.mark.parametrize("engine_id", ["whistle", "nemotron-en", "nemotron-multilingual"])
+def test_rooms_are_bounded_by_tracks_not_by_a_tested_speaker_count(engine_id):
+    # Decision 1: no Whistle two-room clamp; load is decided per speaker, not per room.
+    assessment = SimpleNamespace(result={"testedSpeakers": 1})
+    guard = SafetyController(SimpleNamespace(engine_id=engine_id), assessment)
+    guard.state = "ready"
+    for open_rooms in range(5):
+        guard.allow_room(open_rooms)
+    for _ in range(guard.max_tracks):
+        guard.reserve_track()
+    with pytest.raises(ResourceRefused, match="audio-track budget"):
+        guard.allow_room(5)
+
+
+def test_twenty_four_tracks_fit_and_the_twenty_fifth_waits_for_a_free_one():
+    guard = SafetyController(SimpleNamespace(engine_id="nemotron-en"), SimpleNamespace(result={}))
+    guard.state = "ready"
+    assert guard.max_tracks == 24 and guard.status()["maxTracks"] == 24
+    leases = [guard.reserve_track() for _ in range(24)]
+    with pytest.raises(TrackBudgetFull):
+        guard.reserve_track()
+    leases[0].release()
+    assert guard.reserve_track() and len(guard.tracks) == 24
+
+
+def test_measuring_refuses_rooms_and_tracks():
+    guard = SafetyController(SimpleNamespace(engine_id="whistle"), SimpleNamespace(result={}))
+    guard.state, guard.measuring = "ready", True
+    with pytest.raises(ResourceRefused, match="Measuring"):
+        guard.allow_room(0)
+    with pytest.raises(ResourceRefused, match="Measuring"):
+        guard.reserve_track()
+    assert guard.status()["phase"] == "measuring"
+
+
+# The governor is fed from the monitor tick and reported; while its thresholds are
+# provisional it observes only (0.8.0-instant-admission.md, step 4).
+
+ADMISSION_KEYS = {
+    "open", "reason", "seats", "ceiling", "speaking", "paused", "lagSeconds",
+    "lagSustainedSeconds", "captionAgeSeconds", "cpuStall", "cpuPressureAvg10",
+    "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryStatAvailable",
+    "pressureAvailable", "engineDuty", "lastRefusal", "lastShed", "shedEvents",
+    "measuring", "tickMs", "observeOnly",
+}  # fmt: skip
+
+
+def test_status_carries_the_observing_governor_before_any_tick():
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    admission = guard.status()["admission"]
+    assert set(admission) == ADMISSION_KEYS
+    assert admission["observeOnly"] and admission["open"] and admission["seats"] == 0
+    assert admission["ceiling"] == 2 and admission["engineDuty"] is None
+    assert guard.governor.transcribers is pool.transcribers
+
+
+async def test_monitor_feeds_the_governor_each_tick_without_changing_admission():
+    data = deepcopy(SAFE)
+    reads = 0
+
+    def reader():
+        nonlocal reads
+        reads += 1
+        # 50 ms of stall per read: a real tick converts it into a fraction of the second.
+        data["cpuStallUsec"] += 50_000
+        return dict(data)
+
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    guard = SafetyController(pool, CapacityAssessment(pool), reader=reader)
+    try:
+        await guard.start()
+        async with asyncio.timeout(2):
+            while guard.state == "checking":
+                await asyncio.sleep(0.01)
+        ticks = reads
+        async with asyncio.timeout(3):
+            while guard.governor.cpu_stall is None:
+                await asyncio.sleep(0.05)
+        assert reads > ticks  # the monitor kept reading after ready
+        status = guard.status()
+        admission = status["admission"]
+        assert set(admission) == ADMISSION_KEYS
+        assert 0 < admission["cpuStall"] <= 1.0 and admission["cpuPressureAvg10"] == 0
+        assert admission["memoryLimitMiB"] == 2048 and admission["memoryUsedMiB"] == 410
+        assert admission["memoryHeadroomMiB"] == 2048 - 410
+        assert admission["observeOnly"] and not admission["measuring"]
+        assert "engineDuty" in guard.governor.sample and admission["engineDuty"] is None
+        assert isinstance(status["cpuHealth"]["monitorTickMs"], float)
+        assert admission["tickMs"] <= status["cpuHealth"]["monitorTickMs"]
+        # No live transcriber, so nothing to seat; the measured limit still rules.
+        assert admission["seats"] == 0 and admission["lastRefusal"] is None
+        assert guard.state == "ready" and pool.admission_limit == 2
+        assert guard.last_refusal is None
+    finally:
+        await guard.close()
+
+
+def test_observing_governor_seats_the_backend_live_speakers_without_marking_them():
+    from tests.test_load import Speaker
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    first, second = Speaker(), Speaker()
+    pool.transcribers.add(first)
+    pool.transcribers.add(second)
+    first.speak(10.0)
+    guard._observe(dict(SAFE), 10.0)
+    admission = guard.status()["admission"]
+    assert (admission["seats"], admission["speaking"]) == (1, 1)
+    assert admission["lastRefusal"] is None
+    second.speak(11.0)  # beyond the one-seat ceiling: recorded, seated, nothing marked
+    guard._observe(dict(SAFE), 11.0)
+    admission = guard.status()["admission"]
+    assert (admission["seats"], admission["speaking"]) == (2, 2)
+    assert admission["lastRefusal"]["reason"] == "ceiling" and admission["open"]
+    assert second.shed_reason is None and second.paused_until is None
+    assert guard.last_refusal is None and pool.admission_limit == 1
+
+
+def test_governor_is_marked_measuring_while_the_assessment_runs():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    guard._observe(dict(SAFE), 10.0)
+    assert guard.governor.measuring is False
+    guard.measuring = True
+    guard._observe(dict(SAFE), 11.0)
+    assert guard.governor.measuring is True and guard.status()["admission"]["measuring"]
+
+
+def test_engine_duty_is_the_host_cpu_delta_per_thread(monkeypatch):
+    readings = {4242: [(10.0, 0), (10.0, 0), (11.6, 0)]}
+
+    def process_usage(pid):
+        if not readings.get(pid):
+            raise FileNotFoundError(pid)
+        return readings[pid].pop(0)
+
+    monkeypatch.setattr("cassini_live.safety.process_usage", process_usage)
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    pool.host_pid, pool.threads = 4242, 2
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    assert guard._engine_duty(100.0) is None  # the first reading has no delta
+    assert guard._engine_duty(101.0) == 0.0
+    assert guard._engine_duty(102.0) == pytest.approx(0.8)  # 1.6 s over 1 s on 2 threads
+    assert guard._engine_duty(103.0) is None  # the host went away; the tick survives
+    assert guard._engine_cpu is None
+    pool.host_pid = None
+    assert guard._engine_duty(104.0) is None  # Whistle never samples
+
+
+def test_governor_ceiling_follows_a_resized_backend(monkeypatch):
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    replacement = WorkerPool(3, worker_factory=FakeWorker)
+    guard.replace_pool(replacement)
+    assert guard.governor.ceiling == 3 and guard.governor.transcribers is replacement.transcribers
+
+
+def test_the_backend_carries_the_governor_which_observes_while_provisional():
+    from cassini_live.load import Thresholds
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    assert pool.governor is guard.governor and guard.governor.observe_only
+    assert guard.governor.on_reopen == pool.kick
+    measured = Thresholds(provisional=False, measured_on="2026-10-16")
+    live = SafetyController(pool, CapacityAssessment(pool), thresholds=measured)
+    assert pool.governor is live.governor and not live.governor.observe_only
+
+
+async def test_whistle_kick_hands_an_idle_worker_to_a_parked_waiter():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    await pool.start()
+    pool.admission_limit = 0  # as if admission had held every worker back
+    waiter = asyncio.create_task(pool.acquire_wait(timeout=1))
+    await asyncio.sleep(0.01)
+    pool.admission_limit = 1
+    pool.kick()
+    assert await asyncio.wait_for(waiter, 0.5) in pool.workers
+    await pool.close()

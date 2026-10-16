@@ -1,9 +1,11 @@
 import asyncio
 import base64
+import time
 import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from cassini_live import transcriber
 from cassini_live.pool import WorkerPool
@@ -166,7 +168,7 @@ async def test_capacity_timeout_does_not_kill_track(monkeypatch):
 async def test_muted_track_without_frames_flushes_and_releases(monkeypatch):
     from .test_streaming import AlwaysSpeech, AudioSource
 
-    monkeypatch.setattr(transcriber, "SpeechGate", lambda: SpeechGate(AlwaysSpeech()))
+    monkeypatch.setattr(transcriber, "SpeechGate", lambda **kw: SpeechGate(AlwaysSpeech(), **kw))
     pool = WorkerPool(1, worker_factory=FakeWorker)
     await pool.start()
     monkeypatch.setattr(transcriber, "POOL", pool)
@@ -204,6 +206,18 @@ def test_continuous_speech_yields_worker_every_fifteen_seconds():
     assert sum(c.end for c in chunks) == 3
     assert sum(len(c.samples) for c in chunks) == 16000 * 31
     assert max(len(c.samples) for c in chunks) <= 16000
+
+
+def test_flush_keeps_the_configured_segment_limit():
+    from .test_streaming import AlwaysSpeech
+
+    # Receive timeouts flush idle gates; a stream engine must keep its shorter segments.
+    gate = SpeechGate(AlwaysSpeech(), max_seconds=8)
+    assert gate.flush() == []
+    chunks = gate.feed(np.ones(16000 * 9, dtype="<f4"))
+    end = next(i for i, c in enumerate(chunks) if c.end)
+    assert chunks[end].end_reason == "durationLimit"
+    assert sum(len(c.samples) for c in chunks[: end + 1]) == 16000 * 8
 
 
 def test_neural_gate_rejects_backgrounds_but_preserves_noisy_speech():
@@ -271,6 +285,78 @@ async def test_waiting_speaker_gets_turn_after_two_seconds(monkeypatch):
     await pool.close()
 
 
+async def test_latency_is_recorded_per_audio_reply_but_not_for_the_end():
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    await pool.start()
+    track = WhistleTranscriber("a", "en", asyncio.Queue(), pool=pool)
+    assert track in pool.transcribers
+    samples = np.ones(16000, dtype="<f4")
+    track.queue.put_nowait(SpeechChunk(samples, end=True, created_at=time.monotonic() - 1.5))
+    track.queue.put_nowait(None)
+    await track._decode()
+    assert [m["type"] for m in next(iter(pool.workers)).sent] == ["start", "audio", "end"]
+    (recorded,) = pool.lag.requests
+    assert 1.5 <= recorded < 3
+    assert pool.status()["lagSeconds"] == recorded
+    await pool.close()
+
+
+async def test_pending_since_and_lease_follow_the_whistle_worker():
+    permits = asyncio.Queue()
+
+    class GatedWorker(FakeWorker):
+        async def receive(self, **kwargs):
+            await permits.get()
+            return await super().receive(**kwargs)
+
+    pool = WorkerPool(1, worker_factory=GatedWorker)
+    await pool.start()
+    track = WhistleTranscriber("a", "en", asyncio.Queue(), pool=pool)
+    assert track.pending_since is None and not track.has_lease()
+    samples = np.ones(16000, dtype="<f4")
+    base = time.monotonic()
+    track._enqueue(SpeechChunk(samples, sequence=0, created_at=base))
+    track._enqueue(SpeechChunk(samples, sequence=1, created_at=base + 0.5))
+    assert track.pending_since == base
+    decoding = asyncio.create_task(track._decode())
+    worker = next(iter(pool.workers))
+    async with asyncio.timeout(2):
+        while not any(m["type"] == "audio" for m in worker.sent):
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base and track.has_lease() and track.lease_at is not None
+    permits.put_nowait(None)
+    async with asyncio.timeout(2):
+        while sum(m["type"] == "audio" for m in worker.sent) < 2:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base + 0.5
+    permits.put_nowait(None)
+    async with asyncio.timeout(2):
+        while track.pending_since is not None:
+            await asyncio.sleep(0.005)
+    assert track.has_lease()  # the segment has not ended
+    for _ in range(2):  # the end's result and done replies
+        permits.put_nowait(None)
+    track.queue.put_nowait(None)
+    await decoding
+    assert not track.has_lease() and track.lease_at is None and track.pending_since is None
+    # Cancelled with a chunk still queued and one in flight: nothing stays pending.
+    from .test_stream_transcriber import SilentTrack
+
+    track = WhistleTranscriber("b", "en", asyncio.Queue(), pool=pool)
+    await track.start(SilentTrack())
+    track._enqueue(SpeechChunk(samples, sequence=0, created_at=base))
+    track._enqueue(SpeechChunk(samples, sequence=1, created_at=base + 0.5))
+    async with asyncio.timeout(2):
+        while sum(m["type"] == "audio" for m in worker.sent) < 3:
+            await asyncio.sleep(0.005)
+    assert track.pending_since == base and track.has_lease()
+    track.audio_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await track.audio_task
+    assert track.pending_since is None and not track.has_lease()
+    await pool.close()
+
+
 async def test_expired_audio_is_dropped_without_joining_native_contexts():
     pool = WorkerPool(1, worker_factory=FakeWorker)
     await pool.start()
@@ -287,4 +373,57 @@ async def test_expired_audio_is_dropped_without_joining_native_contexts():
     assert pool.dropped_chunks == 1
     assert pool.status()["recentCapacityPressure"]
     assert [m["type"] for m in next(iter(pool.workers)).sent] == ["start", "audio", "end"] * 2
+    await pool.close()
+
+
+async def test_whistle_asks_admission_before_taking_a_worker(monkeypatch):
+    from cassini_live.load import LoadGovernor, Thresholds
+
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    await pool.start()
+    pool.governor = LoadGovernor(
+        ceiling=1,
+        thresholds=Thresholds(provisional=False, measured_on="2026-10-16"),
+        transcribers=pool.transcribers,
+    )
+    pool.governor.tick({})
+    holder = WhistleTranscriber("a", "en", asyncio.Queue(), pool=pool)
+    pool.governor.admit(holder)
+    track = WhistleTranscriber("b", "en", asyncio.Queue(), pool=pool)
+    track.queue.put_nowait(SpeechChunk(np.ones(16000, dtype="<f4"), sequence=0))
+    track.queue.put_nowait(None)
+    # A free worker is not enough: the seat ceiling refuses after the bounded 2 s wait.
+    await asyncio.wait_for(track._decode(), 4)
+    assert pool.capacity_waits == 1 and pool.idle.qsize() == 2
+    assert all(not w.sent for w in pool.workers)
+    notice = track.transcripts.get_nowait()
+    assert not notice.final and notice.message == transcriber.PAUSED_NOTICE
+    await pool.close()
+
+
+async def test_a_shed_whistle_speaker_finishes_its_lease_and_is_held_off():
+    from cassini_live.load import LoadGovernor, Thresholds
+
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    await pool.start()
+    pool.governor = LoadGovernor(
+        ceiling=2,
+        thresholds=Thresholds(provisional=False, measured_on="2026-10-16"),
+        transcribers=pool.transcribers,
+    )
+    pool.governor.tick({})
+    track = WhistleTranscriber("b", "en", asyncio.Queue(), pool=pool)
+    await track._decode_audio(SpeechChunk(np.ones(16000, dtype="<f4"), sequence=0))
+    worker = track.worker
+    assert worker is not None and track in pool.governor.seats
+    track.shed_reason = "lag"
+    await track._decode_audio(SpeechChunk(np.ones(16000, dtype="<f4"), sequence=1))
+    # The lease ended normally ("end" sent, its text emitted) and the worker is free.
+    assert track.worker is None and pool.idle.qsize() == 2 and pool.stream_ends["shed"] == 1
+    assert [m["type"] for m in worker.sent] == ["start", "audio", "end"]
+    assert track.paused_until is not None and track not in pool.governor.seats
+    messages = []
+    while not track.transcripts.empty():
+        messages.append(track.transcripts.get_nowait().message)
+    assert messages[-1] == transcriber.PAUSED_NOTICE
     await pool.close()
