@@ -62,6 +62,7 @@ class Backend(Protocol):
     failure_circuit_open: bool
     failures: int
     capacity_waits: int
+    paused_drops: int  # chunks dropped while a speaker was held off; no capacity was waited for
     dropped_chunks: int
     scheduling_yields: int
     last_pressure: float

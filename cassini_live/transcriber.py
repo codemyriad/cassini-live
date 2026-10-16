@@ -19,9 +19,6 @@ POOL = None  # Set by application lifespan before rooms can be created.
 # Decision 4: the only per-speaker channel Talk offers is the speaker's own preview line,
 # seen by every caption viewer in the room; the next partial replaces it.
 PAUSED_NOTICE = "Captions paused for this speaker while the server catches up"
-# Derived: a quarter of the 1 s monitor tick, so a seat freed or a reopen made by one tick
-# is noticed within that tick by a speaker parked on admission.
-ADMIT_POLL_S = 0.25
 
 
 class AdmissionRefused(CapacityError):
@@ -78,25 +75,27 @@ class WhistleTranscriber:
     def governor(self):
         return getattr(self.pool, "governor", None)
 
-    async def _admit(self, timeout):
+    async def _admit(self, deadline):
         """Ask the load governor before waiting for a worker or slot. A refused speaker
-        stays parked on admission for the same bounded wait as on a slot, so a seat freed
-        by a closing track or a reopen within it is taken at once."""
+        parks on admission, first come first served, until the governor hands it a seat
+        (a closing track, a reopen) or the deadline it shares with the slot wait."""
         governor = self.governor
         if governor is None:
             return
-        deadline = time.monotonic() + timeout
-        while True:
-            decision = governor.admit(self)
-            if decision.admitted:
-                return
-            if decision.reason == "shed" or time.monotonic() >= deadline:
-                raise AdmissionRefused(decision.reason)
-            await asyncio.sleep(min(ADMIT_POLL_S, max(0, deadline - time.monotonic())))
+        decision = governor.admit(self)
+        if not decision.admitted and decision.reason != "shed":
+            remaining = max(0.0, deadline - time.monotonic())
+            decision = await governor.wait(self, decision.reason, remaining)
+        if not decision.admitted:
+            raise AdmissionRefused(decision.reason)
 
     async def _refused(self, error):
         """A bounded wait ended without a worker, slot or seat: drop the piece."""
-        self.pool.capacity_waits += 1
+        if getattr(error, "reason", None) == "shed":
+            # Held off: no capacity was waited for, so it is no capacity wait.
+            self.pool.paused_drops += 1
+        else:
+            self.pool.capacity_waits += 1
         self._note_drop()
         governor = self.governor
         reason = getattr(error, "reason", None)
@@ -111,13 +110,28 @@ class WhistleTranscriber:
     async def _shed(self):
         """The governor chose this speaker to relieve a sustained backlog. Acted on here, in
         the transcriber's own task, so no in-flight engine request is preempted: the segment
-        ends normally (its text is kept), the lease goes, and the speaker is held off."""
-        self.shed_reason = None
-        await self._finish("shed")
+        ends normally (its text is kept), the lease goes, and the speaker is held off, even
+        when ending the segment fails (the caller drops the piece and frees the lease)."""
+        try:
+            await self._finish("shed")
+        finally:
+            if self.governor is not None:
+                self.governor.pause(self)
+            self.shed_reason = None
         self._note_drop()  # this piece is not decoded
-        if self.governor is not None:
-            self.governor.pause(self)
         await self._notify_paused()
+
+    async def _shed_or_ignore(self):
+        """True when this piece is consumed by a shed. A mark found without a lease is
+        stale: the segment ended on its own since the tick, so there is no backlog left to
+        relieve here; a newcomer's admission still sees any lag that remains."""
+        if self.shed_reason is None:
+            return False
+        if not self.has_lease():
+            self.shed_reason = None
+            return False
+        await self._shed()
+        return True
 
     async def _notify_paused(self):
         if self.pending == PAUSED_NOTICE:
@@ -231,14 +245,17 @@ class WhistleTranscriber:
         self.pool.stream_ends[reason] += 1
 
     async def _decode_audio(self, chunk):
-        if self.shed_reason is not None:
-            await self._shed()
+        if await self._shed_or_ignore():
             return
         offset = 0
         while offset < len(chunk.samples):
             if self.worker is None:
-                await self._admit(timeout=2)
-                self.worker = await self.pool.acquire_wait(timeout=2)
+                # One bounded wait for the seat and the worker together.
+                deadline = time.monotonic() + 2
+                await self._admit(deadline)
+                self.worker = await self.pool.acquire_wait(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
                 self.lease_at = time.monotonic()
                 if time.monotonic() - chunk.created_at > 4:
                     await self._release(healthy=True)
@@ -465,12 +482,14 @@ class StreamTranscriber(WhistleTranscriber):
         await self._release(healthy=True)
 
     async def _decode_audio(self, chunk):
-        if self.shed_reason is not None:
-            await self._shed()  # commits and frees the slot; the native stream stays open
+        # A shed commits and frees the slot; the native stream stays open.
+        if await self._shed_or_ignore():
             return
         if self.slot is None:
-            await self._admit(timeout=self.SLOT_WAIT_S)
-            self.slot = await self.pool.acquire_slot(timeout=self.SLOT_WAIT_S)
+            # One bounded wait for the seat and the slot together.
+            deadline = time.monotonic() + self.SLOT_WAIT_S
+            await self._admit(deadline)
+            self.slot = await self.pool.acquire_slot(timeout=max(0.0, deadline - time.monotonic()))
             self.lease_at = time.monotonic()
             if time.monotonic() - chunk.created_at > 4:
                 await self._release(healthy=True)

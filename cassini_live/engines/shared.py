@@ -184,6 +184,7 @@ class SharedEngine:
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
         self.capacity_waits = 0
+        self.paused_drops = 0
         self.dropped_chunks = 0
         self.scheduling_yields = 0
         self.last_pressure = 0.0
@@ -542,6 +543,7 @@ class SharedEngine:
             "workers": 1 if self.ready else 0,
             "streamFailures": self.failures,
             "capacityWaits": self.capacity_waits,
+            "pausedDrops": self.paused_drops,
             "droppedSpeechChunks": self.dropped_chunks,
             "speechGating": True,
             "speechDetector": "silero-v6.2.1",

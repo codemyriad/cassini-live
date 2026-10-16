@@ -55,12 +55,16 @@ holds (it reads no file on this path):
    CPU stall over the last second is at or above the threshold, or when the
    speakers already captioned trail their speech by the lag threshold or more.
 
-A refused speaker waits the same bounded time as for a slot (2 s with Whistle,
-4 s with Nemotron), so a seat freed by a closing track is taken at once. If none
-frees, that piece of speech is dropped and counted, and the speaker's caption
+A refused speaker waits for a seat and then a slot within one bounded wait
+(2 s with Whistle, 4 s with Nemotron, both together). Waiting speakers are
+served first come, first served: a seat freed by a closing track, a reopen or
+a tick goes to the earliest of them, and a newcomer queues behind them. If no
+seat frees in time, that piece of speech is dropped and counted
+(`capacityWaits`), and the speaker's caption
 preview shows **"Captions paused for this speaker while the server catches up"**
 (at most once a minute). A refusal for lag or CPU also holds that speaker off
-for 10 seconds. After a refusal for lag or CPU, admission stays closed until
+for 10 seconds; pieces dropped during a hold-off are counted separately
+(`pausedDrops`), since nothing was waited for. After a refusal for lag or CPU, admission stays closed until
 the lag has been under half the threshold, and the CPU stall under half its
 threshold, for five seconds.
 
@@ -76,10 +80,15 @@ averages out and a growing backlog does not. When it reaches the shed
 threshold and at least two seat holders are speaking, the newest of them is
 paused: its segment ends normally and keeps its text, its worker or slot is
 freed, it is held off for 10 seconds and its preview shows the paused notice.
+A shed also closes admission for lag, with the same reopen rule as a refusal.
 At most one speaker is paused every five seconds; a single speaker is never
 paused; nothing is paused while a measurement runs. The other speakers and
 rooms are not touched. After the hold-off the paused speaker asks for a seat
-again like a new speaker.
+again like a new speaker. A speaker shed again within 30 seconds of being
+re-admitted waits twice as long as the time before (20 s, 40 s, up to 60 s),
+so two speakers who do not fit together do not alternate every 20 seconds; 30
+seconds with its seat resets this. A shed mark that finds the speaker's
+segment already over is dropped: with no lease there is no backlog to relieve.
 
 ## Thresholds
 
@@ -89,6 +98,8 @@ again like a new speaker.
 | Shed at sustained lag | 2.0 s | provisional; kept under the 4 s stale-audio cut |
 | CPU stall that closes admission | 20% of the last second | unjustified until the staging stress run |
 | Hold-off after a shed or refusal | 10 s | derived: two 5 s windows |
+| Repeat shed doubles the hold-off within | 30 s of re-admission | the design's staging criterion "shed twice within 30 s" |
+| Longest hold-off | 60 s | unjustified; one paused-notice interval |
 | Seat kept while silent | 15 s | unjustified; longer than the 8 s segment cap |
 | Paused notice at most every | 60 s | unjustified |
 

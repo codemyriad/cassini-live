@@ -92,6 +92,7 @@ class WorkerPool:
         self.closed = False
         self.failures = 0
         self.capacity_waits = 0
+        self.paused_drops = 0
         self.dropped_chunks = 0
         self.waiters = deque()
         self.scheduling_yields = 0
@@ -284,6 +285,7 @@ class WorkerPool:
             "workers": len(self.workers),
             "streamFailures": self.failures,
             "capacityWaits": self.capacity_waits,
+            "pausedDrops": self.paused_drops,
             "droppedSpeechChunks": self.dropped_chunks,
             "speechGating": True,
             "speechDetector": "silero-v6.2.1",

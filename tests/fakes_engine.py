@@ -260,7 +260,7 @@ class FakeBackend:
         self.start_check = None
         self.governor = None
         self.failure_circuit_open = False
-        self.failures = self.capacity_waits = self.dropped_chunks = 0
+        self.failures = self.capacity_waits = self.dropped_chunks = self.paused_drops = 0
         self.scheduling_yields = 0
         self.last_pressure = 0.0
         self.stream_ends = Counter()

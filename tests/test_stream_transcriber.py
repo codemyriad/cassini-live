@@ -239,7 +239,9 @@ async def test_waiting_speaker_drops_after_four_seconds(monkeypatch):
     held = await original()
     track = fake.transcriber("b", "en", asyncio.Queue())
     await run(track, chunk(0, end=True))
-    assert slots == [4] and fake.capacity_waits == 1 and fake.dropped_chunks == 1
+    # One deadline for the seat and the slot: the slot gets what admission left of 4 s.
+    assert len(slots) == 1 and 3.9 < slots[0] <= 4
+    assert fake.capacity_waits == 1 and fake.dropped_chunks == 1
     assert fake.streams == []
     fake.release_slot(held)
 
@@ -526,11 +528,123 @@ async def test_a_shed_speaker_ends_its_segment_keeps_its_stream_and_resumes(monk
     assert newest.engine_stream is stream and stream.calls[-1] == ("audio", CHUNK)
 
 
-async def test_a_shed_mark_without_a_lease_still_holds_the_speaker_off(monkeypatch):
+async def test_a_stale_shed_mark_never_pauses_a_speaker_whose_backlog_is_gone(monkeypatch):
+    # Review 0.8.0: the tick marked B while B decoded the last piece of its segment; the
+    # segment ended and freed the slot, B fell silent, and minutes later (lag 0) B's first
+    # chunk was dropped and B paused with the notice.
+    fake = await backend(size=3)
+    gov = governed(fake, monkeypatch, ceiling=3)
+    captions = asyncio.Queue()
+    a = fake.transcriber("a", "en", captions)
+    b = fake.transcriber("b", "en", captions)
+    await a._decode_audio(chunk(0))
+    fake.audio_gate = permits = Permits()
+    b.queue.put_nowait(chunk(0, end=True))
+    task = asyncio.create_task(b._decode())
+    async with asyncio.timeout(2):
+        while not (len(fake.streams) == 2 and fake.streams[1].calls):
+            await asyncio.sleep(0.005)
+    gov.lag.sustained = lambda now: 3.0  # the cliff: B is the newest with a lease
+    gov.tick({})
+    assert b.shed_reason == "lag" and b not in gov.seats
+    permits.grant()
+    async with asyncio.timeout(2):
+        while b.slot is not None:
+            await asyncio.sleep(0.005)
+    assert b.shed_reason == "lag" and not b.has_lease()  # ended normally, mark pending
+    # The backlog is gone and admission has reopened.
+    gov.lag.sustained = lambda now: 0.0
+    gov.closed_reason = None
+    fake.audio_gate = None
+    events(captions)
+    b.queue.put_nowait(chunk(1, end=True))
+    b.queue.put_nowait(None)
+    await asyncio.wait_for(task, 5)
+    assert b.lost_chunks == 0 and b.paused_until is None and b.shed_reason is None
+    assert PAUSED_NOTICE not in [e.message for e in events(captions)]
+    a.slot = None
+
+
+async def test_a_late_reply_on_the_shed_commit_still_holds_the_speaker_off(monkeypatch):
+    # Review 0.8.0: _finish("shed") raising skipped the hold-off and kept the mark.
+    fake = await backend(size=3)
+    gov = governed(fake, monkeypatch, ceiling=3)
+    captions = asyncio.Queue()
+    a = fake.transcriber("a", "en", captions)
+    b = fake.transcriber("b", "en", captions)
+    await a._decode_audio(chunk(0))
+    await b._decode_audio(chunk(0))
+    gov.lag.sustained = lambda now: 3.0
+    gov.tick({})
+    assert b.shed_reason == "lag"
+
+    async def late():
+        raise LateReply("late")
+
+    b.engine_stream.commit = late
+    await run(b, chunk(0), chunk(1))
+    assert b.paused_until is not None and b.paused_until > time.monotonic()
+    assert b.shed_reason is None and b not in gov.seats and b.slot is None
+    a.slot = None
+
+
+async def test_drops_while_paused_are_not_capacity_waits(monkeypatch):
     fake = await backend()
     gov = governed(fake, monkeypatch, ceiling=3)
     track = fake.transcriber("a", "en", asyncio.Queue())
-    gov.admit(track)
-    track.shed_reason = "lag"  # the segment ended between the tick and this piece
-    await track._decode_audio(chunk(0))
-    assert fake.streams == [] and track.paused_until is not None and track not in gov.seats
+    gov.pause(track)
+    await run(track, chunk(0), chunk(1))
+    assert fake.paused_drops == 2 and fake.capacity_waits == 0 and track.lost_chunks == 2
+    shared = SharedEngine(catalog.get("nemotron-en"), "/m", 1, process_factory=FakeHostProcess)
+    assert shared.status()["pausedDrops"] == 0
+
+
+async def test_refused_speakers_are_admitted_first_come_first_served(monkeypatch):
+    # Review 0.8.0: a 0.25 s re-poll let a newcomer overtake an earlier waiter.
+    from cassini_live.transcriber import AdmissionRefused
+
+    fake = await backend(size=3)
+    gov = governed(fake, monkeypatch, ceiling=1)
+    q = asyncio.Queue()
+    a = fake.transcriber("a", "en", q)
+    gov.admit(a)
+    c = fake.transcriber("c", "en", q)  # refused first
+    d = fake.transcriber("d", "en", q)  # refused 0.1 s later
+    tc = asyncio.create_task(c._admit(time.monotonic() + 1.0))
+    await asyncio.sleep(0.1)
+    td = asyncio.create_task(d._admit(time.monotonic() + 0.5))
+    await asyncio.sleep(0.2)
+    gov.release(a)  # a's track closed: the seat goes to c, the earlier waiter
+    assert await asyncio.wait_for(tc, 2) is None and c in gov.seats
+    with pytest.raises(AdmissionRefused) as refused:
+        await asyncio.wait_for(td, 2)
+    assert refused.value.reason == "ceiling" and d not in gov.seats
+    # A newcomer cannot overtake a parked speaker either.
+    gov.release(c)
+    e = fake.transcriber("e", "en", q)
+    gov.admit(e)  # first speaker again
+    f = fake.transcriber("f", "en", q)
+    g = fake.transcriber("g", "en", q)
+    tf = asyncio.create_task(f._admit(time.monotonic() + 1.0))
+    await asyncio.sleep(0.01)
+    gov.ceiling = 2  # a seat appears without a release; only a tick hands it out
+    assert not gov.admit(g).admitted  # g must queue behind f
+    gov.tick({})
+    assert await asyncio.wait_for(tf, 2) is None and f in gov.seats and g not in gov.seats
+
+
+async def test_admission_and_slot_share_one_bounded_wait(monkeypatch):
+    fake = await backend(size=1)
+    gov = governed(fake, monkeypatch, ceiling=1)
+    monkeypatch.setattr(StreamTranscriber, "SLOT_WAIT_S", 0.3)
+    q = asyncio.Queue()
+    first = fake.transcriber("a", "en", q)
+    gov.admit(first)
+    held = await fake.acquire_slot()
+    asyncio.get_running_loop().call_later(0.2, gov.release, first)  # seat at 0.2 s
+    second = fake.transcriber("b", "en", q)
+    started = time.monotonic()
+    await run(second, chunk(0))
+    # Seat after 0.2 s, then the slot gets only the remaining 0.1 s, not another 0.3 s.
+    assert time.monotonic() - started < 0.45 and fake.capacity_waits == 1
+    fake.release_slot(held)
