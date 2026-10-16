@@ -3,19 +3,17 @@
 (function () {
   "use strict";
 
-  var BUSY = ["validating", "downloading", "verifying", "stopping", "loading", "checking",
-    "rolling_back"];
-  var CAPTIONS_OFF = ["stopping", "loading", "checking", "rolling_back"];
-  var CANCELLABLE = ["downloading", "verifying", "stopping", "loading", "checking"];
+  var BUSY = ["validating", "downloading", "verifying", "stopping", "loading", "rolling_back"];
+  var CAPTIONS_OFF = ["stopping", "loading", "rolling_back"];
+  var CANCELLABLE = ["downloading", "verifying", "stopping", "loading"];
   var FINISHED = ["succeeded", "failed", "cancelled"];
-  var STEP_ORDER = ["validating", "downloading", "verifying", "stopping", "loading", "checking"];
+  var STEP_ORDER = ["validating", "downloading", "verifying", "stopping", "loading"];
   var STEP_NAMES = {
     validating: "checking requirements",
     downloading: "downloading",
     verifying: "verifying files",
     stopping: "stopping captions",
     loading: "loading the engine",
-    checking: "capacity check",
     rolling_back: "restoring the previous engine"
   };
   var PHASE_NAMES = {
@@ -46,6 +44,7 @@
   var actionNotice = null;  // {message, reasons}
   var lastLive = "";
   var cancelPending = false;
+  var measurePending = false;
   var cancelPendingFor = null;
 
   function $(id) { return document.getElementById(id); }
@@ -150,8 +149,8 @@
     var message = noPeriod(error.message);
     switch (error.code) {
       case "timeout": return "It did not finish loading in time.";
-      case "capacity_failed":
-        return "It did not pass the capacity check on this server (" + message + ").";
+      case "capacity_failed":  // saved by 0.7.x
+        return "It did not load on this server (" + message + ").";
       case "load_failed": return "It could not be loaded (" + message + ").";
       case "hash_mismatch":
       case "size_mismatch":
@@ -248,8 +247,10 @@
     if (!state) { return SLOW_MS; }
     var safety = state.status && state.status.resourceSafety;
     var capacity = state.status && state.status.capacityAssessment;
-    if (isBusy() || (safety && safety.state === "checking") ||
-        (capacity && capacity.state === "checking")) {
+    var calls = state.panel && state.panel.activeCalls;
+    // Live numbers move during a load, a measurement or a call; idle pages poll slowly.
+    if (isBusy() || (safety && (safety.phase === "loading" || safety.phase === "measuring")) ||
+        (capacity && capacity.state === "checking") || calls > 0) {
       return FAST_MS;
     }
     return SLOW_MS;
@@ -363,9 +364,10 @@
   function captionsText(safety) {
     if (!safety) { return "Unknown"; }
     var reason = sentence(safety.reason || "");
+    if (safety.phase === "measuring") { return "Paused: measuring capacity"; }
+    if (safety.phase === "loading") { return "Loading the engine"; }
     switch (safety.state) {
       case "ready": return "Ready";
-      case "checking": return "Running the capacity check";
       case "recovering": return "Recovering automatically: " + (reason || "waiting for resources.");
       case "blocked":
         return "Paused: " + (reason || "not enough resources.") +
@@ -375,15 +377,51 @@
     }
   }
 
+  var HOLD_REASONS = {
+    ceiling: "every seat is taken",
+    memory: "memory is short",
+    cpu: "the CPU is contended",
+    lag: "captions are behind"
+  };
+
+  // Seats and live lag from the load governor: decided per speaker, never a fixed budget.
+  function speakersText(safety) {
+    var a = safety && safety.admission;
+    if (!a || !safety || safety.state !== "ready") { return "–"; }
+    var text = plural(a.speaking || 0, "speaking", "speaking");
+    if (a.open) {
+      text += " of up to " + a.ceiling + "; admitting more";
+    } else {
+      text += "; not admitting more: " + (HOLD_REASONS[a.reason] || a.reason);
+    }
+    if (a.captionAgeSeconds > 0.2) {
+      text += "; captions trail speech by " + a.captionAgeSeconds.toFixed(1) + " s";
+    }
+    if (a.observeOnly) { text += " (observing; thresholds not yet measured)"; }
+    return text;
+  }
+
+  function measuredLag(capacity) {
+    var lag = null;
+    (capacity.scenarios || []).forEach(function (s) {
+      if (typeof s.maxLagSeconds === "number" && (lag === null || s.maxLagSeconds > lag)) {
+        lag = s.maxLagSeconds;
+      }
+    });
+    return lag;
+  }
+
   function capacityText(capacity) {
     if (!capacity) { return "Not run yet"; }
     switch (capacity.state) {
       case "passed":
       case "limited":
         var when = localTime(capacity.checkedAt);
+        var lag = measuredLag(capacity);
         return plural(capacity.testedSpeakers, "simultaneous speaker", "simultaneous speakers") +
-          " passed" + (when ? " (" + when + ")" : "");
-      case "checking": return "Running…";
+          " passed" + (when ? " (" + when + ")" : "") +
+          (lag === null ? "" : ", lag up to " + lag.toFixed(1) + " s");
+      case "checking": return "Measuring… captions pause for up to two minutes";
       case "not_tested": return "Not run yet";
       case "insufficient": return "Did not pass for one speaker";
       case "interrupted": return "Interrupted";
@@ -401,9 +439,11 @@
     var active = engineName(panel.active);
     setText($("active-engine"), status.enabled === false ? active + " (Cassini Live is not enabled)" : active);
     setText($("captions"), captionsText(safety));
-    show($("captions-spinner"), !!safety && safety.state === "checking");
+    show($("captions-spinner"), !!safety && safety.phase === "loading");
+    setText($("speakers"), speakersText(safety));
     setText($("capacity"), capacityText(capacity));
     show($("capacity-spinner"), !!capacity && capacity.state === "checking");
+    renderMeasure(panel, safety, capacity);
     setText($("calls"), String(panel.activeCalls || 0));
 
     var live;
@@ -492,7 +532,7 @@
     var text = "";
     if (busy) {
       if (CAPTIONS_OFF.indexOf(sw.state) >= 0) {
-        text = "Captions are off in all calls until this finishes (usually a few minutes).";
+        text = "Captions are off in all calls until this finishes (seconds when the files are on disk).";
       } else {
         text = engineName(sw.previous) + " keeps serving calls meanwhile.";
       }
@@ -863,7 +903,7 @@
     var keep = !!state && state.panel.active === c.id;  // keeps captions running
     if (calls > 0 && !keep) {
       openConfirm(c, "use", (calls === 1 ? "1 call has" : calls + " calls have") +
-        " captions on. They stop for a few minutes while the engine changes.", "Change engine");
+        " captions on. They stop while the new engine loads.", "Change engine");
       return;
     }
     switchTo(c);
@@ -927,6 +967,43 @@
     }).then(refresh);
   }
 
+  function measureWhy(panel, safety, capacity) {
+    if ((capacity && capacity.state === "checking") || (safety && safety.phase === "measuring")) {
+      return "A measurement is running.";
+    }
+    if (isBusy()) { return "Wait for the engine change to finish."; }
+    if (!safety || safety.state !== "ready") { return "Captions are not ready."; }
+    if (panel.activeCalls) { return "End the calls with captions first; measuring pauses them."; }
+    return "";
+  }
+
+  function renderMeasure(panel, safety, capacity) {
+    var button = $("measure");
+    var why = measureWhy(panel, safety, capacity);
+    if (measurePending && why) { measurePending = false; }
+    setControl(button, !!why || measurePending, measurePending);
+    setAttr(button, "aria-busy", measurePending ? "true" : null);
+    show(button.querySelector(".spinner"), measurePending);
+    setText($("measure-why"), why);
+    show($("measure-why"), !!why);
+  }
+
+  function onMeasure() {
+    if (!state || isInert($("measure"))) { return; }
+    clearActionNotice();
+    measurePending = true;
+    render();
+    request("POST", "api/capacity", {}).then(function (data) {
+      measurePending = false;
+      showActionResult("Measuring capacity. Captions pause for up to two minutes.");
+      if (data && data.panel && state) { state.panel = data.panel; render(); }
+    }, function (error) {
+      measurePending = false;
+      actionFailed("Could not start the measurement.", error);
+      if (state) { render(); }
+    }).then(refresh);
+  }
+
   function onCancel() {
     if (!state || isInert($("cancel"))) { return; }
     clearActionNotice();
@@ -948,6 +1025,7 @@
 
   function start() {
     $("cancel").addEventListener("click", onCancel);
+    $("measure").addEventListener("click", onMeasure);
     refresh();
   }
 

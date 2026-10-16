@@ -16,18 +16,15 @@ NEMOTRON = ("nemotron-en", "nemotron-multilingual")
 def test_whistle_formulas_equal_the_previous_literals(workers, cpus):
     assert catalog.memory_floor_mib("whistle", workers) == 384 + 192 * workers
     assert catalog.worker_ceiling("whistle", cpus) == min(4, max(1, int(cpus // 2)))
-    assert catalog.load_headroom_mib("whistle", workers) == 192 * workers
     assert catalog.download_disk_bytes("whistle") == 0
 
 
 @pytest.mark.parametrize("engine_id", NEMOTRON)
 def test_shared_host_floor_and_ceiling(engine_id):
-    assert [catalog.worker_ceiling(engine_id, c) for c in (1, 2, 3, 4, 8)] == [1, 3, 4, 4, 4]
-    assert catalog.worker_ceiling(engine_id, 0.5) == 1
+    # Two seats per recognizer thread (Decision 2); threads leave one CPU of the quota free.
+    assert [catalog.worker_ceiling(engine_id, c) for c in (1, 2, 3, 4, 8)] == [2, 2, 4, 4, 4]
+    assert catalog.worker_ceiling(engine_id, 0.5) == 2
     assert catalog.memory_floor_mib(engine_id, 1) == catalog.memory_floor_mib(engine_id, 4) == 2304
-    needs = catalog.get(engine_id).requirements
-    assert catalog.load_headroom_mib(engine_id, 2) == needs.model_mib + 2 * 16 + 2 * 45
-    assert catalog.load_headroom_mib(engine_id, 8) == needs.model_mib + 8 * 16 + 4 * 45
     asset = catalog.get(engine_id).asset
     assert catalog.download_disk_bytes(engine_id, 1000) == (
         asset.archive_bytes - 1000 + asset.extracted_bytes + 256 * catalog.MIB

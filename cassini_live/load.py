@@ -3,12 +3,15 @@
 The kernel's cgroup limits protect the call (docs/proposals/0.8.0-instant-admission.md);
 this module only decides whether one more speaker fits and which stream to pause when
 captions fall behind. Pure and in-memory: `admit()` reads the sample cached by the last
-tick plus transcriber fields, never a file. Until the staging lag run fixes the
-thresholds (`Thresholds.provisional`) the governor observes: nothing consults `admit()`
-yet (0.8.0 step 8), so the tick seats every live transcriber it first sees holding a
-lease, records the decision it would have taken and changes nothing.
+tick plus transcriber fields, never a file. Transcribers ask `admit()` before every
+slot or worker wait. Until the staging lag run fixes the thresholds
+(`Thresholds.provisional`) the governor observes: it admits everyone, records the
+decision it would have taken and marks nothing; the tick also seats a live speaker it
+first sees holding a lease. Once the run clears `provisional`, a refusal holds that
+speaker off and a sustained backlog pauses the newest one.
 """
 
+import asyncio
 import logging
 import math
 import time
@@ -46,6 +49,13 @@ class Thresholds:
     # Derived: two sustained windows; shed/re-admit flaps per minute on staging may
     # lengthen it.
     hold_off: float = 10.0
+    # A speaker shed again within this long of being re-admitted gets twice the previous
+    # hold-off, up to hold_off_max: once alone the others are calm, admission reopens and
+    # without this the same speaker would be re-admitted and shed every ~21 s. From the
+    # design's staging criterion "lengthen if a speaker is shed twice within 30 s".
+    repeat_window: float = 30.0
+    # Unjustified; one notice interval, so a paused speaker sees one notice per pause.
+    hold_off_max: float = 60.0
     # Unjustified; the lower bound is the 8 s segment cap so a seat survives one segment
     # gap. Measured turn gaps in a 3-speaker call must never lose a seat mid-conversation.
     seat_idle_s: float = 15.0
@@ -185,6 +195,8 @@ class LoadGovernor:
         self.observe_only = thresholds.provisional if observe_only is None else observe_only
         self.clock, self.wall_clock = clock, wall_clock
         self.seats = weakref.WeakKeyDictionary()  # transcriber -> admitted_at
+        # transcriber -> consecutive sheds, each within repeat_window of its re-admission
+        self._strikes = weakref.WeakKeyDictionary()
         self._active_at = weakref.WeakKeyDictionary()  # transcriber -> last tick with a lease
         # The live transcribers lag and caption age are read from: the backend's WeakSet
         # when the safety monitor feeds the governor, else the ones admit() has seen; a
@@ -208,6 +220,10 @@ class LoadGovernor:
         self.shed_events = 0
         self.measuring = False
         self.tick_ms = 0.0
+        # Called when admission reopens, so parked slot waiters are handed a slot at once.
+        self.on_reopen = None
+        # Refused speakers parked first-come-first-served: [transcriber, future, reason].
+        self.waiters = deque()
 
     @property
     def closed(self):
@@ -216,8 +232,13 @@ class LoadGovernor:
     def admit(self, transcriber, now=None):
         """Decision at the start of a gate segment, before the slot or worker wait."""
         now = self.clock() if now is None else now
+        if self.measuring:
+            # The measurement's synthetic speakers: never seated, refused or counted.
+            return Decision(True)
         self.transcribers.add(transcriber)
         reason = self._refusal(transcriber, now)
+        if reason is None and transcriber not in self.seats and (head := self._head()):
+            reason = head[2]  # first come, first served: no overtaking a parked speaker
         self._record(transcriber, now, reason)
         if reason is None:
             self._seat(transcriber, now)
@@ -249,6 +270,44 @@ class LoadGovernor:
         }
         self.last_decision_ref = weakref.ref(transcriber)
 
+    def _head(self):
+        while self.waiters and self.waiters[0][1].done():
+            self.waiters.popleft()
+        return self.waiters[0] if self.waiters else None
+
+    async def wait(self, transcriber, reason, timeout):
+        """Park a refused speaker until a seat is handed to it, in arrival order, or the
+        timeout passes. Woken by the governor: a released seat, a tick (a reopen, more
+        memory, less lag) or kick()."""
+        future = asyncio.get_running_loop().create_future()
+        entry = [transcriber, future, reason]
+        self.waiters.append(entry)
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout)
+        except TimeoutError:
+            if future.done() and not future.cancelled():
+                return future.result()  # handed a seat as the wait ran out
+            return Decision(False, entry[2])
+        finally:
+            if not future.done():
+                future.cancel()
+            if entry in self.waiters:
+                self.waiters.remove(entry)
+
+    def kick(self, now=None):
+        """Hand seats to parked speakers in arrival order while the rules allow; the first
+        one refused keeps everyone behind it waiting."""
+        now = self.clock() if now is None else now
+        while (head := self._head()) is not None:
+            transcriber, future, _ = head
+            reason = self._refusal(transcriber, now)
+            if reason is not None:
+                head[2] = reason
+                return
+            self.waiters.popleft()
+            self._seat(transcriber, now)
+            future.set_result(Decision(True))
+
     def _seat(self, transcriber, now):
         self.seats.setdefault(transcriber, now)
         # Asking again is activity, lease or not: a holder parked in the slot FIFO after a
@@ -275,14 +334,19 @@ class LoadGovernor:
         return None
 
     def pause(self, transcriber, now=None):
-        """Hold a speaker off after a shed or a lag/cpu refusal timed out; the seat goes."""
+        """Hold a speaker off after a shed or a lag/cpu refusal timed out; the seat goes.
+        A speaker shed repeatedly soon after each re-admission waits longer each time."""
         now = self.clock() if now is None else now
-        transcriber.paused_until = now + self.thresholds.hold_off
+        strikes = self._strikes.get(transcriber, 1)
+        hold_off = min(self.thresholds.hold_off_max, self.thresholds.hold_off * 2 ** (strikes - 1))
+        transcriber.paused_until = now + hold_off
         self.release(transcriber)
 
     def release(self, transcriber):
         self.seats.pop(transcriber, None)
         self._active_at.pop(transcriber, None)
+        if self.waiters:
+            self.kick()
 
     def _lag_now(self, now, excluding=None):
         # A candidate's own backlog is no evidence against it: at the decision point it
@@ -309,6 +373,8 @@ class LoadGovernor:
         if self.observe_only and not self.measuring:
             self._observe_seats(now)
         for transcriber in list(self.seats):
+            if now - self.seats[transcriber] >= self.thresholds.repeat_window:
+                self._strikes.pop(transcriber, None)  # it kept up long enough this time
             if transcriber.has_lease():
                 self._active_at[transcriber] = now
             elif now - self._active_at.get(transcriber, now) >= self.thresholds.seat_idle_s:
@@ -317,15 +383,18 @@ class LoadGovernor:
             self._reopen(now)
         if not self.measuring:
             self._shed(now)
+        if self.waiters:
+            self.kick(now)
         self.tick_ms = round((time.perf_counter() - started) * 1000, 2)
 
     def _observe_seats(self, now):
-        """Observe-only stand-in for the admit() call that 0.8.0 step 8 puts before the
-        slot wait: a live transcriber first seen holding a lease is admitted at this tick,
-        at most one tick after the real decision point and with the same inputs (the
-        cached sample and the other speakers' lag), so seats, refusals and would-be sheds
-        in the staging run are real figures. Never while measuring: synthetic tracks must
-        not be seated. A closed track's seat goes with the object or after seat_idle_s."""
+        """Observe-only backstop for the admit() call before the slot wait (a backend
+        without a governor installed when its transcriber started never asked): a live
+        transcriber first seen holding a lease is admitted at this tick, at most one tick
+        after the real decision point and with the same inputs (the cached sample and the
+        other speakers' lag), so seats, refusals and would-be sheds are real figures. Never
+        while measuring: synthetic tracks must not be seated. A closed track's seat goes
+        with the object or after seat_idle_s."""
         for transcriber in list(self.transcribers):
             if transcriber not in self.seats and transcriber.has_lease():
                 self.admit(transcriber, now)
@@ -343,6 +412,9 @@ class LoadGovernor:
         elif now - self._calm_since >= LagMeter.WINDOW_S:
             LOGGER.info("Caption admission reopened after %s", self.closed_reason)
             self.closed_reason, self._calm_since = None, None
+            self.kick(now)
+            if self.on_reopen is not None:
+                self.on_reopen()
 
     def _shed(self, now):
         if self.lag_sustained < self.thresholds.lag_shed:
@@ -358,6 +430,7 @@ class LoadGovernor:
             return
         newest = max(leased, key=self.seats.__getitem__)
         seats = len(self.seats)
+        admitted_at = self.seats[newest]
         # The interval applies to would-be sheds too, or observing would log every tick.
         self.last_shed_at = now
         self.last_shed = {"at": self.wall_clock(), "lag": round(self.lag_sustained, 2)}
@@ -372,6 +445,12 @@ class LoadGovernor:
             return
         self.release(newest)
         newest.shed_reason = "lag"
+        strikes = self._strikes.get(newest, 0)
+        repeat = strikes and now - admitted_at < self.thresholds.repeat_window
+        self._strikes[newest] = strikes + 1 if repeat else 1
+        if not self.closed:
+            # The reopen hysteresis applies to a shed as to a lag refusal.
+            self.closed_reason, self._calm_since = "lag", None
         LOGGER.warning(
             "Caption lag %.1f s sustained with %d seats; pausing the newest stream (lag)",
             self.lag_sustained,

@@ -166,7 +166,7 @@ class SettingsSync:
         except Exception as error:
             self._log("poll", error)
             self.delay = BACKOFF_S
-        # Captions and the capacity check change outside the manager; an identical form is
+        # Captions and a capacity measurement change outside the manager; an identical form is
         # skipped without an OCS call, so this republishes only when the text changed.
         self.notify()
 

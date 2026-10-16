@@ -5,7 +5,7 @@ import pytest
 
 from cassini_live import catalog
 from cassini_live.engines import create_backend
-from cassini_live.engines.shared import EngineFailed, EngineStreamError, SharedEngine
+from cassini_live.engines.shared import EngineFailed, EngineStreamError, LateReply, SharedEngine
 from cassini_live.pool import CapacityError, WorkerPool
 from tests.fakes_engine import CHUNK, FakeHostProcess
 
@@ -92,10 +92,11 @@ async def test_status_reports_recorded_lag_and_last_message_time():
     clock = [100.0]
     shared, _ = engine(clock=lambda: clock[0])
     await shared.start()
-    # The ready message is read by the spawn, not by the reader.
-    assert shared.last_message_at is None
-    stream = await shared.open_stream("en")
+    # The ready message counts: a host that just loaded is not silent.
     assert shared.last_message_at == 100.0
+    clock[0] = 101.0
+    stream = await shared.open_stream("en")
+    assert shared.last_message_at == 101.0
     clock[0] = 103.5
     await stream.audio(SPEECH)
     assert shared.last_message_at == 103.5
@@ -170,20 +171,12 @@ async def test_admission_limit_bounds_slots():
     await shared.close()
 
 
-async def test_load_check_refusal_prevents_the_spawn():
+async def test_start_check_refusal_prevents_the_spawn():
     shared, hosts = engine()
-    shared.load_check = lambda: "Not enough free container memory"
-    with pytest.raises(CapacityError, match="free container memory"):
+    shared.start_check = lambda: "Not enough memory to load Nemotron English"
+    with pytest.raises(CapacityError, match="Not enough memory"):
         await shared.start()
     assert hosts == [] and shared.closed
-
-
-async def test_resource_check_after_load_closes_the_host():
-    shared, hosts = engine()
-    shared.resource_check = lambda: "pressure"
-    with pytest.raises(CapacityError):
-        await shared.start()
-    assert hosts[0].closed and shared.process is None
 
 
 async def test_ready_failure_and_timeout():
@@ -312,27 +305,64 @@ async def test_spaced_exits_do_not_open_the_circuit():
     await shared.close()
 
 
-async def test_restart_load_check_failure_opens_the_circuit():
+async def test_restart_start_check_failure_opens_the_circuit():
     shared, hosts = engine()
     await shared.start()
-    shared.load_check = lambda: "no memory"
+    shared.start_check = lambda: "The caption memory limit was exceeded"
     hosts[0].crash()
     await wait_for(lambda: shared.failure_circuit_open)
     assert len(hosts) == 1
     await shared.close()
 
 
-async def test_request_timeout_counts_as_host_failure():
-    shared, hosts = engine(request_timeout=0.05)
+async def test_late_answer_from_a_live_host_keeps_the_host():
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
     await shared.start()
     stream = await shared.open_stream("en")
     hosts[0].mute = True
+    with pytest.raises(LateReply):
+        await stream.audio(SPEECH)
+    # Only this request is lost: no failure, no restart, the host stays up.
+    assert shared.failures == 0 and shared.ready and shared.restarts == 0
+    assert not hosts[0].closed and not shared.failure_circuit_open
+    await shared.close()
+
+
+async def test_silent_host_fails_on_timeout():
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
+    await shared.start()
+    stream = await shared.open_stream("en")
+    hosts[0].mute = True
+    clock[0] = shared.host_silence  # nothing heard from the host for the silence bound
     with pytest.raises(EngineFailed):
         await stream.audio(SPEECH)
     assert shared.failures == 1 and not stream.alive
     await wait_for(lambda: shared.restarts == 1)
     assert hosts[0].closed
     await shared.close()
+
+
+async def test_exited_host_fails_on_timeout_even_if_recently_heard():
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
+    await shared.start()
+    stream = await shared.open_stream("en")
+    hosts[0].mute = True
+    request = asyncio.create_task(stream.audio(SPEECH))
+    await asyncio.sleep(0.01)
+    hosts[0].returncode = -9  # exited after the write, stdout not yet at EOF
+    with pytest.raises(EngineFailed):
+        await request
+    assert shared.failures == 1
+    await shared.close()
+
+
+def test_host_silence_defaults_to_two_request_timeouts():
+    shared, _ = engine(request_timeout=5.0)
+    assert shared.host_silence == 10.0
+    assert engine(request_timeout=5.0, host_silence=3.0)[0].host_silence == 3.0
 
 
 async def test_cancel_never_raises_on_a_dead_host():
@@ -442,3 +472,53 @@ async def test_cancelled_open_frees_the_host_stream(tmp_path):
         assert len(engine.streams) == 2
     finally:
         await engine.close()
+
+
+async def test_late_opens_never_leak_host_streams():
+    # Review 0.8.0: every open the host answered too late used to stay open on the host,
+    # so after max_streams of them it refused every new speaker on a healthy host.
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
+    await shared.start()
+    host = hosts[0]
+    for _ in range(shared.max_streams):
+        host.mute = True  # the reply comes after the timeout (here: never)
+        with pytest.raises(LateReply):
+            await shared.open_stream("en")
+        host.mute = False
+        await wait_for(lambda: not shared._orphans)
+    assert shared.streams == {} and shared.failures == 0
+    stream = await shared.open_stream("en")
+    assert stream.alive and shared.restarts == 0 and len(hosts) == 1
+    await shared.close()
+
+
+async def test_repeated_limit_refusals_restart_the_host_in_place():
+    # Defence in depth: streams the host holds without this side knowing (a leak this
+    # code did not foresee) must not refuse speakers until some unrelated restart.
+    shared, hosts = engine(max_streams=2)
+    await shared.start()
+    for leaked in (1001, 1002):
+        await hosts[0].send({"type": "open", "id": leaked, "language": "en"})
+    await asyncio.sleep(0.05)
+    for _ in range(shared.LIMIT_DESYNC - 1):
+        with pytest.raises(EngineStreamError, match="limit"):
+            await shared.open_stream("en")
+        assert shared.restarts == 0
+    with pytest.raises(EngineStreamError, match="limit"):
+        await shared.open_stream("en")
+    await wait_for(lambda: shared.restarts == 1 and shared.ready)
+    assert hosts[0].closed and len(hosts) == 2
+    assert (await shared.open_stream("en")).alive
+    await shared.close()
+
+
+async def test_a_full_host_is_no_desync():
+    shared, _ = engine(max_streams=1)
+    await shared.start()
+    await shared.open_stream("en")
+    for _ in range(shared.LIMIT_DESYNC + 1):
+        with pytest.raises(CapacityError):
+            await shared.open_stream("en")
+    assert shared.restarts == 0 and shared.failures == 0
+    await shared.close()

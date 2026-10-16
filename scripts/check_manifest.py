@@ -62,6 +62,7 @@ def main():
         "settings/api/state": "GET",
         "settings/api/engine": "POST",
         "settings/api/cancel": "POST",
+        "settings/api/capacity": "POST",
         "settings/api/models/nemotron-en": "DELETE",
         "settings/licenses/NVIDIA-OML.txt": "GET",
     }

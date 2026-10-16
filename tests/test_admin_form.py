@@ -155,8 +155,8 @@ def test_form_shape_round_trips():
     assert values == list(catalog.ENGINES)
     assert data["description"].endswith(PAGE_HINT)
     assert data["fields"][0]["description"] == (
-        "One engine serves the whole server. Changing it stops captions in active calls for a "
-        "few minutes."
+        "One engine serves the whole server. Changing it stops captions in active calls while "
+        "the new engine loads (seconds when its files are on disk)."
     )
 
 
@@ -234,11 +234,6 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
         ("nemotron-en", {"switch": downloading(452)}, "Nemotron English — downloading 45%"),
         (
             "nemotron-en",
-            {"switch": {"state": "checking", "target": "nemotron-en", "previous": "whistle"}},
-            "Nemotron English — switching: running the capacity check",
-        ),
-        (
-            "nemotron-en",
             {"switch": {"state": "loading", "target": "nemotron-en", "previous": "whistle"}},
             "Nemotron English — switching: loading the engine",
         ),
@@ -254,7 +249,7 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
         ),
         (
             "whistle",
-            {"switch": {"state": "checking", "target": "nemotron-en", "previous": "whistle"}},
+            {"switch": {"state": "loading", "target": "nemotron-en", "previous": "whistle"}},
             "Whistle — captions stopped during the change (select to cancel)",
         ),
         (
@@ -452,11 +447,17 @@ def test_refused_choice_is_visible_in_the_form_description():
             "Changing to Nemotron English: downloading 45%. Captions are ready.",
         ),
         (
-            panel(switch={"state": "checking", "target": "nemotron-en", "previous": "whistle"}),
-            status("checking", reason="Running the capacity check"),
+            panel(switch={"state": "loading", "target": "nemotron-en", "previous": "whistle"}),
+            status("recovering", reason="Loading Nemotron English"),
             (),
-            "Changing to Nemotron English: running the capacity check. Captions are off until "
-            "it finishes. Captions are paused: Running the capacity check.",
+            "Changing to Nemotron English: loading the engine. Captions are off until "
+            "it finishes. Captions are paused: Loading Nemotron English.",
+        ),
+        (
+            panel(),
+            {"resourceSafety": {"state": "ready", "phase": "measuring", "reason": "x"}},
+            (),
+            "Using Whistle. Captions are paused: measuring capacity (about two minutes).",
         ),
     ],
 )

@@ -21,7 +21,7 @@ secret once in deploy options; its URL is discovered from Talk.
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.7.3</version>
+  <version>0.8.0</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -35,7 +35,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.7.3</image-tag>
+      <image-tag>0.8.0</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -52,7 +52,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <variable>
         <name>CASSINI_LIVE_WORKERS</name>
         <display-name>Concurrent speaking segments (optional)</display-name>
-        <description>Leave empty for CPU quota sizing, up to four recognition workers. The installation check measures usable simultaneous speakers. Silent tracks do not reserve workers. With Nemotron: maximum simultaneous speakers. Range: 1 to 32.</description>
+        <description>Caps how many people can speak with captions at the same time (Whistle: recognition workers; Nemotron: simultaneous speakers). Leave empty to size from the CPU quota, up to four. A value above the CPU ceiling is clamped to it with a warning. Silent tracks do not count. Range: 1 to 32.</description>
       </variable>
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>
@@ -69,6 +69,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <route><url>^/?settings/api/state$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/engine$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/cancel$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/capacity$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/models/[a-z0-9-]+$</url><verb>DELETE</verb><access_level>ADMIN</access_level></route>
     </routes>
   </external-app>

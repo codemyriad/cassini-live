@@ -37,6 +37,10 @@ class EngineStreamError(RuntimeError):
     """The host refused or failed one stream and lives on."""
 
 
+class LateReply(EngineStreamError):
+    """A live host missed the request timeout: this request is lost, the host is not."""
+
+
 @dataclass(eq=False)
 class Slot:
     index: int
@@ -147,6 +151,7 @@ class SharedEngine:
         max_streams: int = catalog.MAX_STREAMS,
         max_batch: int | None = None,
         request_timeout: float = 5.0,
+        host_silence: float | None = None,
         ready_timeout: float = 120.0,
         process_factory=EngineHostProcess,
         clock=time.monotonic,
@@ -162,18 +167,24 @@ class SharedEngine:
         self.max_streams = max_streams
         self.max_batch = max_batch or engine.requirements.max_batch
         self.request_timeout = request_timeout
+        # Derived (0.8.0-instant-admission.md): a live host answers something within two
+        # request timeouts even under cpu.weight 10; a host silent that long is hung.
+        self.host_silence = host_silence if host_silence is not None else 2 * request_timeout
         self.ready_timeout = ready_timeout
         self.process_factory = process_factory
         self.clock = clock
         self.multilingual = len(engine.languages) > 1
         self.admission_limit = size
         self.closed = False
-        self.resource_check = None
-        self.load_check = None
+        # Installed by the safety controller: why a host must not spawn now, or None.
+        self.start_check = None
+        # Installed by the safety controller: per-speaker admission (load.LoadGovernor).
+        self.governor = None
         self.failures = 0
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
         self.capacity_waits = 0
+        self.paused_drops = 0
         self.dropped_chunks = 0
         self.scheduling_yields = 0
         self.last_pressure = 0.0
@@ -186,6 +197,9 @@ class SharedEngine:
         self.waiters = deque()
         self.streams = {}
         self._orphans: set[asyncio.Task] = set()
+        # Consecutive host `limit` refusals while this side holds fewer streams: the two
+        # stream counts disagree and only a host restart brings them back in step.
+        self.limit_refusals = 0
         self.pending = {}
         self.process = None
         self.ready = False
@@ -198,7 +212,7 @@ class SharedEngine:
         self.lag = LagMeter()
         # Every live transcriber on this backend; the load governor reads their lag.
         self.transcribers = weakref.WeakSet()
-        # Clock reading of the last host reply; step 5 tells a late reply from a dead host.
+        # Clock reading of the last host message; tells a late reply from a hung host.
         self.last_message_at = None
 
     @property
@@ -241,6 +255,11 @@ class SharedEngine:
         slot = Slot(next(n for n in range(1, len(used) + 2) if n not in used))
         self.leased.add(slot)
         return slot
+
+    def kick(self):
+        """Hand free slots to parked waiters, e.g. when admission reopens."""
+        if not self.closed:
+            self._offer()
 
     def _offer(self):
         while self.waiters and len(self.leased) < self.admission_limit:
@@ -298,19 +317,44 @@ class SharedEngine:
                 stream.id, {"type": "open", "id": stream.id, "language": option}
             )
             if reply.get("type") != "opened":
+                self._refused_open(reply.get("code", "protocol"))
                 raise EngineStreamError(reply.get("code", "protocol"))
-        except asyncio.CancelledError:
-            # The host may already hold the native stream; free it, or it counts against
-            # max_streams until the host restarts.
+        except (asyncio.CancelledError, LateReply):
+            # The host may already hold the native stream (a late "opened" is ignored);
+            # free it, or it counts against max_streams until the host restarts.
             stream._closed()
-            task = asyncio.create_task(self._cancel_orphan(stream.id))
-            self._orphans.add(task)
-            task.add_done_callback(self._orphans.discard)
+            self._orphan(stream.id)
             raise
         except BaseException:
             stream._closed()
             raise
+        self.limit_refusals = 0
         return stream
+
+    # Derived: one refusal can race an orphan cancel still queued behind it on the host;
+    # three in a row with no cancel in flight cannot.
+    LIMIT_DESYNC = 3
+
+    def _refused_open(self, code):
+        """Restart the host in place when it keeps refusing opens for its stream limit.
+        open_stream already refuses at max_streams on this side, so a host `limit` means
+        the host holds streams this side does not know of; leaked there, they would refuse
+        every new speaker until some unrelated restart."""
+        if code != "limit" or self._orphans:
+            self.limit_refusals = 0
+            return
+        self.limit_refusals += 1
+        if self.limit_refusals >= self.LIMIT_DESYNC and self.process is not None:
+            self.limit_refusals = 0
+            LOGGER.warning(
+                "Speech engine host refuses streams it should have room for; restarting it"
+            )
+            self._host_failed(self.process, "stream count out of step")
+
+    def _orphan(self, stream_id):
+        task = asyncio.create_task(self._cancel_orphan(stream_id))
+        self._orphans.add(task)
+        task.add_done_callback(self._orphans.discard)
 
     async def _cancel_orphan(self, stream_id):
         with suppress(Exception):
@@ -328,6 +372,10 @@ class SharedEngine:
             await host.send(message)
             return await asyncio.wait_for(future, self.request_timeout)
         except TimeoutError:
+            if host.returncode is None and not self._host_silent():
+                # Starved, not dead: under cpu.weight 10 three late answers in a minute
+                # must not close every room. Only this request is lost.
+                raise LateReply("late") from None
             self._host_failed(host, "request timeout")
             raise EngineFailed("Speech engine did not answer in time") from None
         except (OSError, EOFError):
@@ -336,6 +384,10 @@ class SharedEngine:
         finally:
             if self.pending.get(stream_id) is future:
                 del self.pending[stream_id]
+
+    def _host_silent(self):
+        last = self.last_message_at
+        return last is None or self.clock() - last >= self.host_silence
 
     async def _read(self, host):
         try:
@@ -410,7 +462,7 @@ class SharedEngine:
         ]
 
     async def _spawn(self):
-        if self.load_check and (problem := self.load_check()):
+        if self.start_check and (problem := self.start_check()):
             raise CapacityError(problem)
         generation = self.generation
         env = {**os.environ, "OMP_NUM_THREADS": "1", "ORT_DISABLE_TELEMETRY": "1"}
@@ -421,8 +473,6 @@ class SharedEngine:
             message = await asyncio.wait_for(host.receive(), self.ready_timeout)
             if message.get("type") != "ready":
                 raise RuntimeError("Speech engine did not become ready")
-            if self.resource_check and self.resource_check():
-                raise CapacityError("Speech engine exhausted the resource headroom")
         except BaseException:
             await host.close()
             raise
@@ -432,6 +482,7 @@ class SharedEngine:
             await host.close()
             return
         self.rss_mib = message.get("rssMiB")
+        self.last_message_at = self.clock()
         self.process = host
         self.ready = True
         self._reader = asyncio.create_task(self._read(host))
@@ -485,10 +536,14 @@ class SharedEngine:
         return {
             "capacity": self.size,
             "available": self.available,
-            "admittedSpeakers": self.admission_limit,
+            # Seats held now; the structural ceiling before a governor is installed.
+            "admittedSpeakers": (
+                len(self.governor.seats) if self.governor is not None else self.admission_limit
+            ),
             "workers": 1 if self.ready else 0,
             "streamFailures": self.failures,
             "capacityWaits": self.capacity_waits,
+            "pausedDrops": self.paused_drops,
             "droppedSpeechChunks": self.dropped_chunks,
             "speechGating": True,
             "speechDetector": "silero-v6.2.1",

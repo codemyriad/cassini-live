@@ -1,9 +1,9 @@
 """Server-wide speech engine selection: restore, switch, roll back.
 
 One engine serves every call. A switch downloads while the old engine keeps serving, then
-stops captions like an overload pause, loads the new engine and runs the normal capacity
-check. Any failure restores the previous engine, so an administrator's choice can never
-leave the server without captions longer than one capacity check.
+stops captions, loads the new engine and is done once it is ready: no capacity check runs
+(0.8.0). A failed load restores the previous engine, so an administrator's choice can
+never leave the server without captions longer than two loads.
 """
 
 import asyncio
@@ -13,23 +13,26 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-from . import catalog, eligibility, engines
+from . import catalog, eligibility, engines, resources
 from .config import LANGUAGE_NAMES, LANGUAGES
 from .eligibility import NetworkProbe, Reason
 from .model_store import ModelError, ModelStore
+from .safety import ResourceRefused
 from .settings import EngineSettings, SettingsStore
 
 LOGGER = logging.getLogger(__name__)
 
 SwitchState = Literal[
-    "idle", "validating", "downloading", "verifying", "stopping", "loading", "checking",
+    "idle", "validating", "downloading", "verifying", "stopping", "loading",
     "rolling_back", "succeeded", "failed", "cancelled",
 ]
-ACTIVE_STATES = {
-    "validating", "downloading", "verifying", "stopping", "loading", "checking", "rolling_back"
-}
+ACTIVE_STATES = {"validating", "downloading", "verifying", "stopping", "loading", "rolling_back"}
 ENDED_STATES = {"succeeded", "failed", "cancelled"}
-CRITICAL_STATES = {"stopping", "loading", "checking", "rolling_back"}
+CRITICAL_STATES = {"stopping", "loading", "rolling_back"}
+# Error codes 0.7.x saved that 0.8.0 no longer produces; the form still renders them.
+LEGACY_CODES = {"capacity_failed"}
+# Bound on stop_rooms during a switch's teardown (safety._teardown), added to the load bound.
+STOP_ROOMS_S = 30
 REMOVABLE = {"ready", "partial", "corrupt"}
 # Present model files make these irrelevant when restoring a saved choice.
 DOWNLOAD_REASONS = {"network", "disk_space", "storage"}
@@ -75,14 +78,12 @@ def _name(engine_id):
     return catalog.get(engine_id).name if engine_id in catalog.ENGINES else str(engine_id)
 
 
-WAITING_PHASES = frozenset({"waiting_headroom", "cooling_down"})
+WAITING_PHASES = frozenset({"cooling_down"})
 
 
 def _failure_code(reason):
-    if "did not finish in time" in reason:
+    if "did not load in time" in reason:
         return "timeout"
-    if "Capacity check" in reason or "speaking budget" in reason:
-        return "capacity_failed"
     return "load_failed"
 
 
@@ -90,10 +91,11 @@ class EngineManager:
     def __init__(self, safety, service, config, store: ModelStore, settings: SettingsStore, *,
                  backend_factory=engines.create_backend, facts=eligibility.host_facts,
                  probe: NetworkProbe | None = None, clock=time.time,
-                 check_timeout: float = 180):  # load plus four 21 s capacity scenarios
+                 check_timeout: float | None = None):
         self.safety, self.service, self.config = safety, service, config
         self.store, self.settings = store, settings
         self.backend_factory, self.facts_source, self.probe = backend_factory, facts, probe
+        # None: each engine's own load bound (start_timeout_s) plus the room teardown bound.
         self.clock, self.check_timeout = clock, check_timeout
         self.lock = asyncio.Lock()
         self.active = safety.engine_id
@@ -105,6 +107,9 @@ class EngineManager:
         self.watch: asyncio.Task | None = None
         self.restore_watch = False
         self.cancel_reason: str | None = None
+        # Calls whose captions are being set up; the app keeps the count.
+        self.calls_starting: Callable[[], int] = lambda: 0
+        safety.on_measured = self.notify
         self._facts = None
         try:
             self.saved = settings.read()
@@ -189,10 +194,12 @@ class EngineManager:
             return 1.0
 
     def _size(self, engine_id):
-        # With a shared host, CASSINI_LIVE_WORKERS is the speaker ceiling (docs/capacity.md).
+        # With a shared host, CASSINI_LIVE_WORKERS is the speaker ceiling (docs/capacity.md),
+        # clamped to the CPU ceiling: asking for more must not block captions.
+        ceiling = catalog.worker_ceiling(engine_id, self._cpus())
         if self.config.workers_explicit:
-            return self.config.workers
-        return catalog.worker_ceiling(engine_id, self._cpus())
+            return min(self.config.workers, ceiling)
+        return ceiling
 
     def _backend(self, engine_id):
         engine = catalog.get(engine_id)
@@ -245,6 +252,8 @@ class EngineManager:
                     engine = catalog.DEFAULT_ENGINE
                 elif (saved.last_error or {}).get("code") == "restore_deferred":
                     saved.last_error = None  # The deferred engine is back.
+            if (saved.last_error or {}).get("code") in LEGACY_CODES:
+                saved.last_error = None  # A 0.7.x capacity verdict says nothing about 0.8.0.
             self.saved = saved
             self._save()
             if engine != self.safety.engine_id:
@@ -267,10 +276,35 @@ class EngineManager:
         except Exception as error:
             LOGGER.warning("Could not assess %s (%s)", engine, type(error).__name__)
             return True, f"Could not check whether {name} can run here."
-        reasons = [r for r in result.reasons if r.code not in DOWNLOAD_REASONS]
+        # Advice (host RAM under twice the container, unreadable host memory) never defers.
+        ignored = DOWNLOAD_REASONS | eligibility.ADVICE_CODES
+        reasons = [r for r in result.reasons if r.code not in ignored]
         if reasons:
             return True, f"{name} cannot run here yet: {reasons[0].message}"
+        if problem := self._only_whistle_fits(engine):
+            return True, f"{problem}."
         return None
+
+    def _only_whistle_fits(self, engine):
+        """Why `engine` does not fit in the container's free memory now while Whistle
+        would, else None. Such a start falls back to Whistle with the choice kept
+        (restore_deferred) instead of leaving every call without captions."""
+        try:
+            data = self.safety.reader()
+            same = self.safety.engine_id == engine
+            rss = getattr(self.safety.pool, "rss_mib", None) if same else None
+            problem = resources.start_problem(data, engine, rss)
+            if problem is None or not problem.startswith("Not enough memory"):
+                return None
+            workers = self._size(catalog.DEFAULT_ENGINE)
+            if resources.static_problem(data, workers, catalog.DEFAULT_ENGINE) or (
+                resources.start_problem(data, catalog.DEFAULT_ENGINE, workers=workers)
+            ):
+                return None
+        except Exception as error:
+            LOGGER.warning("Could not check whether %s fits (%s)", engine, type(error).__name__)
+            return None
+        return problem
 
     async def start_safety(self) -> None:
         async with self.lock:
@@ -287,7 +321,11 @@ class EngineManager:
         if ok or not self.safety.desired_enabled:
             return
         if self.safety.phase == "configuration":
-            return  # A host problem that would block Whistle as well, not the engine.
+            # The engine does not fit the free memory now: Whistle may, as at an unhardened
+            # start. Any other configuration problem would block Whistle as well.
+            if problem := self._only_whistle_fits(engine):
+                await self._defer_restore(engine, f"{problem}.")
+            return
         async with self.lock:
             if self.busy or self.active != engine:
                 return
@@ -300,6 +338,22 @@ class EngineManager:
             except asyncio.CancelledError:
                 await self._abandon(engine, catalog.DEFAULT_ENGINE)
                 raise
+
+    async def _defer_restore(self, engine, why):
+        async with self.lock:
+            if self.busy or self.active != engine:
+                return
+            LOGGER.warning("%s Falling back to Whistle until it fits", why)
+            await self.safety.close(reason="Changing the speech engine")
+            self.safety.replace_pool(self._backend(catalog.DEFAULT_ENGINE))
+            self.active = catalog.DEFAULT_ENGINE
+            self._save(engine=engine, pending=None, last_error=self._error(
+                "restore_deferred",
+                f"{why} {_name(engine)} stays selected and returns when Cassini Live "
+                "restarts with enough free memory.",
+                engine,
+            ))
+            await self.safety.start()
 
     async def stop(self) -> None:
         for task in (self.watch, self.task):
@@ -443,7 +497,7 @@ class EngineManager:
                 self.notify()
 
     async def _replace(self, target, previous):
-        """Critical section: captions are down from here until checking ends."""
+        """Critical section: captions are down from here until the new engine is ready."""
         self._set("stopping", "Stopping captions")
         self._save(engine=previous, pending=target)
         code, why = "load_failed", ""
@@ -451,8 +505,7 @@ class EngineManager:
             await self._stage(self.safety.close(reason="Changing the speech engine"))
             self._set("loading", f"Loading {_name(target)}")
             self.safety.replace_pool(self._backend(target))
-            self._set("checking", "Running the capacity check")
-            ok, why = await self._stage(self._check())
+            ok, why = await self._stage(self._load())
             code = _failure_code(why)
         except _Interrupted:
             ok, code, why = False, "cancelled", self.cancel_reason
@@ -466,24 +519,29 @@ class EngineManager:
             return
         await self._rollback(previous, target, code, why, cancelled=code == "cancelled")
 
-    async def _check(self):
+    async def _load(self):
         await self.safety.start(fresh=True)
         return await self._outcome()
 
+    def _timeout(self):
+        if self.check_timeout is not None:
+            return self.check_timeout
+        return catalog.get(self.safety.engine_id).requirements.start_timeout_s + STOP_ROOMS_S
+
     async def _outcome(self, *, patient=False):
-        """The check timeout bounds the attempt itself, not a cooldown or wait before it."""
-        timeout = self.check_timeout
+        """The load timeout bounds the attempt itself, not a cooldown before it."""
+        timeout = self._timeout()
         while True:
             ok, why = await self.safety.wait_outcome(timeout)
             if ok or _failure_code(why) != "timeout":
                 return ok, why
             safety = self.safety
-            if safety.state == "checking" and safety.attempt_started is not None:
-                timeout = safety.attempt_started + self.check_timeout - safety.clock()
+            if safety.phase == "loading" and safety.attempt_started is not None:
+                timeout = safety.attempt_started + self._timeout() - safety.clock()
                 if timeout > 0:
                     continue  # The attempt began late in the wait; give it its full time.
             elif patient and safety.phase in WAITING_PHASES:
-                timeout = self.check_timeout
+                timeout = self._timeout()
                 continue  # Still in the recovery cooldown: no load has been attempted yet.
             return ok, why
 
@@ -501,7 +559,7 @@ class EngineManager:
         try:
             self.safety.replace_pool(self._backend(fallback))
             self.active = fallback
-            ok, _ = await self._check()
+            ok, _ = await self._load()
         except Exception as error:
             LOGGER.warning("Rollback to %s failed (%s)", fallback, type(error).__name__)
             ok = False
@@ -525,6 +583,17 @@ class EngineManager:
         finally:
             message = "Cassini Live was disabled during the change"
             self._set("cancelled", "", error={"code": "disabled", "message": message})
+
+    async def measure(self) -> dict:
+        """Start an administrator's capacity measurement (0.8.0: never automatic)."""
+        if self.busy or self.lock.locked():
+            raise SwitchRefused(409, "busy", "Wait for the speech engine change to finish")
+        try:
+            await self.safety.measure(self.calls_starting)
+        except ResourceRefused as refused:
+            raise SwitchRefused(409, "unavailable", str(refused)) from None
+        self.notify()
+        return self.safety.assessment.result
 
     async def cancel(self, reason: str = "Cancelled by an administrator") -> SwitchStatus:
         if not self.busy or self.task is None:
@@ -636,6 +705,14 @@ class EngineManager:
         model = self.store.state(engine_id)
         progress = self.store.progress(engine_id)
         result = self._assess(engine_id, facts)
+        reasons, advisory = list(result.reasons), result.advisory
+        if self.config.workers_explicit and (
+            note := eligibility.workers_note(
+                engine_id, self.config.workers, catalog.worker_ceiling(engine_id, self._cpus())
+            )
+        ):
+            reasons.append(Reason("workers", note))
+            advisory = advisory or result.eligible
         memory = catalog.memory_floor_mib(engine_id, self._size(engine_id))
         return {
             "id": engine.id,
@@ -674,8 +751,8 @@ class EngineManager:
                 "error": model.error,
             },
             "eligible": result.eligible,
-            "advisory": result.advisory,
-            "reasons": [asdict(r) for r in result.reasons],
+            "advisory": advisory,
+            "reasons": [asdict(r) for r in reasons],
         }
 
     def panel(self) -> dict:

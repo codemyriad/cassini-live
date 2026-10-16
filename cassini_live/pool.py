@@ -80,7 +80,6 @@ class Worker:
 
 class WorkerPool:
     engine_id = "whistle"
-    load_check = None
     # One process per worker: engine duty is sampled for the shared host only.
     host_pid = None
 
@@ -93,6 +92,7 @@ class WorkerPool:
         self.closed = False
         self.failures = 0
         self.capacity_waits = 0
+        self.paused_drops = 0
         self.dropped_chunks = 0
         self.waiters = deque()
         self.scheduling_yields = 0
@@ -106,7 +106,10 @@ class WorkerPool:
         self.leased = set()
         self.failure_times = deque(maxlen=3)
         self.failure_circuit_open = False
-        self.resource_check = None
+        # Installed by the safety controller: why a worker must not spawn now, or None.
+        self.start_check = None
+        # Installed by the safety controller: per-speaker admission (load.LoadGovernor).
+        self.governor = None
         self.generation = 0
         self.lag = LagMeter()
         # Every live transcriber on this backend; the load governor reads their lag.
@@ -144,6 +147,15 @@ class WorkerPool:
         self.dropped_chunks += 1
         self.last_pressure = time.monotonic()
 
+    def kick(self):
+        """Hand idle workers to parked waiters, e.g. when admission reopens."""
+        while self.waiters and len(self.leased) < self.admission_limit:
+            try:
+                worker = self.idle.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._offer(worker)
+
     def _offer(self, worker):
         # Hand the lease directly to the oldest live waiter. A returning speaker
         # cannot steal a worker while that waiter's coroutine is waking up.
@@ -156,16 +168,13 @@ class WorkerPool:
         self.idle.put_nowait(worker)
 
     async def _new(self):
-        if self.resource_check and self.resource_check():
-            raise CapacityError("Insufficient resource headroom for a recognition worker")
+        if self.start_check and (problem := self.start_check()):
+            raise CapacityError(problem)
         generation = self.generation
         worker = self.worker_factory(self.weights)
         self.workers.add(worker)
         try:
             await worker.start()
-            if self.resource_check and self.resource_check():
-                await worker.close()
-                raise CapacityError("Recognition worker exhausted the resource headroom")
         except BaseException:
             await worker.close()
             self.workers.discard(worker)
@@ -276,6 +285,7 @@ class WorkerPool:
             "workers": len(self.workers),
             "streamFailures": self.failures,
             "capacityWaits": self.capacity_waits,
+            "pausedDrops": self.paused_drops,
             "droppedSpeechChunks": self.dropped_chunks,
             "speechGating": True,
             "speechDetector": "silero-v6.2.1",

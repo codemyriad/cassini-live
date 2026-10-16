@@ -286,6 +286,19 @@ def test_reopen_needs_half_the_threshold_for_one_full_window():
     assert gov.admit(Speaker()).admitted
 
 
+def test_reopen_kicks_parked_slot_waiters_once():
+    gov, clock = governor()
+    kicks = []
+    gov.on_reopen = lambda: kicks.append(clock.now)
+    (speaker,) = seated(gov, clock, 1)
+    speaker.speak(clock.now, lag=1.5)
+    gov.admit(Speaker())
+    sustain(gov, clock, [speaker], lag=0.1, seconds=6)
+    assert not gov.closed and len(kicks) == 1
+    sustain(gov, clock, [speaker], lag=0.1, seconds=3)
+    assert len(kicks) == 1
+
+
 def test_calm_window_restarts_when_lag_returns():
     gov, clock = governor()
     (speaker,) = seated(gov, clock, 1)
@@ -334,7 +347,7 @@ def test_thresholds_cannot_leave_provisional_without_the_measurement_date():
 
 
 def test_observe_mode_seats_live_speakers_from_the_tick_and_marks_nothing():
-    # Nothing calls admit() in 0.7.3: the tick stands in for it, with the candidate's own
+    # A speaker that never asked admit() is seated by the observing tick, with its own
     # backlog left out of the lag rule, as it is at the real decision point (no lease yet).
     gov, clock = governor(ceiling=1, observe_only=True)
     first, second = Speaker(), Speaker()
@@ -507,3 +520,76 @@ def test_governor_reads_a_backend_transcriber_set_when_given_one():
     gov.tick(CALM)
     assert gov.lag_now == 1.5 and gov.transcribers is live
     assert gov.status()["lagSeconds"] == 1.5 and gov.status()["seats"] == 1
+
+
+def test_a_shed_closes_admission_for_lag():
+    gov, clock = governor()
+    older, newest = seated(gov, clock, 2)
+    sustain(gov, clock, [older, newest], lag=2.5, seconds=5)
+    assert newest.shed_reason == "lag" and gov.closed and gov.closed_reason == "lag"
+    assert not gov.admit(Speaker()).admitted  # the reopen hysteresis applies
+
+
+def flap(seconds=180):
+    """The review's flap simulation: two speakers who do not fit together. Alone, A's
+    backlog drains at 1 s/s; together each grows 0.3 s/s. B acts on a shed mark at once
+    and, once its hold-off ends, asks admission again."""
+    clock = Clock()
+    clock.now = 1000.0
+    thresholds = Thresholds(provisional=False, measured_on="2026-10-16")
+    gov = LoadGovernor(ceiling=3, thresholds=thresholds, clock=clock)
+    a, b = Speaker(), Speaker()
+    backlog = {a: 0.0, b: 0.0}
+    for speaker in (a, b):
+        clock.now += 1
+        assert gov.admit(speaker).admitted
+        speaker.leased, speaker.lease_at = True, clock.now
+    log = []
+    for step in range(seconds * 10):
+        clock.now += 0.1
+        now = clock.now
+        leased = [s for s in (a, b) if s.leased]
+        for s in leased:
+            backlog[s] = max(0.0, backlog[s] + (0.03 if len(leased) == 2 else -0.1))
+            s.pending_since = now - backlog[s]
+        if b.shed_reason:
+            b.shed_reason, b.leased, b.pending_since, backlog[b] = None, False, None, 0.0
+            gov.pause(b, now)
+            log.append(("shed", now, b.paused_until - now))
+        if not b.leased and b.paused_until and now >= b.paused_until:
+            if gov.admit(b, now).admitted:
+                b.leased, b.lease_at = True, now
+                log.append(("admitted", now, None))
+            else:
+                gov.pause(b, now)
+        if step % 10 == 0:
+            gov.tick({}, now)
+    return log
+
+
+def test_a_speaker_shed_again_soon_after_readmission_waits_longer():
+    # Review 0.8.0: without this, B was paused for 10 s and re-admitted every ~21 s for
+    # as long as the call lasted. Each shed within repeat_window of the re-admission
+    # doubles the hold-off up to hold_off_max.
+    sheds = [hold for kind, _, hold in flap() if kind == "shed"]
+    assert [round(h) for h in sheds] == [10, 20, 40, 60]
+
+
+def test_strikes_reset_once_a_speaker_keeps_up_for_the_repeat_window():
+    gov, clock = governor()
+    older, newest = seated(gov, clock, 2)
+    sustain(gov, clock, [older, newest], lag=2.5, seconds=5)
+    gov.pause(newest)
+    assert newest.paused_until - clock.now == 10
+    clock.now += 11
+    older.speak(clock.now)  # caught up
+    gov.closed_reason = None
+    newest.shed_reason = None
+    assert gov.admit(newest).admitted
+    for _ in range(31):  # keeps its seat, keeping up, longer than repeat_window
+        clock.now += 1
+        older.speak(clock.now)
+        newest.speak(clock.now)
+        gov.tick(CALM)
+    gov.pause(newest)
+    assert newest.paused_until - clock.now == 10

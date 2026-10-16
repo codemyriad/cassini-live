@@ -1,4 +1,7 @@
-"""Installation capacity assessment; also runnable without Nextcloud or a call."""
+"""Capacity measurement an administrator asks for; also runnable without Nextcloud.
+
+Since 0.8.0 nothing runs it automatically and its result is displayed, never used as a
+gate: admission decides per speaker on live load (load.py)."""
 
 import argparse
 import asyncio
@@ -8,6 +11,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -22,17 +26,28 @@ LOGGER = logging.getLogger(__name__)
 
 
 class CapacityAssessment:
+    # The run's own bound (asyncio.timeout in run()): four 21 s scenarios plus margin.
+    BUDGET_S = 120
+
     def __init__(self, pool):
         self.pool = pool
         self.task = None
         self.interruption_lock = asyncio.Lock()
         self.result = {"state": "not_tested", "testedSpeakers": 0}
+        self.started_at = None
 
     def start(self):
         if self.task and not self.task.done():
             return
         self.result = {"state": "checking", "testedSpeakers": 0}
+        self.started_at = time.monotonic()
         self.task = asyncio.create_task(self.run())
+
+    def remaining(self):
+        """Seconds the running measurement may still hold the service (Retry-After)."""
+        if self.task is None or self.task.done() or self.started_at is None:
+            return 0
+        return max(0, self.BUDGET_S - (time.monotonic() - self.started_at))
 
     async def interrupt(self):
         async with self.interruption_lock:
@@ -50,6 +65,7 @@ class CapacityAssessment:
             pool.scheduling_yields,
             pool.last_pressure,
         )
+        requests = list(pool.lag.requests) if hasattr(pool, "lag") else None
         report = {
             "state": "checking",
             "testedSpeakers": 0,
@@ -65,7 +81,7 @@ class CapacityAssessment:
         try:
             if not pool.is_idle():
                 raise RuntimeError("Capacity check requires an idle service")
-            async with asyncio.timeout(120):
+            async with asyncio.timeout(self.BUDGET_S):
                 for count in range(1, min(pool.size, 4) + 1):
                     result = await scenario(pool, count)
                     report["scenarios"].append(result)
@@ -98,6 +114,20 @@ class CapacityAssessment:
                 pool.scheduling_yields,
                 pool.last_pressure,
             ) = counters
+            if requests is not None:
+                # Synthetic request latencies must not stand in for calls' p95 either.
+                pool.lag.requests.clear()
+                pool.lag.requests.extend(requests)
+
+
+class ServiceRefused(RuntimeError):
+    """The running service answered with an error status; detail is its reason."""
+
+    def __init__(self, method, path, status, detail):
+        super().__init__(
+            f"{method} {path} returned HTTP {status}" + (f": {detail}" if detail else "")
+        )
+        self.status, self.detail = status, detail
 
 
 def installed_request(method, path):
@@ -122,7 +152,11 @@ def installed_request(method, path):
         )
         response = connection.getresponse()
         if response.status != 200:
-            raise RuntimeError(f"{method} {path} returned HTTP {response.status}")
+            try:
+                detail = json.loads(response.read()).get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            raise ServiceRefused(method, path, response.status, detail)
         return json.loads(response.read())
     finally:
         connection.close()
@@ -162,6 +196,7 @@ def watch_line(status, error=None):
         "p95RequestSeconds": status.get("p95RequestSeconds"),
         "droppedSpeechChunks": status.get("droppedSpeechChunks"),
         "capacityWaits": status.get("capacityWaits"),
+        "pausedDrops": status.get("pausedDrops"),
         "hostRestarts": status.get("hostRestarts"),
         **{
             key: admission.get(key)
@@ -196,20 +231,47 @@ async def watch(seconds):
     return 0 if ready else 1
 
 
+async def measure_installed():
+    """Ask the running service for a measurement, then wait for its result. Exit 0 iff
+    at least one speaker passed."""
+    try:
+        installed_request("POST", "/capacity/check")
+    except ServiceRefused as refused:
+        if refused.status != 409:
+            raise
+        # Calls in progress, a switch, captions not ready or a run already going.
+        print(
+            f"Capacity measurement not started: {refused.detail or 'the service is busy'}",
+            file=sys.stderr,
+        )
+        return 1
+    started = time.monotonic()
+    while True:
+        status = installed_request("GET", "/status")
+        result = {**status["capacityAssessment"], "resourceSafety": status["resourceSafety"]}
+        if result["state"] != "checking":
+            break
+        if time.monotonic() - started >= CapacityAssessment.BUDGET_S + 30:
+            break  # Report what is there rather than a timeout traceback.
+        await asyncio.sleep(1)
+    print(json.dumps(result, indent=2))
+    return 0 if result["state"] in {"passed", "limited"} else 1
+
+
 async def main(args):
     if args.watch:
         return await watch(args.watch)
+    if args.installed and args.measure:
+        return await measure_installed()
     if args.installed:
         started = time.monotonic()
         while True:
             status = installed_request("GET", "/status")
             safety = status["resourceSafety"]
             result = {**status["capacityAssessment"], "resourceSafety": safety}
-            state = safety["state"]
-            budget = max(150, args.wait) if state == "checking" else args.wait
-            if state in {"ready", "blocked", "disabled"}:
+            if safety["state"] in {"ready", "blocked", "disabled"}:
                 break
-            if time.monotonic() - started >= budget:
+            if time.monotonic() - started >= args.wait:
                 break  # Report current recovery state rather than a timeout traceback.
             await asyncio.sleep(1)
     else:
@@ -232,8 +294,9 @@ async def main(args):
         controller = SafetyController(pool, assessment)
         try:
             await controller.start()
-            while controller.state == "checking":
-                await asyncio.sleep(0.1)
+            if controller.state == "ready":
+                await controller.measure()
+                await assessment.task
             result = {**assessment.result, "resourceSafety": controller.status()}
         finally:
             await controller.close()
@@ -250,6 +313,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--wait", type=int, default=0, help="Seconds to wait through installed recovery"
+    )
+    parser.add_argument(
+        "--measure",
+        action="store_true",
+        help="With --installed: measure the running service's capacity (no calls may be "
+        "captioned; captions pause for up to two minutes)",
     )
     parser.add_argument(
         "--watch",

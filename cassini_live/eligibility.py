@@ -21,7 +21,7 @@ from .model_store import ModelState
 
 ReasonCode = Literal["limits_missing", "memory_limit", "host_memory", "cpu_quota",
                      "cpu_instructions", "disk_space", "network", "storage", "architecture",
-                     "budget"]
+                     "budget", "workers"]
 NetworkStatus = Literal["reachable", "unreachable", "unknown"]
 ARCHITECTURES = ("x86_64", "aarch64")
 GIB = 1024**3
@@ -41,7 +41,7 @@ class Eligibility:
     engine: str
     eligible: bool
     reasons: tuple[Reason, ...]
-    advisory: bool = False  # reasons shown but selection allowed (Whistle only)
+    advisory: bool = False  # reasons shown but selection allowed (installation advice)
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,19 @@ class HostFacts:
 
 
 _flags: dict[Path, frozenset[str]] = {}
+
+
+# Reason codes that are installation advice (Decision 5), never a reason to refuse an engine.
+ADVICE_CODES = frozenset({"host_memory", "budget", "workers"})
+
+
+def workers_note(engine_id: str, requested: int, ceiling: int) -> str | None:
+    """Advice when CASSINI_LIVE_WORKERS asks for more than the CPU ceiling; it is clamped,
+    never a reason to block captions."""
+    if requested <= ceiling:
+        return None
+    return (f"CASSINI_LIVE_WORKERS is {requested}, above the {ceiling} simultaneous speakers "
+            f"{catalog.get(engine_id).name} can serve with this CPU quota; {ceiling} are used.")
 
 
 def cpu_flags(cpuinfo=Path("/proc/cpuinfo")) -> frozenset[str]:
@@ -143,12 +156,14 @@ def assess(engine: catalog.Engine, facts: HostFacts, model: ModelState) -> Eligi
              f"({_gib(needs.recommended_memory_mib * MIB)} GiB recommended).",
              memory, floor)
     host_needed = 2 * max(memory or 0, floor)
+    advisories = []
     if not host or host < host_needed:
-        fail("host_memory",
+        # Advice since 0.8.0 (Decision 5): the container's own limit protects the host.
+        advisories.append(Reason("host_memory",
              (f"The host has {_gib(host)} GiB of RAM. " if host else
               "The host memory cannot be read. ")
-             + f"{engine.name} needs at least {_gib(host_needed, up=True)} GiB, twice the "
-             "container limit.", host, host_needed)
+             + f"{engine.name} runs best with at least {_gib(host_needed, up=True)} GiB, "
+             "twice the container limit.", host, host_needed))
     if quota and quota < needs.min_cpu_quota:
         fail("cpu_quota",
              f"The CPU quota is {_cpus(quota)}. {engine.name} needs at least "
@@ -172,7 +187,9 @@ def assess(engine: catalog.Engine, facts: HostFacts, model: ModelState) -> Eligi
                  f"{_gib(facts.free_disk_bytes)} GiB is free.", facts.free_disk_bytes, need)
         if facts.network.get(engine.id) == "unreachable":
             fail("network", "Cannot reach github.com to download the model.")
-    return Eligibility(engine.id, not reasons, tuple(reasons))
+    if reasons:
+        return Eligibility(engine.id, False, tuple(reasons + advisories))
+    return Eligibility(engine.id, True, tuple(advisories), advisory=bool(advisories))
 
 
 def _assess_whistle(engine: catalog.Engine, facts: HostFacts) -> Eligibility:
@@ -180,10 +197,9 @@ def _assess_whistle(engine: catalog.Engine, facts: HostFacts) -> Eligibility:
     if data is None:
         return Eligibility(engine.id, True, ())
     workers = catalog.worker_ceiling(engine.id, facts.effective_cpus)
-    problem = resources.budget_problem(data, workers, engine.id)
-    if problem is None:
-        return Eligibility(engine.id, True, ())
-    return Eligibility(engine.id, True, (Reason("budget", problem + "."),), advisory=True)
+    problems = [resources.static_problem(data, workers, engine.id), *resources.advice(data)]
+    reasons = tuple(Reason("budget", problem + ".") for problem in problems if problem)
+    return Eligibility(engine.id, True, reasons, advisory=bool(reasons))
 
 
 class NetworkProbe:

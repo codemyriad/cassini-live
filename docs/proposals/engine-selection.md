@@ -1,5 +1,9 @@
 # Proposal: administrator-selected speech engine
 
+> **History.** This is the 0.7.x design. Its automatic capacity check, the
+> trip-and-cool-down state machine and the tested-speaker room cap were replaced
+> in 0.8.0 by [instant admission](0.8.0-instant-admission.md).
+
 > 2026-10-15 (0.7.1): the license acceptance step was removed; licenses are shown but
 > not accepted. The engine choice gained an admin-only page served by the ExApp (see
 > docs/install.md). Sections mentioning `license_required`, `LICENSE_FIELD`,

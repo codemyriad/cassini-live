@@ -55,11 +55,14 @@ class Backend(Protocol):
     size: int
     admission_limit: int
     closed: bool
-    resource_check: Callable[[], str | None] | None
-    load_check: Callable[[], str | None] | None
+    # Why an engine process must not spawn now, or None; consulted before every spawn.
+    start_check: Callable[[], str | None] | None
+    # Per-speaker admission (load.LoadGovernor), installed by the safety controller.
+    governor: object | None
     failure_circuit_open: bool
     failures: int
     capacity_waits: int
+    paused_drops: int  # chunks dropped while a speaker was held off; no capacity was waited for
     dropped_chunks: int
     scheduling_yields: int
     last_pressure: float
@@ -81,6 +84,7 @@ class Backend(Protocol):
     def is_idle(self) -> bool: ...
     def resize(self, size: int) -> None: ...
     def note_drop(self) -> None: ...
+    def kick(self) -> None: ...
     async def start(self) -> None: ...
     async def close(self) -> None: ...
     def status(self) -> dict: ...

@@ -68,8 +68,6 @@ class Requirements:
     stream_mib: int
     batch_mib: int
     max_batch: int
-    cpu_per_speaker: float  # CPU-s per audio-s x 1.3 calibration speed x margin
-    overhead_cpu: float
     start_timeout_s: float
     provisional: bool
 
@@ -191,8 +189,6 @@ _SHARED = dict(
     stream_mib=16,  # provisional; about 7 measured serially
     batch_mib=45,  # baseline: batched activation arena
     max_batch=4,
-    cpu_per_speaker=0.5,  # 0.5-0.67 measured at 1.3x in the harness (provisional)
-    overhead_cpu=0.25,
     start_timeout_s=120,  # cold disk; 3-5 s warm
     provisional=True,
 )
@@ -219,8 +215,6 @@ ENGINES: dict[str, Engine] = {
             stream_mib=0,
             batch_mib=0,
             max_batch=1,
-            cpu_per_speaker=2.0,
-            overhead_cpu=0,
             start_timeout_s=30,
             provisional=False,
         ),
@@ -269,22 +263,17 @@ def worker_ceiling(engine_id: str, effective_cpus: float) -> int:
     engine = get(engine_id)
     if engine.kind == "worker_pool":
         return min(4, max(1, int(effective_cpus // 2)))
-    r = engine.requirements
-    return min(4, max(1, math.floor((effective_cpus - r.overhead_cpu) / r.cpu_per_speaker + 1e-9)))
+    # Two speakers per recognizer thread (0.8.0 Decision 2): the 1.3x harness failed every
+    # 3-speaker cell at one thread and passed 4 at two, failing 5 (stt-eval results.md
+    # 118-126, 133-141). Staging (2 CPUs, 1 thread) therefore seats 2 until a 1.0x run there
+    # says otherwise. Admission still sheds on live lag below this ceiling.
+    return min(4, 2 * engine_threads(effective_cpus))
 
 
 def engine_threads(effective_cpus: float) -> int:
     """Recognizer threads for a shared host, leaving one CPU of the quota for the supervisor
     and ONNX Runtime's spin-waiting: threads equal to the quota stalled on staging (2 CPUs)."""
     return max(1, min(4, math.floor(effective_cpus + 1e-9) - 1))
-
-
-def load_headroom_mib(engine_id: str, workers: int) -> int:
-    engine = get(engine_id)
-    if engine.kind == "worker_pool":
-        return 192 * workers
-    r = engine.requirements
-    return r.model_mib + r.stream_mib * workers + r.batch_mib * min(workers, r.max_batch)
 
 
 def download_disk_bytes(engine_id: str, partial_bytes: int = 0) -> int:

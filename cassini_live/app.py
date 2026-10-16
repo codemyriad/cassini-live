@@ -16,7 +16,7 @@ from .auth import SafeAppAPIAuthMiddleware
 from .capacity import CapacityAssessment
 from .config import Config, state_dir
 from .eligibility import NetworkProbe
-from .engine_switch import EngineManager
+from .engine_switch import EngineManager, SwitchRefused
 from .model_store import ModelStore
 from .pool import WorkerPool
 from .recovery import RecoveryJournal
@@ -76,6 +76,8 @@ def create_app(
     )
     sync = None
     call_starts = 0
+    # A measurement must not start while a call's captions are being set up.
+    manager.calls_starting = lambda: call_starts
     discovery_task = None
     enable_generation = 0
 
@@ -305,21 +307,15 @@ def create_app(
 
     @app.post("/capacity/check")
     async def check_capacity(request: Request):
-        # Container CLI only. Not declared as a browser proxy route, and even a
-        # proxied administrator request cannot launch resource-intensive work.
+        # Container CLI only (capacity --installed --measure); not a browser proxy route.
+        # Administrators measure from the settings page, behind its CSRF guard.
         if request.scope.get("username") != "":
             raise HTTPException(403, "Run the capacity check from the app container")
-        if service.clients or call_starts:
-            raise HTTPException(409, "Capacity check requires no active caption rooms")
-        if manager.busy:
-            raise HTTPException(409, "A speech engine change is in progress")
-        if safety.lock.locked() or safety.state == "checking":
-            return {"state": safety.state}
         try:
-            await safety.recheck()
-        except ResourceRefused as error:
-            raise HTTPException(503, str(error)) from error
-        return {"state": safety.state}
+            result = await manager.measure()
+        except SwitchRefused as refused:
+            raise HTTPException(409, str(refused)) from None
+        return {"state": result["state"]}
 
     return app
 

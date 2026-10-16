@@ -29,14 +29,13 @@ MAX_TEXT = 400
 PROGRESS_STEP = 5
 
 ACTIVE_STATES = frozenset(
-    {"validating", "downloading", "verifying", "stopping", "loading", "checking", "rolling_back"}
+    {"validating", "downloading", "verifying", "stopping", "loading", "rolling_back"}
 )
 STEPS = {
     "validating": "checking the requirements",
     "verifying": "verifying the model files",
     "stopping": "stopping captions",
     "loading": "loading the engine",
-    "checking": "running the capacity check",
     "rolling_back": "rolling back",
 }
 LANGUAGE_NAMES = {
@@ -50,7 +49,7 @@ LANGUAGE_NAMES = {
 }
 # States in which selecting the previous engine cancels; the settings page offers Cancel in
 # the same ones (validating has no task to cancel yet, a rollback cannot be stopped).
-CANCELLABLE = frozenset({"downloading", "verifying", "stopping", "loading", "checking"})
+CANCELLABLE = frozenset({"downloading", "verifying", "stopping", "loading"})
 # One short phrase per eligibility reason; the full sentence is on the settings page.
 REASON_PHRASES = {
     "limits_missing": "container limits not set",
@@ -63,7 +62,7 @@ REASON_PHRASES = {
     "disk_space": "not enough disk space",
     "network": "download site unreachable",
 }
-CAPTIONS_OFF = frozenset({"stopping", "loading", "checking", "rolling_back"})
+CAPTIONS_OFF = frozenset({"stopping", "loading", "rolling_back"})
 ON_DISK = frozenset({"ready", "bundled"})
 GIB = 1024 * catalog.MIB
 
@@ -216,7 +215,9 @@ def _captions(status):
     safety = status.get("resourceSafety") or {}
     if not safety:
         return []
-    if safety.get("state") == "ready":
+    if safety.get("phase") == "measuring":
+        parts = ["Captions are paused: measuring capacity (about two minutes)."]
+    elif safety.get("state") == "ready":
         parts = ["Captions are ready."]
     else:
         parts = [f"Captions are paused: {_sentence(safety.get('reason') or safety.get('state'))}"]
@@ -239,8 +240,8 @@ def _engine_field(panel):
     cards = {card["id"]: card for card in panel.get("engines", ())}
     options = {option_label(cards[e], panel): e for e in catalog.ENGINES if e in cards}
     description = (
-        "One engine serves the whole server. Changing it stops captions in active calls for a "
-        "few minutes."
+        "One engine serves the whole server. Changing it stops captions in active calls while "
+        "the new engine loads (seconds when its files are on disk)."
     )
     calls = panel.get("activeCalls", 0)
     if calls:

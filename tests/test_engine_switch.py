@@ -168,7 +168,7 @@ async def test_switch_downloads_loads_checks_and_persists(h):
     assert "acknowledgements" not in json.loads(h.settings.path.read_text())
     order = [s for i, s in enumerate(states) if i == 0 or states[i - 1] != s]
     assert order == [
-        "validating", "downloading", "verifying", "stopping", "loading", "checking", "succeeded"
+        "validating", "downloading", "verifying", "stopping", "loading", "succeeded"
     ]
     assert h.manager.languages().keys() == {"auto", "en"}
     assert h.manager.languages()["auto"]["name"] == "Automatic (English)"
@@ -227,12 +227,15 @@ async def test_corrupt_download_fails_verification(h):
     assert status.error["code"] == "hash_mismatch" and h.manager.active == "whistle"
 
 
-async def test_capacity_failure_rolls_back(h):
-    h.passes["nemotron-en"] = False
+async def test_refused_load_rolls_back(h):
+    from cassini_live.pool import CapacityError
+
+    refused = CapacityError("Not enough memory to load Nemotron English")
+    h.start_errors["nemotron-en"] = refused
     await h.manager.request_switch("nemotron-en")
     status = await finished(h)
     assert status.state == "failed" and status.rolled_back
-    assert status.error["code"] == "capacity_failed"
+    assert status.error == {"code": "load_failed", "message": str(refused)}
     assert h.manager.active == "whistle" and h.safety.engine_id == "whistle"
     await until(lambda: h.safety.state == "ready")
     saved = h.settings.read()
@@ -242,7 +245,7 @@ async def test_capacity_failure_rolls_back(h):
 
 async def test_load_failure_with_failed_rollback(h):
     h.start_errors["nemotron-en"] = RuntimeError("boom")
-    h.passes["whistle"] = False
+    h.start_errors["whistle"] = RuntimeError("boom too")
     await h.manager.request_switch("nemotron-en")
     status = await finished(h)
     assert status.state == "failed" and not status.rolled_back
@@ -259,7 +262,7 @@ async def test_cancel_while_downloading_keeps_captions(h):
     assert h.safety.pool is h.pool and h.safety.state == "ready"
 
 
-async def test_cancel_while_checking_rolls_back(h):
+async def test_cancel_while_loading_rolls_back(h):
     gate = asyncio.Event()
     h.start_errors.clear()
     original = h.manager.backend_factory
@@ -273,7 +276,7 @@ async def test_cancel_while_checking_rolls_back(h):
     h.manager.backend_factory = gated
     h.store.ready.add("nemotron-multilingual")
     await h.manager.request_switch("nemotron-multilingual")
-    await until(lambda: h.manager.status.state == "checking")
+    await until(lambda: h.manager.status.state == "loading" and h.safety.phase == "loading")
     await h.manager.cancel()
     status = await finished(h)
     assert status.state == "cancelled" and status.rolled_back
@@ -297,7 +300,7 @@ async def test_switch_and_delete_during_the_critical_section_are_refused_at_once
     h.manager.backend_factory = gated
     h.store.ready.update({"nemotron-multilingual", "nemotron-en"})
     await h.manager.request_switch("nemotron-multilingual")
-    await until(lambda: h.manager.status.state == "checking")
+    await until(lambda: h.manager.status.state == "loading" and h.safety.phase == "loading")
     for call in (h.manager.request_switch("nemotron-en"), h.manager.delete_model("nemotron-en")):
         with pytest.raises(SwitchRefused) as refused:
             await asyncio.wait_for(call, 0.5)
@@ -347,7 +350,7 @@ async def test_cancel_during_rollback_is_refused(h):
     h.manager.status.state = "idle"
 
 
-async def test_disable_during_checking_restores_previous_without_restart(h):
+async def test_disable_during_loading_restores_previous_without_restart(h):
     gate = asyncio.Event()
     original = h.manager.backend_factory
 
@@ -359,7 +362,7 @@ async def test_disable_during_checking_restores_previous_without_restart(h):
     h.manager.backend_factory = gated
     h.store.ready.add("nemotron-multilingual")
     await h.manager.request_switch("nemotron-multilingual")
-    await until(lambda: h.manager.status.state == "checking")
+    await until(lambda: h.manager.status.state == "loading" and h.safety.phase == "loading")
     await h.manager.stop()
     assert h.manager.status.state == "cancelled"
     assert h.manager.status.error["code"] == "disabled"
@@ -430,6 +433,19 @@ async def test_restore_falls_back_to_whistle(tmp_path, monkeypatch, problem):
         assert stored.engine == "whistle" and stored.last_error["code"] == "restore_failed"
 
 
+@pytest.mark.parametrize("host_memory", [5120 * MIB, None])
+async def test_installation_advice_never_defers_a_restore(tmp_path, monkeypatch, host_memory):
+    # Review 0.8.0: host RAM under twice the container (or unreadable) is advice since
+    # Decision 5; treating it as blocking fell back to Whistle at every restart.
+    data = {**DATA, "memoryLimitBytes": 3072 * MIB, "hostMemoryBytes": host_memory}
+    h = make(tmp_path, monkeypatch, data=data, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    advice = h.manager._assess("nemotron-en", h.manager._host_facts(fresh=True))
+    assert advice.eligible and advice.advisory
+    await h.manager.restore()
+    assert h.manager.active == "nemotron-en" and h.settings.read().last_error is None
+
+
 async def test_deferred_engine_returns_once_the_limits_allow_it(tmp_path, monkeypatch):
     unhardened = {**DATA, "memoryLimitBytes": 2048 * MIB}
     h = make(tmp_path, monkeypatch, data=unhardened, ready=("nemotron-en",),
@@ -462,12 +478,12 @@ def test_unreadable_settings_fall_back(tmp_path, monkeypatch):
     assert h.settings.read().last_error["code"] == "settings"
 
 
-async def test_restored_engine_rolls_back_when_its_first_check_fails(tmp_path, monkeypatch):
+async def test_restored_engine_rolls_back_when_its_first_load_fails(tmp_path, monkeypatch):
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
              settings=EngineSettings(engine="nemotron-en"))
+    h.start_errors["nemotron-en"] = RuntimeError("boom")
     await h.manager.restore()
     assert h.safety.engine_id == "nemotron-en"
-    h.passes["nemotron-en"] = False
     try:
         await h.manager.start_safety()
         await until(lambda: h.manager.status.state == "failed")
@@ -486,7 +502,7 @@ async def test_later_trip_does_not_roll_back(tmp_path, monkeypatch):
         await h.manager.start_safety()
         await until(lambda: h.safety.state == "ready")
         await asyncio.sleep(0.01)
-        h.data["memoryFraction"] = 0.9
+        h.data["oomKills"] += 1
         await until(lambda: h.safety.state != "ready")
         await asyncio.sleep(0.05)
         assert h.manager.active == "nemotron-en" and h.manager.status.state == "idle"
@@ -499,8 +515,8 @@ async def test_disable_during_restore_rollback_does_not_stick(tmp_path, monkeypa
     """Disabling during the restore rollback ends the change; re-enabling starts captions."""
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
              settings=EngineSettings(engine="nemotron-en"))
+    h.start_errors["nemotron-en"] = RuntimeError("boom")
     await h.manager.restore()
-    h.passes["nemotron-en"] = False
     gate = asyncio.Event()
     original = h.manager.backend_factory
     def gated(engine_id, **kw):
@@ -581,47 +597,44 @@ async def test_restore_waits_out_the_recovery_cooldown(tmp_path, monkeypatch):
         await h.safety.close()
 
 
-def slow_calibration(monkeypatch, seconds):
-    async def scenario(pool, count):
-        await asyncio.sleep(seconds)
-        return {"passed": True, "speakers": count}
+def slow_load(h, seconds):
+    """The next backends the manager builds take `seconds` to load once started."""
+    original = h.manager.backend_factory
 
-    monkeypatch.setattr(capacity, "scenario", scenario)
+    def factory(engine_id, **kwargs):
+        backend = original(engine_id, **kwargs)
+        gate = backend.start_gate = asyncio.Event()
+        start = backend.start
+
+        async def delayed():
+            asyncio.get_running_loop().call_later(seconds, gate.set)
+            await start()
+
+        backend.start = delayed
+        return backend
+
+    h.manager.backend_factory = factory
 
 
-async def test_restore_times_the_check_from_the_attempt_not_the_cooldown(tmp_path, monkeypatch):
+async def test_restore_times_the_load_from_the_attempt_not_the_cooldown(tmp_path, monkeypatch):
     """A cooldown ending late in a wait must not roll back the load that follows it."""
     h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
              settings=EngineSettings(engine="nemotron-en"))
-    h.safety.policy = replace(h.safety.policy, headroom_window=0.2)
     h.safety.journal.write(1, time.time() + 1.5, False, "previous run")
-    slow_calibration(monkeypatch, 0.3)
+    slow_load(h, 0.8)
     await h.manager.restore()
     try:
         await h.manager.start_safety()
-        await until(lambda: h.safety.state == "checking")
+        await until(lambda: h.safety.phase == "loading")
         async with asyncio.timeout(4):
             while h.safety.state != "ready":
                 await asyncio.sleep(0.01)
-        # The check ran past check_timeout=2 measured from start_safety, but not from its start.
-        assert h.safety.attempt_started + 0.4 < h.safety.clock()
+        # The load ran past check_timeout=2 measured from start_safety, but not from its start.
+        assert h.safety.attempt_started + 0.7 < h.safety.clock()
         assert h.manager.active == "nemotron-en" and "rolling_back" not in h.changes
     finally:
         await h.manager.stop()
         await h.safety.close()
-
-
-async def test_switch_times_the_check_from_the_attempt_not_the_headroom_wait(h, monkeypatch):
-    h.safety.policy = replace(h.safety.policy, headroom_window=1.2)
-    h.data["cpuPressureRecent"] = 30  # Pressure left by the engine that just stopped.
-    slow_calibration(monkeypatch, 0.3)
-    await h.manager.request_switch("nemotron-en")
-    await until(lambda: h.manager.status.state == "checking")
-    await asyncio.sleep(0.1)
-    h.data["cpuPressureRecent"] = 0
-    async with asyncio.timeout(5):
-        status = await finished(h)
-    assert status.state == "succeeded" and h.manager.active == "nemotron-en"
 
 
 async def test_a_deferred_engine_counts_as_in_use(tmp_path, monkeypatch):
@@ -650,3 +663,99 @@ async def test_restore_failed_message_names_the_fallback_once(tmp_path, monkeypa
     message = h.settings.read().last_error["message"]
     assert message == ("The Nemotron English model files are missing or damaged. "
                        "Choose it again to download it.")
+
+
+async def test_restore_clears_a_07x_capacity_verdict(tmp_path, monkeypatch):
+    error = {"code": "capacity_failed", "message": "Capacity check did not establish a safe "
+             "speaking budget", "engine": "nemotron-en", "at": 1}
+    h = make(tmp_path, monkeypatch, settings=EngineSettings(engine="whistle", last_error=error))
+    await h.manager.restore()
+    assert h.settings.read().last_error is None and h.manager.panel()["lastError"] is None
+
+
+def test_the_load_bound_is_the_engine_start_timeout_plus_room_teardown(tmp_path, monkeypatch):
+    from cassini_live.engine_switch import STOP_ROOMS_S, _failure_code
+
+    h = make(tmp_path, monkeypatch)
+    h.manager.check_timeout = None
+    assert h.manager._timeout() == catalog.get("whistle").requirements.start_timeout_s + 30
+    assert STOP_ROOMS_S == 30
+    h.safety.replace_pool(FakeBackend("nemotron-en", 1))
+    assert h.manager._timeout() == 150
+    assert _failure_code("The speech engine did not load in time") == "timeout"
+    assert _failure_code("Capacity check did not establish a safe speaking budget") == "load_failed"
+
+
+async def test_explicit_workers_above_the_ceiling_are_clamped_not_blocking(
+    tmp_path, monkeypatch, caplog
+):
+    # Review 0.8.0: CASSINI_LIVE_WORKERS=3 on 2 CPUs (Nemotron ceiling 2) used to block
+    # captions as a configuration problem. It is clamped, with a warning and advice.
+    data = {**DATA, "cpuQuotaCpus": 2.0, "effectiveCpus": 2.0}
+    h = make(tmp_path, monkeypatch, data=data, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    h.manager.config = Config(None, 3, "secret", "", workers_explicit=True)
+    await h.manager.restore()
+    assert h.manager.active == "nemotron-en" and h.safety.pool.size == 2
+    try:
+        await h.manager.start_safety()
+        await until(lambda: h.safety.state == "ready")
+        card = next(c for c in h.manager.panel()["engines"] if c["id"] == "nemotron-en")
+        assert card["eligible"] and card["advisory"]
+        assert any(r["code"] == "workers" and "3" in r["message"] for r in card["reasons"])
+    finally:
+        await h.manager.stop()
+        await h.safety.close()
+
+
+# Nemotron needs about 1.5 GiB free to load; Whistle's two workers need 384 MiB.
+CROWDED = {**DATA, "memoryCurrentBytes": 1672 * MIB}  # 1400 MiB free of 3 GiB
+
+
+async def test_restore_defers_an_engine_that_does_not_fit_while_whistle_does(
+    tmp_path, monkeypatch
+):
+    h = make(tmp_path, monkeypatch, data=CROWDED, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    stored = h.settings.read()
+    assert h.manager.active == "whistle" and h.manager.deferred == "nemotron-en"
+    assert stored.engine == "nemotron-en" and stored.last_error["code"] == "restore_deferred"
+    assert "Not enough memory to load" in stored.last_error["message"]
+    roomy = make(tmp_path, monkeypatch, ready=("nemotron-en",))  # the next restart fits
+    await roomy.manager.restore()
+    assert roomy.manager.active == "nemotron-en" and roomy.manager.panel()["lastError"] is None
+
+
+async def test_a_fit_refusal_after_restore_falls_back_to_whistle(tmp_path, monkeypatch):
+    # Review 0.8.0: the refusal is phase "configuration", which _watch_restore took for a
+    # host problem blocking Whistle too, so no call had captions although Whistle fits.
+    h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    assert h.manager.active == "nemotron-en"
+    h.data.update(CROWDED)  # memory filled between the restore check and the load
+    try:
+        await h.manager.start_safety()
+        await until(lambda: h.manager.active == "whistle" and h.safety.state == "ready")
+        stored = h.settings.read()
+        assert stored.engine == "nemotron-en" and stored.last_error["code"] == "restore_deferred"
+        assert h.safety.engine_id == "whistle" and h.manager.deferred == "nemotron-en"
+    finally:
+        await h.manager.stop()
+        await h.safety.close()
+
+
+async def test_a_fit_refusal_with_no_room_for_whistle_either_stays_blocked(tmp_path, monkeypatch):
+    h = make(tmp_path, monkeypatch, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    await h.manager.restore()
+    h.data["memoryCurrentBytes"] = 2900 * MIB
+    try:
+        await h.manager.start_safety()
+        await until(lambda: h.safety.phase == "configuration")
+        await h.manager.watch
+        assert h.manager.active == "nemotron-en" and h.settings.read().last_error is None
+    finally:
+        await h.manager.stop()
+        await h.safety.close()

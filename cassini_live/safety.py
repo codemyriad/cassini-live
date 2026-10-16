@@ -1,4 +1,10 @@
-"""One supervisor owns admission, shutdown and bounded automatic recovery."""
+"""One supervisor owns admission, shutdown and crash-only recovery.
+
+The kernel's cgroup limits protect the call (docs/proposals/0.8.0-instant-admission.md):
+a start is a memory fit check and a load, ready in load time; per-speaker admission and
+shedding live in the load governor; only a real crash (an OOM kill or the backend's
+failure circuit) stops captions and waits out a back-off.
+"""
 
 import asyncio
 import logging
@@ -7,38 +13,44 @@ import random
 import time
 from contextlib import suppress
 
-from . import catalog
+from . import __version__, catalog
 from .diagnostics import process_usage
-from .load import LoadGovernor, per_speaker_mib
+from .eligibility import workers_note
+from .load import THRESHOLDS, LoadGovernor, per_speaker_mib
 from .pool import CapacityError
-from .recovery import RecoveryJournal, RecoveryPolicy, recovery_problem
-from .resources import budget_problem, load_problem, pressure_problem, signature, snapshot
+from .recovery import RecoveryJournal, RecoveryPolicy
+from .resources import advice, snapshot, start_problem, static_problem
 
 LOGGER = logging.getLogger(__name__)
-
-
-def cpu_pressure_reason(previous, current, elapsed, lag):
-    """Quota frequency alone cannot distinguish tiny stalls from overload."""
-    if lag > 0.5:
-        return "Caption event loop is falling behind"
-    host = current.get("hostCpuPressure")
-    if host is None:
-        return "Host CPU pressure monitoring is unavailable"
-    if host >= 20:
-        return "Host CPU pressure is sustained"
-    periods = current["cpuPeriods"] - previous["cpuPeriods"]
-    throttled = current["throttledPeriods"] - previous["throttledPeriods"]
-    if periods > 0 and throttled / periods >= 0.8:
-        before, after = previous.get("throttledUsec"), current.get("throttledUsec")
-        if before is None or after is None or after < before:
-            return "Caption CPU quota pressure (severity unavailable)"
-        if (after - before) / 1e6 / max(0.001, elapsed) >= 0.2:
-            return "Caption CPU quota stalls are sustained"
-    return None
+# Trips 0.7.x had and 0.8.0 does not (its capacity check, CPU and memory pressure, limit
+# changes, the load-time memory estimate). Their cooldowns reflect a rule that is gone,
+# not a crash, and must not delay the first 0.8.0 start. OOM kills ("The caption memory
+# limit was exceeded"), the failure circuit and crashes while running or loading keep
+# theirs; so does "Capacity check passed", the 0.7.x ready reason a killed process leaves.
+LEGACY_TRIPS = (
+    "Capacity check did not establish",
+    "Caption event loop is falling behind",
+    "Host CPU pressure",
+    "Caption CPU quota",
+    "Resource limits changed",
+    "Resource pressure counters cannot be read",
+    "Caption memory budget is nearly exhausted",
+    "Caption process/thread budget is nearly exhausted",
+    "Host memory headroom cannot be established",
+    "Host memory is under pressure",
+    "Not enough free container memory to load",
+)
+# Retry-After while an engine loads. Measured warm loads take 1.2-1.9 s (specs.md:48); a
+# cold one can take up to start_timeout_s, so this only paces client retries.
+LOADING_RETRY_S = 5
 
 
 class ResourceRefused(RuntimeError):
     pass
+
+
+class TrackBudgetFull(ResourceRefused):
+    """The audio-track ceiling is reached: only the track asking goes without captions."""
 
 
 class TrackLease:
@@ -50,6 +62,20 @@ class TrackLease:
         if not self.released:
             self.owner.tracks.discard(self)
             self.released = True
+            self.owner._track_freed()
+
+
+def _legacy_trip(saved):
+    """A 0.7.x cooldown from a trip 0.8.0 no longer has, and nothing worse since. Only
+    the journal's current reason counts: lastTrip outlives the crash a later boot
+    detected (reason "Recovering after an interrupted caption process"), and a journal
+    any 0.8.0 boot has written (it records appVersion) is never a 0.7.x one."""
+    if "appVersion" in saved:
+        return False
+    if saved.get("engineRunning") or saved.get("attemptInProgress"):
+        return False  # a crash while serving or loading is honoured whatever the reason
+    reason = saved.get("reason")
+    return isinstance(reason, str) and reason.startswith(LEGACY_TRIPS)
 
 
 class SafetyController:
@@ -66,17 +92,20 @@ class SafetyController:
         wall_clock=time.time,
         jitter=random.random,
         fatal_exit=os._exit,
+        thresholds=THRESHOLDS,
     ):
         self.pool, self.assessment, self.service = pool, assessment, service
+        self.thresholds = thresholds
         self.reader, self.clock, self.wall_clock, self.jitter = reader, clock, wall_clock, jitter
         self.policy = policy or RecoveryPolicy()
         self.fatal_exit = fatal_exit
         self.journal = journal or RecoveryJournal()
-        self.state, self.reason = "blocked", "Capacity has not been established"
+        self.state, self.reason = "blocked", "Caption service has not started"
         self.phase = "idle"
         self.last_refusal = None
         self.last_trip = None
         self.cpu_health = {}
+        self.advice = []
         self.tracks = set()
         self.monitor = None
         self.lock = asyncio.Lock()
@@ -84,15 +113,18 @@ class SafetyController:
         self.max_tracks = 10
         self.desired_enabled = False
         self.auto_size = False
-        self.must_settle = False
         self.failures = 0
         self.next_attempt = 0
-        self.healthy_since = None
         self.admin_action = False
         self.first = asyncio.Event()
         self.wake = asyncio.Event()
         self.fresh = False
         self.attempt_started = None
+        # An administrator's capacity measurement holds the service; calls wait it out.
+        self.measuring = False
+        self.on_measured = None  # notified when a measurement ends, e.g. to republish
+        # oomKills when the engine last became ready: a restart past a later kill is refused.
+        self.oom_baseline = None
         self._outcome = None
         self.governor = None
         self._engine_cpu = None  # (pid, cpu seconds, clock) at the previous tick
@@ -103,22 +135,31 @@ class SafetyController:
         return getattr(self.pool, "engine_id", "whistle")
 
     def _hook(self, pool):
-        pool.resource_check = lambda: pressure_problem(self.reader())
-        pool.load_check = lambda: load_problem(self.reader(), self.engine_id)
-        # 0.7.3 observes only (0.8.0-instant-admission.md, step 4): nothing consults
-        # admit() and no transcriber is marked. The governor reads the backend's live
-        # transcribers from the 1 s tick, seats the ones it sees holding a lease and
-        # reports the decisions it would have taken. The seat ceiling is the backend's
-        # structural size until step 6 re-derives it from the engine threads.
+        pool.start_check = self._start_check
+        # Observe-only while the thresholds are provisional: transcribers ask admit() and
+        # are always admitted, and /status shows what would have been refused or shed.
         self.governor = LoadGovernor(
             ceiling=getattr(pool, "size", 0),
             per_speaker_mib=per_speaker_mib(self.engine_id),
-            observe_only=True,
+            thresholds=self.thresholds,
             transcribers=getattr(pool, "transcribers", None),
             clock=self.clock,
             wall_clock=self.wall_clock,
         )
+        self.governor.on_reopen = getattr(pool, "kick", None)
+        pool.governor = self.governor
         self._engine_cpu = None
+        # CASSINI_LIVE_WORKERS when it was clamped to this engine's CPU ceiling (advice).
+        self.workers_requested = None
+
+    def _start_check(self):
+        """Why the backend must not spawn an engine process now, or None. Consulted before
+        every spawn, restarts included: one model load inside a container the kernel has
+        just OOM-killed would only be killed again, and the next one must fit."""
+        data = self.reader()
+        if self.oom_baseline is not None and data["oomKills"] > self.oom_baseline:
+            return "The caption memory limit was exceeded"
+        return start_problem(data, self.engine_id, getattr(self.pool, "rss_mib", None))
 
     def replace_pool(self, pool):
         # Only a stopped controller may swap engines; the monitor owns the running pool.
@@ -141,21 +182,26 @@ class SafetyController:
         try:
             return await asyncio.wait_for(asyncio.shield(self._outcome), timeout)
         except TimeoutError:
-            return (False, "The capacity check did not finish in time")
+            return (False, "The speech engine did not load in time")
+
+    def _retry_after(self):
+        if self.state == "ready" and not self.measuring:
+            return 0
+        if self.measuring:
+            remaining = getattr(self.assessment, "remaining", lambda: self.policy.poll)
+            return max(1, int(remaining()))
+        if self.phase == "cooling_down":
+            return max(1, int(self.next_attempt - self.clock()))
+        if self.phase == "loading":
+            return LOADING_RETRY_S
+        return int(self.policy.poll)
 
     def status(self):
-        retry = max(0, self.next_attempt - self.clock())
-        if self.state in {"blocked", "recovering"}:
-            settle = self.policy.headroom_window if self.must_settle else 0
-            if self.healthy_since is not None:
-                settle = max(0, settle - (self.clock() - self.healthy_since))
-            retry = max(retry, settle, self.policy.poll)
-        else:
-            retry = 0
+        retry = self._retry_after()
         return {
             "state": self.state,
-            "phase": self.phase,
-            "reason": self.reason,
+            "phase": "measuring" if self.measuring else self.phase,
+            "reason": "Measuring caption capacity" if self.measuring else self.reason,
             "activeTracks": len(self.tracks),
             "maxTracks": self.max_tracks,
             "lastRefusal": self.last_refusal,
@@ -163,35 +209,47 @@ class SafetyController:
             "failures": self.failures,
             "adminActionRequired": self.admin_action,
             "automaticRecovery": self.desired_enabled,
-            "retryAfterSeconds": max(1, int(retry)) if self.state != "ready" else 0,
+            "retryAfterSeconds": retry,
             "nextAttemptAt": self.wall_clock() + retry if retry else None,
             "closingRooms": len(getattr(self.service, "closing", {})),
             "cpuHealth": self.cpu_health,
+            "advice": list(self.advice),
             "admission": self.governor.status(),
         }
 
     def require_ready(self):
         if self.state != "ready":
             raise ResourceRefused(self.reason)
+        if self.measuring:
+            raise ResourceRefused("Measuring caption capacity")
 
     def allow_room(self, rooms):
-        self.require_ready()
-        speakers = self.assessment.result.get("testedSpeakers", 0)
-        # Whistle's two-room cap predates the shared engine, which serves every tested speaker.
-        if catalog.get(self.engine_id).kind == "worker_pool":
-            speakers = min(2, speakers)
-        if rooms >= speakers:
-            self.last_refusal = "Caption room budget reached"
-            raise ResourceRefused(self.last_refusal)
-
-    def reserve_track(self):
+        # Load is decided per speaker when they speak (LoadGovernor.admit), not per room:
+        # a room opens while admission is closed and its first speaker hears why.
         self.require_ready()
         if len(self.tracks) >= self.max_tracks:
             self.last_refusal = "Caption audio-track budget reached"
-            raise ResourceRefused(self.last_refusal)
+            raise TrackBudgetFull(self.last_refusal)
+
+    def reserve_track(self):
+        """One audio track's share of the hard ceiling. Refused, only that participant
+        goes without captions: the room and its captioned speakers stay, and the room
+        asks again when a lease frees (_track_freed) or at the participant's next offer."""
+        self.require_ready()
+        if len(self.tracks) >= self.max_tracks:
+            self.last_refusal = "Caption audio-track budget reached"
+            raise TrackBudgetFull(self.last_refusal)
         lease = TrackLease(self)
         self.tracks.add(lease)
         return lease
+
+    def _track_freed(self):
+        if self.state != "ready" or len(self.tracks) >= self.max_tracks:
+            return
+        for client in list(getattr(self.service, "clients", {}).values()):
+            retry = getattr(client, "retry_refused_tracks", None)
+            if retry is not None:
+                retry()
 
     async def start(self, *, fresh=False):
         async with self.lock:
@@ -207,11 +265,33 @@ class SafetyController:
         # Do not hold the lifecycle lock during model loading: disable must cancel it.
         await self.first.wait()
 
-    async def recheck(self):
-        # A manual request cannot bypass the persisted cooldown or race a load.
-        if not self.desired_enabled:
-            raise ResourceRefused("Caption service is disabled")
-        self.wake.set()
+    async def measure(self, calls_starting=lambda: 0):
+        """Run an administrator's capacity measurement on the idle, ready engine. Calls are
+        refused from the moment it is claimed: `measuring` is set before the rooms and the
+        calls being set up are checked, with no await between, so a call either sees it or
+        is seen. Its result is displayed, never used as a gate."""
+        if self.state != "ready":
+            raise ResourceRefused(f"Captions are not ready: {self.reason}")
+        if self.measuring:
+            raise ResourceRefused("A capacity measurement is already running")
+        self.measuring = True
+        problem = None
+        if calls_starting() or getattr(self.service, "clients", None):
+            problem = "Measuring needs every captioned call to end first"
+        elif not self.pool.is_idle():
+            problem = "Captions are still in use"
+        if problem:
+            self.measuring = False
+            raise ResourceRefused(problem)
+        self.governor.measuring = True
+        self.assessment.start()
+        self.assessment.task.add_done_callback(self._measured)
+
+    def _measured(self, task):
+        self.measuring = False
+        self.governor.measuring = False
+        if not task.cancelled() and self.on_measured is not None:
+            self.on_measured()
 
     async def _pause(self, seconds):
         try:
@@ -226,6 +306,42 @@ class SafetyController:
             self.failures, deadline, pending, self.reason, self.last_trip, running=running
         )
 
+    def _restore(self, saved):
+        """Apply the journal at boot. A crash is counted once and waited out; neither a
+        0.7.x capacity-check cooldown nor an upgrade that stopped a load is a crash."""
+        self.failures = saved.get("failures", 0)
+        if isinstance(saved.get("lastTrip"), dict):
+            self.last_trip = saved["lastTrip"]
+        remaining = min(
+            self.policy.cap * 1.2,
+            max(0, saved.get("nextAttemptAt", 0) - self.wall_clock()),
+        )
+        crashed = saved.get("engineRunning") and not saved.get("attemptInProgress")
+        interrupted = bool(saved.get("attemptInProgress"))
+        clean = False
+        if _legacy_trip(saved):
+            LOGGER.info("Clearing a 0.7.x cooldown (%s) from the recovery journal", saved["reason"])
+            self.failures, remaining, crashed, interrupted, clean = 0, 0, False, False, True
+            self.last_trip = None  # rewritten at once, so no later boot can match it again
+        elif interrupted and saved.get("appVersion") != __version__:
+            # The container stopped mid-load for an upgrade, not because the load crashed.
+            LOGGER.info("Starting cleanly after an upgrade interrupted the previous load")
+            interrupted, clean = False, True
+        if crashed:
+            # The ready engine died without a clean stop; its run was uncounted.
+            self.failures = min(20, self.failures + 1)
+        if interrupted or crashed:
+            remaining = max(remaining, self.policy.delay(self.failures, self.jitter))
+        self.next_attempt = self.clock() + remaining
+        if remaining:
+            self.reason = "Recovering after an interrupted caption process"
+        if self.fresh:
+            self.fresh = False
+            self.failures, self.next_attempt = 0, 0
+            self._persist(False)
+        elif crashed or clean:
+            self._persist(False)  # Count this crash once, even if boot dies again.
+
     async def _supervise(self):
         try:
             await self.pool.close()
@@ -233,30 +349,7 @@ class SafetyController:
             # to forget the cooldown and load models repeatedly.
             while self.desired_enabled:
                 try:
-                    saved = self.journal.read()
-                    self.failures = saved.get("failures", 0)
-                    if isinstance(saved.get("lastTrip"), dict):
-                        self.last_trip = saved["lastTrip"]
-                    remaining = min(
-                        self.policy.cap * 1.2,
-                        max(0, saved.get("nextAttemptAt", 0) - self.wall_clock()),
-                    )
-                    crashed = saved.get("engineRunning") and not saved.get("attemptInProgress")
-                    if crashed:
-                        # The ready engine died without a clean stop; its run was uncounted.
-                        self.failures = min(20, self.failures + 1)
-                    if saved.get("attemptInProgress") or crashed:
-                        remaining = max(remaining, self.policy.delay(self.failures, self.jitter))
-                    self.next_attempt = self.clock() + remaining
-                    self.must_settle = bool(remaining or self.failures)
-                    if remaining:
-                        self.reason = "Recovering after an interrupted caption process"
-                    if self.fresh:
-                        self.fresh = False
-                        self.failures, self.next_attempt, self.must_settle = 0, 0, False
-                        self._persist(False)
-                    elif crashed:
-                        self._persist(False)  # Count this crash once, even if boot dies again.
+                    self._restore(self.journal.read())
                     break
                 except (OSError, ValueError, TypeError):
                     self.state, self.phase = "blocked", "configuration"
@@ -266,112 +359,125 @@ class SafetyController:
                     self.first.set()
                     await self._pause(self.policy.poll)
             while self.desired_enabled:
+                pause = self.policy.poll
                 try:
                     data = self.reader()
-                    if self.auto_size and self.pool.closed:
-                        self.pool.resize(
-                            catalog.worker_ceiling(self.engine_id, data["effectiveCpus"])
-                        )
-                    problem = budget_problem(data, self.pool.size, self.engine_id)
-                    if not problem and not data.get("pressureAvailable", False):
-                        problem = (
-                            "Linux PSI pressure statistics are unavailable; enable and expose PSI"
-                        )
-                    if not problem and data.get("hostCpuPressure") is None:
-                        problem = (
-                            "Host CPU PSI statistics are unavailable; expose /proc/pressure/cpu"
+                    self.advice = advice(data)
+                    if self.pool.closed and data.get("effectiveCpus"):
+                        self._size_pool(data["effectiveCpus"])
+                    if self.workers_requested is not None:
+                        ceiling = catalog.worker_ceiling(self.engine_id, data["effectiveCpus"])
+                        if note := workers_note(self.engine_id, self.workers_requested, ceiling):
+                            self.advice.append(note)
+                    problem = static_problem(data, self.pool.size, self.engine_id)
+                    if not problem:
+                        whistle = catalog.get(self.engine_id).kind == "worker_pool"
+                        problem = start_problem(
+                            data,
+                            self.engine_id,
+                            getattr(self.pool, "rss_mib", None),
+                            workers=self.pool.size if whistle else 1,
                         )
                     if problem:
-                        transient = problem == pressure_problem(data) and data.get(
-                            "monitoringAvailable"
-                        )
-                        self.state = "recovering" if transient else "blocked"
-                        self.phase = "waiting_headroom" if transient else "configuration"
-                        self.reason, self.admin_action = problem, not transient
-                        self.healthy_since = None
-                        self.must_settle = True
-                        if not transient:
-                            self._resolve(False, problem)
+                        # Configuration, not a failure: nothing was loaded, nothing counts.
+                        self.state, self.phase = "blocked", "configuration"
+                        self.reason, self.admin_action = problem, True
+                        self._resolve(False, problem)
+                    elif self.clock() < self.next_attempt:
+                        self.state, self.phase = "recovering", "cooling_down"
+                        self.admin_action = False
+                        # Retry at the deadline itself, not at the next poll after it.
+                        pause = min(pause, max(0.01, self.next_attempt - self.clock()))
                     else:
                         self.admin_action = False
-                        headroom = recovery_problem(data, self.pool.size, self.engine_id)
-                        if headroom:
-                            self.healthy_since = None
-                            self.must_settle = True
-                        elif self.healthy_since is None:
-                            self.healthy_since = self.clock()
-                        window = self.policy.headroom_window if self.must_settle else 0
-                        waiting = (
-                            headroom
-                            or self.clock() < self.next_attempt
-                            or self.clock()
-                            - (
-                                self.healthy_since
-                                if self.healthy_since is not None
-                                else self.clock()
-                            )
-                            < window
-                        )
-                        if waiting:
-                            self.state, self.phase = "recovering", "waiting_headroom"
-                            if headroom:
-                                self.reason = headroom
-                            elif self.clock() < self.next_attempt:
-                                self.phase = "cooling_down"
-                            else:
-                                self.reason = "Waiting for sustained resource headroom"
-                        else:
-                            await self._attempt(data)
-                            continue
+                        await self._load(data)
+                        continue
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     self.state, self.phase = "blocked", "configuration"
                     self.reason = "Resource monitoring or recovery storage is unavailable"
                     self.admin_action = True
-                    self.healthy_since = None
                     self._resolve(False, self.reason)
                 self.first.set()
-                await self._pause(self.policy.poll)
+                await self._pause(pause)
         finally:
             self.first.set()
             await self._teardown()
 
-    async def _attempt(self, data):
+    def _size_pool(self, cpus):
+        """The CPU ceiling, or CASSINI_LIVE_WORKERS clamped to it with a warning: asking
+        for more simultaneous speakers than the CPUs serve must not block captions."""
+        ceiling = catalog.worker_ceiling(self.engine_id, cpus)
+        if self.auto_size:
+            self.pool.resize(ceiling)
+        elif self.pool.size > ceiling:
+            LOGGER.warning(
+                "CASSINI_LIVE_WORKERS=%d is above the CPU ceiling of %d for %s; using %d",
+                self.pool.size,
+                ceiling,
+                catalog.get(self.engine_id).name,
+                ceiling,
+            )
+            self.workers_requested = self.pool.size
+            self.pool.resize(ceiling)
+
+    async def _load(self, data):
         self.failures = min(20, self.failures + 1)
         # Crash guard: an OOM restart during the load waits this out.
         self.next_attempt = self.clock() + self.policy.delay(self.failures, self.jitter)
-        self.reason = "Checking caption capacity"
+        self.reason = f"Loading {catalog.get(self.engine_id).name}"
         self._persist(True)  # Must succeed before any expensive allocation.
         self.attempt_started = self.clock()
-        self.state, self.phase = "checking", "loading"
-        self.initial = data
+        self.state, self.phase = "recovering", "loading"
+        self.oom_baseline = data["oomKills"]
         try:
             # Generation fences and complete teardown are prerequisites for reuse.
             async with asyncio.timeout(catalog.get(self.engine_id).requirements.start_timeout_s):
                 await self.pool.start()
-            self.governor.ceiling = self.pool.size  # auto_size may have resized the backend
-            self.assessment.start()
-            self.phase = "calibrating"
-            self.first.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            LOGGER.warning("Speech engine did not load (%s)", type(error).__name__)
+            # A refused load names its reason; an administrator's rollback message shows it.
+            await self.trip(
+                str(error)
+                if isinstance(error, CapacityError) and str(error)
+                else f"{catalog.get(self.engine_id).name} could not be loaded"
+            )
+            return
+        try:
+            self.initial = self.reader()
+            self.oom_baseline = self.initial["oomKills"]
+        except Exception:
+            # Monitoring broke right after the load. Never leave a running engine behind a
+            # blocked state, or the next poll starts it again: stop it, and the attempt
+            # was no crash.
+            await self.pool.close()
+            self.failures, self.next_attempt = max(0, self.failures - 1), 0
+            with suppress(OSError, ValueError):
+                self._persist(False)
+            raise
+        self.governor.ceiling = self.pool.size  # auto_size may have resized the backend
+        self.state, self.phase, self.reason = "ready", "ready", "Captions are ready"
+        # The attempt was counted as a failure in case it crashed; it did not.
+        self.failures, self.next_attempt = max(0, self.failures - 1), 0
+        self._persist(False, running=True)
+        self._resolve(True, self.reason)
+        self.first.set()
+        try:
             await self._watch()
         except asyncio.CancelledError:
             raise
         except Exception as error:
             LOGGER.warning("Caption supervision failed (%s)", type(error).__name__)
-            # A refused load names its reason; an administrator's rollback message shows it.
-            await self.trip(
-                str(error)
-                if isinstance(error, CapacityError) and str(error)
-                else "Recognition workers or resource monitoring failed"
-            )
+            await self.trip("Recognition workers or resource monitoring failed")
 
     async def _watch(self):
         previous = self.initial
         previous_now = self.clock()
-        pressure_ticks = 0
         expected = self.clock() + self.policy.monitor
-        ready_since = None
+        ready_since = previous_now
         while self.desired_enabled:
             await asyncio.sleep(max(0, expected - self.clock()))
             now = self.clock()
@@ -380,15 +486,10 @@ class SafetyController:
             current = self.reader()
             self._observe(current, now)
             tick_ms = round((time.perf_counter() - started) * 1000, 2)
-            problem = pressure_problem(current)
-            if signature(current) != signature(self.initial):
-                await self.trip("Resource limits changed; reassessing capacity automatically")
-                return
             if current["oomKills"] > previous["oomKills"]:
                 await self.trip("The caption memory limit was exceeded")
                 return
             elapsed = max(0.001, now - previous_now)
-            cpu_problem = cpu_pressure_reason(previous, current, elapsed, lag)
             before, after = previous.get("throttledUsec"), current.get("throttledUsec")
             self.cpu_health = {
                 "eventLoopLagMs": round(lag * 1000, 1),
@@ -401,38 +502,20 @@ class SafetyController:
                 # Snapshot, duty sample and governor tick; the design budgets 5 ms.
                 "monitorTickMs": tick_ms,
             }
-            pressure_ticks = pressure_ticks + 1 if cpu_problem else 0
-            if problem or pressure_ticks >= 3 or self.pool.failure_circuit_open:
-                await self.trip(problem or cpu_problem or "Repeated recognition worker failures")
+            if self.pool.failure_circuit_open:
+                await self.trip("Repeated recognition worker failures")
                 return
             previous, previous_now = current, now
-            if self.state == "checking" and self.assessment.task.done():
-                report = self.assessment.result
-                if report["state"] not in {"passed", "limited"} or not report["testedSpeakers"]:
-                    await self.trip(
-                        "Capacity check did not establish a safe speaking budget", insufficient=True
-                    )
-                    return
-                self.pool.admission_limit = report["testedSpeakers"]
-                self.state, self.phase = "ready", "ready"
-                self.reason = "Capacity check passed"
-                # The attempt was counted as a failure in case it crashed; it did not.
-                self.failures, self.next_attempt = max(0, self.failures - 1), 0
-                self._persist(False, running=True)
-                self._resolve(True, self.reason)
-                ready_since = now
-            elif ready_since is not None and now - ready_since >= self.policy.stable_window:
+            if ready_since is not None and now - ready_since >= self.policy.stable_window:
                 self.failures, self.next_attempt = 0, 0
                 self._persist(False, running=True)  # Still running: a later crash must count.
                 ready_since = None
-            # Excess demand is handled by bounded queues and admission, not a
-            # service-wide restart. Real resource pressure remains monitored.
+            # CPU pressure, limit changes and lag are not trips: the governor holds and
+            # sheds speakers on them, and the next tick simply reads the new numbers.
 
     def _observe(self, current, now):
-        """Feed the governor one sample: the snapshot plus the engine host's duty. In
-        observe-only mode this changes nothing a caller sees beyond /status."""
-        task = getattr(self.assessment, "task", None)
-        self.governor.measuring = bool(task) and not task.done()
+        """Feed the governor one sample: the snapshot plus the engine host's duty."""
+        self.governor.measuring = self.measuring
         self.governor.tick({**current, "engineDuty": self._engine_duty(now)}, now)
 
     def _engine_duty(self, now):
@@ -454,16 +537,12 @@ class SafetyController:
         threads = getattr(self.pool, "threads", 1)
         return round(max(0.0, cpu - previous[1]) / max(0.001, now - previous[2]) / threads, 3)
 
-    async def trip(self, reason, *, insufficient=False):
+    async def trip(self, reason):
         if self.state == "ready":
             self.failures = min(20, self.failures + 1)  # A running engine's attempt was uncounted.
         self.state, self.phase, self.reason = "recovering", "cooling_down", reason
-        self.healthy_since = None
-        self.must_settle = True
         self.failures = max(1, self.failures)
         delay = self.policy.delay(self.failures, self.jitter)
-        if insufficient:
-            delay = max(delay, self.policy.insufficient)
         self.next_attempt = self.clock() + delay
         self._resolve(False, reason)
         # Rooms close silently otherwise; the reason must outlive recovery.
@@ -483,6 +562,7 @@ class SafetyController:
     async def _teardown(self):
         await self.pool.close()
         await self.assessment.interrupt()
+        self.measuring = False
         if self.service is not None:
             # Shielded, tracked room teardown must finish before workers reopen.
             try:
@@ -506,7 +586,7 @@ class SafetyController:
 
     async def _close(self, reason):
         async with self.lock:
-            if self.state == "checking":
+            if self.phase == "loading":
                 # A stop is not a crash: undo the attempt's provisional failure and deadline.
                 self.failures, self.next_attempt = max(0, self.failures - 1), 0
             self.desired_enabled = False

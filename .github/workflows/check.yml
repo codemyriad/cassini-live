@@ -42,7 +42,7 @@ jobs:
       - run: >-
           docker run --rm --network none --entrypoint python cassini-live:test
           -c 'import needle; needle.Whistle(weights="/opt/whistle/whistle.cact"); print("Whistle ready offline")'
-      - name: Refuse recognition without enforced resource limits
+      - name: Refuse to load an engine without finite cgroup limits
         run: >-
           docker run --rm --network none --entrypoint python cassini-live:test
           -c 'import asyncio; from cassini_live.pool import WorkerPool; from cassini_live.capacity import CapacityAssessment; from cassini_live.safety import SafetyController; p=WorkerPool(2); s=SafetyController(p,CapacityAssessment(p)); asyncio.run(s.start()); assert s.state == "blocked" and not p.workers; print(s.status())'
