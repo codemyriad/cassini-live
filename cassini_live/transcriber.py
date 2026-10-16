@@ -59,7 +59,8 @@ class WhistleTranscriber:
         # still waiting for its result, and when the current lease was granted.
         self.pending_since = None
         self.lease_at = None
-        # Hold-off and shed marks, written from step 8 on; nothing writes them yet.
+        # Hold-off after a shed or a lag/CPU refusal, and the shed mark the load governor's
+        # tick writes; this task acts on the mark at its next piece, never the tick itself.
         self.paused_until = None
         self.shed_reason = None
         self.noticed_at = None  # monotonic time of the last paused notice
@@ -106,6 +107,17 @@ class WhistleTranscriber:
             await self._notify_paused()
         else:
             await self._clear_preview()
+
+    async def _shed(self):
+        """The governor chose this speaker to relieve a sustained backlog. Acted on here, in
+        the transcriber's own task, so no in-flight engine request is preempted: the segment
+        ends normally (its text is kept), the lease goes, and the speaker is held off."""
+        self.shed_reason = None
+        await self._finish("shed")
+        self._note_drop()  # this piece is not decoded
+        if self.governor is not None:
+            self.governor.pause(self)
+        await self._notify_paused()
 
     async def _notify_paused(self):
         if self.pending == PAUSED_NOTICE:
@@ -219,6 +231,9 @@ class WhistleTranscriber:
         self.pool.stream_ends[reason] += 1
 
     async def _decode_audio(self, chunk):
+        if self.shed_reason is not None:
+            await self._shed()
+            return
         offset = 0
         while offset < len(chunk.samples):
             if self.worker is None:
@@ -448,6 +463,9 @@ class StreamTranscriber(WhistleTranscriber):
         await self._release(healthy=True)
 
     async def _decode_audio(self, chunk):
+        if self.shed_reason is not None:
+            await self._shed()  # commits and frees the slot; the native stream stays open
+            return
         if self.slot is None:
             await self._admit(timeout=self.SLOT_WAIT_S)
             self.slot = await self.pool.acquire_slot(timeout=self.SLOT_WAIT_S)

@@ -491,3 +491,46 @@ async def test_a_closed_track_gives_its_seat_back():
     assert track in gov.seats
     await track._run()
     assert track not in gov.seats
+
+
+async def test_a_shed_speaker_ends_its_segment_keeps_its_stream_and_resumes(monkeypatch):
+    from cassini_live.transcriber import AdmissionRefused
+
+    fake = await backend()
+    gov = governed(fake, monkeypatch, ceiling=3)
+    captions = asyncio.Queue()
+    first = fake.transcriber("a", "en", captions)
+    newest = fake.transcriber("b", "en", captions)
+    await first._decode_audio(chunk(0))
+    await newest._decode_audio(chunk(0))
+    stream = newest.engine_stream
+    assert newest.slot is not None and newest in gov.seats and fake.busy == 2
+    newest.shed_reason = "lag"  # what the governor's tick writes; the tick never acts
+    await newest._decode_audio(chunk(1))
+    # The segment ended with its text, the slot is free, the native stream stays open.
+    assert newest.slot is None and fake.busy == 1 and fake.stream_ends["shed"] == 1
+    assert newest.engine_stream is stream and stream.alive
+    assert [c[0] for c in stream.calls] == ["audio", "commit"]
+    assert newest.shed_reason is None and newest not in gov.seats
+    assert newest.paused_until > time.monotonic() and newest.lost_chunks == 1
+    messages = [e.message for e in events(captions)]
+    assert messages[-2:] == ["w", PAUSED_NOTICE]
+    # During the hold-off every piece is refused at once, without engine traffic.
+    with pytest.raises(AdmissionRefused) as refused:
+        await newest._decode_audio(chunk(2))
+    assert refused.value.reason == "shed" and stream.calls[-1] == ("commit",)
+    # After it, the speaker asks again like a new one and continues on the same stream.
+    newest.paused_until = time.monotonic() - 0.01
+    await newest._decode_audio(chunk(3))
+    assert newest in gov.seats and newest.slot is not None
+    assert newest.engine_stream is stream and stream.calls[-1] == ("audio", CHUNK)
+
+
+async def test_a_shed_mark_without_a_lease_still_holds_the_speaker_off(monkeypatch):
+    fake = await backend()
+    gov = governed(fake, monkeypatch, ceiling=3)
+    track = fake.transcriber("a", "en", asyncio.Queue())
+    gov.admit(track)
+    track.shed_reason = "lag"  # the segment ended between the tick and this piece
+    await track._decode_audio(chunk(0))
+    assert fake.streams == [] and track.paused_until is not None and track not in gov.seats

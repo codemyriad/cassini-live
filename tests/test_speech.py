@@ -399,3 +399,31 @@ async def test_whistle_asks_admission_before_taking_a_worker(monkeypatch):
     notice = track.transcripts.get_nowait()
     assert not notice.final and notice.message == transcriber.PAUSED_NOTICE
     await pool.close()
+
+
+async def test_a_shed_whistle_speaker_finishes_its_lease_and_is_held_off():
+    from cassini_live.load import LoadGovernor, Thresholds
+
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    await pool.start()
+    pool.governor = LoadGovernor(
+        ceiling=2,
+        thresholds=Thresholds(provisional=False, measured_on="2026-10-16"),
+        transcribers=pool.transcribers,
+    )
+    pool.governor.tick({})
+    track = WhistleTranscriber("b", "en", asyncio.Queue(), pool=pool)
+    await track._decode_audio(SpeechChunk(np.ones(16000, dtype="<f4"), sequence=0))
+    worker = track.worker
+    assert worker is not None and track in pool.governor.seats
+    track.shed_reason = "lag"
+    await track._decode_audio(SpeechChunk(np.ones(16000, dtype="<f4"), sequence=1))
+    # The lease ended normally ("end" sent, its text emitted) and the worker is free.
+    assert track.worker is None and pool.idle.qsize() == 2 and pool.stream_ends["shed"] == 1
+    assert [m["type"] for m in worker.sent] == ["start", "audio", "end"]
+    assert track.paused_until is not None and track not in pool.governor.seats
+    messages = []
+    while not track.transcripts.empty():
+        messages.append(track.transcripts.get_nowait().message)
+    assert messages[-1] == transcriber.PAUSED_NOTICE
+    await pool.close()
