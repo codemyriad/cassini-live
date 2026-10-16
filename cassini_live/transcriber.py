@@ -355,8 +355,10 @@ class WhistleTranscriber:
             # A cancelled decoder leaves its queued chunks behind; none is pending any more.
             self.pending_since = None
             await self._release(healthy=False)
-            if self.governor is not None:
-                self.governor.release(self)  # a closed track gives its seat back at once
+            if self.governor is not None and not self.keep_track:
+                # A closed track gives its seat back at once; a language change restarts
+                # this task on the same track and keeps the seat.
+                self.governor.release(self)
 
     async def shutdown(self):
         async with self.lock:

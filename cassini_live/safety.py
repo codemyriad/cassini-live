@@ -21,9 +21,10 @@ from .recovery import RecoveryJournal, RecoveryPolicy
 from .resources import advice, snapshot, start_problem, static_problem
 
 LOGGER = logging.getLogger(__name__)
-# 0.7.x tripped on its own automatic capacity check. A cooldown it left in the journal
-# reflects that check, not a crash, and must not delay the first 0.8.0 start.
-LEGACY_CHECK_REASONS = ("Capacity check", "Checking caption capacity")
+# 0.7.x tripped when its automatic capacity check failed. That cooldown reflects the
+# check, not a crash, and must not delay the first 0.8.0 start. Its ready reason,
+# "Capacity check passed", is no trip: a process killed while serving stays a crash.
+LEGACY_CHECK_TRIP = "Capacity check did not establish"
 # Retry-After while an engine loads. Measured warm loads take 1.2-1.9 s (specs.md:48); a
 # cold one can take up to start_timeout_s, so this only paces client retries.
 LOADING_RETRY_S = 5
@@ -45,9 +46,12 @@ class TrackLease:
 
 
 def _legacy_check(saved):
+    """A 0.7.x cooldown after its capacity check failed, and nothing worse since."""
+    if saved.get("engineRunning") or saved.get("attemptInProgress"):
+        return False  # a crash while serving or loading is honoured whatever the reason
     trip = saved.get("lastTrip")
     reasons = (saved.get("reason"), trip.get("reason") if isinstance(trip, dict) else None)
-    return any(isinstance(r, str) and r.startswith(LEGACY_CHECK_REASONS) for r in reasons)
+    return any(isinstance(r, str) and r.startswith(LEGACY_CHECK_TRIP) for r in reasons)
 
 
 class SafetyController:

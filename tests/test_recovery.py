@@ -543,6 +543,52 @@ async def test_a_07x_capacity_check_cooldown_does_not_delay_the_first_start(harn
         await guard.close()
 
 
+async def test_a_07x_engine_killed_while_serving_still_counts(harness, tmp_path):
+    # 0.7.x wrote "Capacity check passed" while ready; a kill then is a crash, not a check.
+    guard, pool, data, clock = harness
+    guard.journal = RecoveryJournal(tmp_path / "recovery.json")
+    trip = {"reason": "Capacity check did not establish a safe speaking budget", "at": 1}
+    guard.journal.write(1, clock(), False, "Capacity check passed", trip, running=True)
+    try:
+        await guard.start()
+        assert guard.state == "recovering" and guard.phase == "cooling_down"
+        assert guard.failures == 2
+        assert guard.next_attempt - clock() == guard.policy.delay(2, lambda: 0)
+    finally:
+        await guard.close()
+
+
+async def test_a_language_change_keeps_the_seat():
+    from cassini_live.load import LoadGovernor, Thresholds
+    from tests.fakes_engine import FakeBackend
+
+    backend = FakeBackend("nemotron-en", 2)
+    backend.governor = LoadGovernor(
+        ceiling=2,
+        thresholds=Thresholds(provisional=False, measured_on="2026-10-16"),
+        transcribers=backend.transcribers,
+    )
+    track = backend.transcriber("s", "en", asyncio.Queue())
+
+    class Ended:
+        async def receive(self):
+            from aiortc.mediastreams import MediaStreamError
+
+            raise MediaStreamError
+
+        def stop(self):
+            pass
+
+    track.stream = Ended()
+    backend.governor.admit(track)
+    track.keep_track = True  # what set_language sets around the restart
+    await track._run()
+    assert track in backend.governor.seats
+    track.keep_track = False
+    await track._run()
+    assert track not in backend.governor.seats
+
+
 @pytest.mark.parametrize("version,waits", [("0.7.2", False), (None, False), (__version__, True)])
 async def test_an_upgrade_that_stopped_a_load_starts_cleanly(harness, tmp_path, version, waits):
     guard, pool, data, clock = harness
