@@ -15,7 +15,6 @@ from contextlib import suppress
 
 from . import __version__, catalog
 from .diagnostics import process_usage
-from .eligibility import workers_note
 from .load import THRESHOLDS, LoadGovernor, per_speaker_mib
 from .pool import CapacityError
 from .recovery import RecoveryJournal, RecoveryPolicy
@@ -125,7 +124,6 @@ class SafetyController:
         self.initial = None
         self.max_tracks = MAX_TRACKS
         self.desired_enabled = False
-        self.auto_size = False
         self.failures = 0
         self.next_attempt = 0
         self.admin_action = False
@@ -162,8 +160,6 @@ class SafetyController:
         self.governor.on_reopen = getattr(pool, "kick", None)
         pool.governor = self.governor
         self._engine_cpu = None
-        # CASSINI_LIVE_WORKERS when it was clamped to this engine's CPU ceiling (advice).
-        self.workers_requested = None
 
     def _start_check(self):
         """Why the backend must not spawn an engine process now, or None. Consulted before
@@ -378,10 +374,6 @@ class SafetyController:
                     self.advice = advice(data)
                     if self.pool.closed and data.get("effectiveCpus"):
                         self._size_pool(data["effectiveCpus"])
-                    if self.workers_requested is not None:
-                        ceiling = catalog.worker_ceiling(self.engine_id, data["effectiveCpus"])
-                        if note := workers_note(self.engine_id, self.workers_requested, ceiling):
-                            self.advice.append(note)
                     problem = static_problem(data, self.pool.size, self.engine_id)
                     if not problem:
                         whistle = catalog.get(self.engine_id).kind == "worker_pool"
@@ -419,21 +411,8 @@ class SafetyController:
             await self._teardown()
 
     def _size_pool(self, cpus):
-        """The CPU ceiling, or CASSINI_LIVE_WORKERS clamped to it with a warning: asking
-        for more simultaneous speakers than the CPUs serve must not block captions."""
-        ceiling = catalog.worker_ceiling(self.engine_id, cpus)
-        if self.auto_size:
-            self.pool.resize(ceiling)
-        elif self.pool.size > ceiling:
-            LOGGER.warning(
-                "CASSINI_LIVE_WORKERS=%d is above the CPU ceiling of %d for %s; using %d",
-                self.pool.size,
-                ceiling,
-                catalog.get(self.engine_id).name,
-                ceiling,
-            )
-            self.workers_requested = self.pool.size
-            self.pool.resize(ceiling)
+        """Size the backend to this engine's ceiling for the container's CPU limit."""
+        self.pool.resize(catalog.worker_ceiling(self.engine_id, cpus))
 
     async def _load(self, data):
         self.failures = min(20, self.failures + 1)
@@ -471,7 +450,7 @@ class SafetyController:
             with suppress(OSError, ValueError):
                 self._persist(False)
             raise
-        self.governor.ceiling = self.pool.size  # auto_size may have resized the backend
+        self.governor.ceiling = self.pool.size  # _size_pool may have resized the backend
         self.state, self.phase, self.reason = "ready", "ready", "Captions are ready"
         # The attempt was counted as a failure in case it crashed; it did not.
         self.failures, self.next_attempt = max(0, self.failures - 1), 0

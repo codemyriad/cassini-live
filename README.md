@@ -67,6 +67,11 @@ failures (container restarts preserve them), and becomes available again
 automatically. An interrupted call may need captions toggled back on.
 See [load, admission and capacity](docs/capacity.md).
 
+Changes in 0.8.2:
+
+* `CASSINI_LIVE_WORKERS` is gone: Cassini Live sizes itself from the CPU limit;
+  a leftover value is ignored. See [upgrading to 0.8.2](docs/install.md#upgrading-to-082).
+
 Changes in 0.8.1:
 
 * Calls with many participants: up to 24 open microphones per server (was 10),
@@ -125,7 +130,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.8.1 .`.
+`docker build -t cassini-live:0.8.2 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

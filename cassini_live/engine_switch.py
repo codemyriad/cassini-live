@@ -194,12 +194,8 @@ class EngineManager:
             return 1.0
 
     def _size(self, engine_id):
-        # With a shared host, CASSINI_LIVE_WORKERS is the speaker ceiling (docs/capacity.md),
-        # clamped to the CPU ceiling: asking for more must not block captions.
-        ceiling = catalog.worker_ceiling(engine_id, self._cpus())
-        if self.config.workers_explicit:
-            return min(self.config.workers, ceiling)
-        return ceiling
+        # Always the CPU ceiling (docs/capacity.md); admission sheds on live load below it.
+        return catalog.worker_ceiling(engine_id, self._cpus())
 
     def _backend(self, engine_id):
         engine = catalog.get(engine_id)
@@ -706,13 +702,6 @@ class EngineManager:
         progress = self.store.progress(engine_id)
         result = self._assess(engine_id, facts)
         reasons, advisory = list(result.reasons), result.advisory
-        if self.config.workers_explicit and (
-            note := eligibility.workers_note(
-                engine_id, self.config.workers, catalog.worker_ceiling(engine_id, self._cpus())
-            )
-        ):
-            reasons.append(Reason("workers", note))
-            advisory = advisory or result.eligible
         memory = catalog.memory_floor_mib(engine_id, self._size(engine_id))
         return {
             "id": engine.id,

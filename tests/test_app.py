@@ -123,7 +123,7 @@ async def test_restart_restores_enabled_state_and_preloads_workers():
     app = create_app(config, pool, service, nc_factory=Nextcloud, safety_factory=safe_factory)
     async with app.router.lifespan_context(app):
         assert service.enabled
-        assert pool.idle.qsize() == 1
+        assert pool.idle.qsize() == pool.size == 2  # the CPU ceiling for SAFE limits
         service.discover.assert_awaited_once()
     assert pool.closed and not service.enabled
 
@@ -189,7 +189,7 @@ async def test_startup_connection_failure_recovers_without_admin(monkeypatch):
         async with asyncio.timeout(2):
             while app.state.safety.state != "ready":
                 await asyncio.sleep(0.005)
-        assert service.enabled and len(pool.workers) == 1
+        assert service.enabled and len(pool.workers) == pool.size
         assert service.discover.await_count == 2
     assert pool.closed
 

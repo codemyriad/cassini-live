@@ -419,13 +419,12 @@ async def test_fresh_start_ignores_cooldown_but_not_budget(passing):
     await guard.close()
 
 
-async def test_auto_size_resizes_through_the_backend(passing):
+async def test_the_backend_is_sized_to_the_cpu_ceiling(passing):
     from tests.fakes_engine import FakeBackend
 
     data = {**SAFE, "memoryLimitBytes": 3072 * MIB}
     backend = FakeBackend("nemotron-en", 1)
     guard = engine_guard(backend, data)
-    guard.auto_size = True
     await guard.start()
     await guard.wait_outcome(2)
     assert backend.size == 4  # 3 recognizer threads on 4 CPUs, two seats each, capped at four

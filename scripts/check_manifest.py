@@ -24,7 +24,6 @@ def main():
     assert variables == {
         "CASSINI_TALK_SIGNALING_INTERNAL_SECRET",
         "CASSINI_TALK_HPB_URL",
-        "CASSINI_LIVE_WORKERS",
         "CASSINI_LIVE_DEBUG_VIDEO",
     }
     routes = info.findall("external-app/routes/route")
