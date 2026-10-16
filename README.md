@@ -12,11 +12,18 @@ If the machine cannot keep up, Cassini Live should refuse to caption.
 
 ## Where it stands
 
-**0.7.2 is a development release.** It adds a choice of speech engine, including
+**0.7.3 is a development release.** It adds a choice of speech engine, including
 two optional, more accurate NVIDIA Nemotron engines downloaded on demand, on top of
 automatic recovery after resource pressure, worker handoffs that prefer pauses in
 speech, and an optional dashboard inside the call. Captions and the dashboard have run in a real Talk browser call
 with recorded speech. Validation in everyday meetings is still needed.
+
+0.7.3 is the observe-only instrumentation build for the planned
+[instant-admission redesign](docs/proposals/0.8.0-instant-admission.md): it
+measures live caption lag, memory headroom and CPU stall every second, reports
+them under `resourceSafety.admission` in `/status` and in
+`python -m cassini_live.capacity --watch N`, and changes no behaviour. The
+staging lag measurement sizes the 0.8.0 thresholds from these numbers.
 
 * One speech engine serves the whole server. Administrators choose it under
   **Administration settings → Assistant → Cassini Live**. The **?** next to the
@@ -87,7 +94,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.7.2 .`.
+`docker build -t cassini-live:0.7.3 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

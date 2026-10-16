@@ -1,5 +1,24 @@
 # Verification for 0.6.0
 
+## 0.7.3 lag measurement (staging)
+
+Not yet run. Staging validation plan 1 of the
+[0.8.0 design](proposals/0.8.0-instant-admission.md): during a real Talk call,
+`docker exec nc_app_live_transcription python -m cassini_live.capacity --watch 600
+> lag.jsonl` with 1, then 2, then 3 simultaneous speakers reading aloud for at least
+60 seconds each; the 2-speaker run again with a concurrent video call and once
+with `stress-ng --cpu 4 --timeout 90` on the host; then the admin measurement at
+1-3 speakers at 1.3x and 1.0x. One row per run from the JSON lines (maxima over
+the run unless stated). The thresholds derived from them go into `load.Thresholds`
+with `measured_on` set.
+
+| Run | Speakers | Engine | lagSeconds | lagSustainedSeconds | captionAgeSeconds | p95RequestSeconds | cpuStall | cpuPressureAvg10 | engineDuty | memoryUsedMiB | memoryHeadroomMiB (min) | droppedSpeechChunks | capacityWaits | hostRestarts | tickMs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | | | | | | | | | | | | | | |
+
+Derived: `lag_admit`, `lag_shed`, `cpu_stall_admit`, per-speaker memory delta,
+`SUPERVISOR_MARGIN`, `seat_idle_s`. Tick budget: `tickMs` < 5 ms.
+
 ## Diagnostic video
 
 Release checks: 114 tests passed; Ruff, manifest validation, source packaging

@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -11,39 +10,13 @@ import weakref
 from collections import Counter, deque
 from contextlib import suppress
 
+from .load import LagMeter
+
 LOGGER = logging.getLogger(__name__)
 
 
 class CapacityError(RuntimeError):
     pass
-
-
-class _LagMeter:
-    """Per-request latency: capture to result, recorded by the transcribers.
-
-    Measurement only (0.8.0-instant-admission.md, step 3); load.LagMeter replaces it
-    in step 4. Status reports the last value and the p95 of the recent window.
-    """
-
-    # 256 results is about 20 s of requests with MAX_STREAMS (12) speakers each
-    # sending one second of audio per request. Unjustified: the staging lag run
-    # decides how far back the p95 should look.
-    WINDOW = 256
-
-    def __init__(self):
-        self.samples = deque(maxlen=self.WINDOW)
-
-    def record(self, seconds):
-        self.samples.append(seconds)
-
-    def last(self):
-        return self.samples[-1] if self.samples else 0.0
-
-    def p95(self):
-        if not self.samples:
-            return 0.0
-        ordered = sorted(self.samples)
-        return ordered[math.ceil(0.95 * len(ordered)) - 1]  # nearest rank
 
 
 class Worker:
@@ -108,6 +81,8 @@ class Worker:
 class WorkerPool:
     engine_id = "whistle"
     load_check = None
+    # One process per worker: engine duty is sampled for the shared host only.
+    host_pid = None
 
     def __init__(self, size, weights=None, worker_factory=Worker):
         self.size = size
@@ -133,8 +108,8 @@ class WorkerPool:
         self.failure_circuit_open = False
         self.resource_check = None
         self.generation = 0
-        self.lag = _LagMeter()
-        # Every live transcriber on this backend, for the load governor (step 4).
+        self.lag = LagMeter()
+        # Every live transcriber on this backend; the load governor reads their lag.
         self.transcribers = weakref.WeakSet()
 
     @property

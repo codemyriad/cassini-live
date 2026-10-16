@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from nc_py_api.ex_app.integration_fastapi import anc_app
 
+from cassini_live import __version__
 from cassini_live.app import create_app
 from cassini_live.config import Config, websocket_url
 from cassini_live.pool import WorkerPool
@@ -270,3 +271,24 @@ def test_manifest_routes():
     from scripts import check_manifest
 
     check_manifest.main()
+
+
+def test_status_keeps_its_shape_and_exports_the_observing_admission_block(headers):
+    app, _ = make_app()
+    status = TestClient(app).get("/status", headers=headers).json()
+    assert status["version"] == __version__
+    for key in ("capacityAssessment", "resourceSafety", "diagnosticVideo", "engine"):
+        assert key in status
+    assert status["lagSeconds"] == 0.0 and status["p95RequestSeconds"] == 0.0
+    safety = status["resourceSafety"]
+    assert safety["cpuHealth"] == {} and safety["state"] == "ready"
+    admission = safety["admission"]
+    assert set(admission) == {
+        "open", "reason", "seats", "ceiling", "speaking", "paused", "lagSeconds",
+        "lagSustainedSeconds", "captionAgeSeconds", "cpuStall", "cpuPressureAvg10",
+        "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryStatAvailable",
+        "pressureAvailable", "engineDuty", "lastRefusal", "lastShed", "shedEvents",
+        "measuring", "tickMs", "observeOnly",
+    }  # fmt: skip
+    assert admission["observeOnly"] is True and admission["open"] is True
+    assert admission["seats"] == 0 and admission["ceiling"] == 2

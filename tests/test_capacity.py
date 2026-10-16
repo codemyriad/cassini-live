@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -200,3 +201,67 @@ async def test_report_names_the_engine_and_requires_an_idle_backend(monkeypatch)
     await backend.start()
     await assessment.run()
     assert assessment.result["state"] == "passed" and assessment.result["testedSpeakers"] == 2
+
+
+async def test_scenario_reports_lag_fields_and_keeps_synthetic_requests_out_of_status():
+    from cassini_live.calibration import scenario
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    await pool.start()
+    live = pool.lag
+    live.record(0.3)
+    try:
+        result = await scenario(pool, 1, participants=1, speed=100)
+    finally:
+        await pool.close()
+    for key in ("maxLagSeconds", "lagSustainedSeconds", "p95RequestSeconds"):
+        assert isinstance(result[key], float) and result[key] >= 0
+    assert result["speakers"] == 1 and "droppedChunks" in result
+    assert pool.lag is live and list(live.requests) == [0.3]
+
+
+async def test_watch_prints_one_json_line_per_second_from_status(monkeypatch, capsys):
+    status = {
+        "resourceSafety": {
+            "state": "ready",
+            "admission": {
+                "seats": 1,
+                "speaking": 1,
+                "lagSeconds": 0.2,
+                "lagSustainedSeconds": 0.1,
+                "captionAgeSeconds": 0.4,
+                "cpuStall": 0.0,
+                "cpuPressureAvg10": 1.5,
+                "engineDuty": 0.7,
+                "memoryUsedMiB": 1500,
+                "memoryHeadroomMiB": 1572,
+                "lastRefusal": None,
+                "lastShed": None,
+                "tickMs": 0.3,
+            },
+        },
+        "p95RequestSeconds": 0.5,
+        "droppedSpeechChunks": 0,
+        "capacityWaits": 2,
+        "hostRestarts": 0,
+    }
+    calls = []
+    monkeypatch.setattr(capacity, "installed_request", lambda *a: calls.append(a) or status)
+    monkeypatch.setattr(capacity, "WATCH_INTERVAL_S", 0.01)
+    assert await capacity.watch(3) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(lines) == 3 and calls == [("GET", "/status")] * 3
+    assert list(lines[0]) == [
+        "at", "state", "lagSeconds", "lagSustainedSeconds", "captionAgeSeconds", "cpuStall",
+        "cpuPressureAvg10", "engineDuty", "memoryUsedMiB", "memoryHeadroomMiB",
+        "p95RequestSeconds", "droppedSpeechChunks", "capacityWaits", "hostRestarts", "seats",
+        "speaking", "lastRefusal", "lastShed", "tickMs",
+    ]  # fmt: skip
+    assert lines[0]["engineDuty"] == 0.7 and lines[0]["hostRestarts"] == 0
+    status["resourceSafety"]["state"] = "recovering"
+    del status["resourceSafety"]["admission"]  # an older service: the line still prints
+    del status["hostRestarts"]  # Whistle has no host
+    assert await capacity.watch(1) == 1
+    (line,) = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert line["state"] == "recovering" and line["lagSeconds"] is None
+    assert line["hostRestarts"] is None and line["p95RequestSeconds"] == 0.5

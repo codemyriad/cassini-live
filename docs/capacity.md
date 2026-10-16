@@ -1,6 +1,6 @@
 # Check caption capacity without a call
 
-Cassini Live 0.7.2 measures capacity automatically after startup, using the actual
+Cassini Live 0.7.3 measures capacity automatically after startup, using the actual
 installed speech engine. Administrators see the result in **Administration
 settings → Assistant → Cassini Live**; the
 `cassini_live.capacity --installed` command below shows the details. No microphone, Talk room, private recording, model download or network
@@ -186,6 +186,15 @@ reports pending recovery immediately; add `--wait 600` to wait up to ten minutes
 A check already in progress is awaited for up to 150 seconds. The JSON contains
 no credentials or call content. Exit status is zero when the service is ready.
 
+Add `--watch N` instead to print one JSON line per second for N seconds with the
+live lag signals the [0.8.0 design](proposals/0.8.0-instant-admission.md)
+is measured from: control lag, its 5-second sustained minimum, caption age,
+p95 request latency, container CPU stall, engine duty, memory use and headroom,
+the drop, wait and host-restart counters, the governor's seat count and the
+cost of its tick. In 0.7.3 the load governor observes only: `/status` reports
+its readings and the decisions it would take under `resourceSafety.admission`
+(`observeOnly: true`), and nothing acts on them.
+
 The startup check is mandatory, including after an upgrade. The old
 `CASSINI_CAPACITY_CHECK` setting no longer disables it.
 
@@ -197,7 +206,7 @@ when the additional workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.7.2 \
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.7.3 \
   -m cassini_live.capacity --workers 2
 ```
 

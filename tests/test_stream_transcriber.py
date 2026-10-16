@@ -104,7 +104,7 @@ async def test_latency_is_recorded_per_audio_result_but_not_per_commit():
     await run(track, chunk(0, created_at=time.monotonic() - 1.5), chunk(1, end=True))
     (stream,) = fake.streams
     assert [c[0] for c in stream.calls] == ["audio", "audio", "commit", "cancel"]
-    first, second = fake.lag.samples
+    first, second = fake.lag.requests
     assert 1.5 <= first < 3 and 0 <= second < 1
     assert fake.status()["lagSeconds"] == second
 

@@ -76,14 +76,14 @@ async def test_start_spawns_one_host_with_its_environment():
 
 
 def test_lag_meter_reports_last_and_p95():
-    from cassini_live.pool import _LagMeter
+    from cassini_live.load import LagMeter
 
-    meter = _LagMeter()
+    meter = LagMeter()
     assert meter.last() == 0.0 and meter.p95() == 0.0
     for seconds in range(100, 0, -1):
         meter.record(seconds / 100)
     assert meter.last() == 0.01 and meter.p95() == 0.95
-    for _ in range(meter.WINDOW):
+    for _ in range(meter.REQUESTS):
         meter.record(2.0)
     assert meter.p95() == 2.0  # old samples age out of the window
 

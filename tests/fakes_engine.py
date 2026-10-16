@@ -11,7 +11,8 @@ from contextlib import suppress
 import numpy as np
 
 from cassini_live import catalog, engine_host
-from cassini_live.pool import CapacityError, _LagMeter
+from cassini_live.load import LagMeter
+from cassini_live.pool import CapacityError
 
 CHUNK = 8960  # 0.56 s at 16 kHz
 
@@ -276,8 +277,9 @@ class FakeBackend:
         self.stream_error = None
         self.audio_gate = None
         self.waiters = 0
-        self.lag = _LagMeter()
+        self.lag = LagMeter()
         self.transcribers = weakref.WeakSet()
+        self.host_pid = None
 
     @property
     def workers(self):

@@ -245,18 +245,26 @@ def load_problem(data, engine_id):
     return pressure_problem(data)
 
 
-def headroom_mib(data):
-    """Memory the container can still take before memory.max, in MiB; None when unknown.
+def charged_bytes(data):
+    """Memory the container holds that the kernel cannot reclaim; None when unknown.
 
     Page cache (memory.stat "file") is not charged: the kernel reclaims file pages before it
     kills, and the host drops the model's cache after a cold load (engine_host.py). Its shmem
     part (tmpfs, /dev/shm) stays charged: only swap could take it and swap is 0. Without
     memory.stat the whole of memory.current counts, pessimistic by the cache."""
-    limit, current = data.get("memoryLimitBytes"), data.get("memoryCurrentBytes")
-    if not limit or current is None:
+    current = data.get("memoryCurrentBytes")
+    if current is None:
         return None
     reclaimable = (data.get("memoryFileBytes") or 0) - (data.get("memoryShmemBytes") or 0)
-    return (limit - (current - max(0, reclaimable))) // MIB
+    return current - max(0, reclaimable)
+
+
+def headroom_mib(data):
+    """Memory the container can still take before memory.max, in MiB; None when unknown."""
+    limit, charged = data.get("memoryLimitBytes"), charged_bytes(data)
+    if not limit or charged is None:
+        return None
+    return (limit - charged) // MIB
 
 
 def start_problem(data, engine_id, rss_mib=None, workers=1):

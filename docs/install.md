@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.7.2`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.7.3`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.7.2 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.7.3 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry

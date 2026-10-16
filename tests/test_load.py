@@ -421,10 +421,37 @@ def test_lag_meter_fills_the_seconds_a_late_tick_skipped():
 
 def test_lag_meter_p95_of_recent_requests():
     meter = LagMeter()
-    assert meter.p95() is None
+    assert meter.p95() == 0.0 and meter.last() == 0.0  # the backends' status convention
     for value in range(1, 101):
         meter.record(value / 100)
-    assert meter.p95() == pytest.approx(0.95)
+    assert meter.p95() == pytest.approx(0.95) and meter.last() == 1.0
+    meter.record(0.4)
+    meter.record(0.2)
+    assert meter.last() == 0.2
     for value in range(300):
         meter.record(2.0)
     assert meter.p95() == 2.0 and len(meter.requests) == LagMeter.REQUESTS
+
+
+def test_control_lag_and_caption_age_read_the_given_transcribers():
+    from cassini_live.load import caption_age, control_lag
+
+    holder, waiter = Speaker(), Speaker()
+    holder.speak(100.0, lag=0.5)
+    waiter.pending_since = 97.0  # parked on the slot FIFO: no lease
+    assert control_lag([holder, waiter], 100.0) == 0.5
+    assert caption_age([holder, waiter], 100.0) == 3.0
+    assert control_lag([], 100.0) == caption_age([], 100.0) == 0.0
+
+
+def test_governor_reads_a_backend_transcriber_set_when_given_one():
+    import weakref
+
+    live = weakref.WeakSet()
+    gov = LoadGovernor(ceiling=2, transcribers=live, clock=Clock(), observe_only=True)
+    speaker = Speaker()
+    live.add(speaker)
+    speaker.speak(Clock.now, lag=1.5)
+    gov.tick(CALM)
+    assert gov.lag_now == 1.5 and gov.transcribers is live
+    assert gov.status()["lagSeconds"] == 1.5 and gov.status()["seats"] == 0

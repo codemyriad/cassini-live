@@ -72,6 +72,7 @@ class Backend(Protocol):
     leased: set
     lag: LagMeter
     transcribers: weakref.WeakSet  # every live Transcriber, registered on creation
+    host_pid: int | None  # the shared engine host for duty sampling; Whistle has none
 
     @property
     def waiting(self) -> int: ...

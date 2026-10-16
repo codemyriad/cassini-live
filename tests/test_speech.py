@@ -295,7 +295,7 @@ async def test_latency_is_recorded_per_audio_reply_but_not_for_the_end():
     track.queue.put_nowait(None)
     await track._decode()
     assert [m["type"] for m in next(iter(pool.workers)).sent] == ["start", "audio", "end"]
-    (recorded,) = pool.lag.samples
+    (recorded,) = pool.lag.requests
     assert 1.5 <= recorded < 3
     assert pool.status()["lagSeconds"] == recorded
     await pool.close()

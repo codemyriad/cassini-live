@@ -22,7 +22,8 @@ import numpy as np
 
 from .. import catalog
 from ..engine_host import LANGUAGE_OPTION
-from ..pool import CapacityError, _LagMeter
+from ..load import LagMeter
+from ..pool import CapacityError
 
 LOGGER = logging.getLogger(__name__)
 SEGMENTS = "continuous"  # "per_segment" if commit turns out to truncate finals
@@ -89,6 +90,10 @@ class EngineHostProcess:
     @property
     def returncode(self):
         return self.process.returncode if self.process else None
+
+    @property
+    def pid(self):
+        return self.process.pid if self.process else None
 
     async def start(self, argv, env):
         self.process = await asyncio.create_subprocess_exec(
@@ -190,11 +195,16 @@ class SharedEngine:
         self._reader = None
         self._restart = None
         self._next_id = 0
-        self.lag = _LagMeter()
-        # Every live transcriber on this backend, for the load governor (step 4).
+        self.lag = LagMeter()
+        # Every live transcriber on this backend; the load governor reads their lag.
         self.transcribers = weakref.WeakSet()
         # Clock reading of the last host reply; step 5 tells a late reply from a dead host.
         self.last_message_at = None
+
+    @property
+    def host_pid(self):
+        """The engine host's pid for duty sampling; None while no host is up."""
+        return getattr(self.process, "pid", None)
 
     # Speaking slots. Same hand-off rules as WorkerPool._offer/acquire_wait.
 

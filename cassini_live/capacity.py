@@ -130,7 +130,56 @@ def installed_request(method, path):
         connection.close()
 
 
+WATCH_INTERVAL_S = 1.0  # the safety monitor's tick; a faster read would repeat samples
+
+
+def watch_line(status):
+    """One per-second record of the lag signals (0.8.0-instant-admission.md, staging
+    validation plan 1) from a /status body: the governor's admission block plus the
+    backend counters that show when the backlog turns into drops."""
+    admission = status["resourceSafety"].get("admission") or {}
+    return {
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "state": status["resourceSafety"]["state"],
+        **{
+            key: admission.get(key)
+            for key in (
+                "lagSeconds",
+                "lagSustainedSeconds",
+                "captionAgeSeconds",
+                "cpuStall",
+                "cpuPressureAvg10",
+                "engineDuty",
+                "memoryUsedMiB",
+                "memoryHeadroomMiB",
+            )
+        },
+        "p95RequestSeconds": status.get("p95RequestSeconds"),
+        "droppedSpeechChunks": status.get("droppedSpeechChunks"),
+        "capacityWaits": status.get("capacityWaits"),
+        "hostRestarts": status.get("hostRestarts"),
+        **{
+            key: admission.get(key)
+            for key in ("seats", "speaking", "lastRefusal", "lastShed", "tickMs")
+        },
+    }
+
+
+async def watch(seconds):
+    """Print one JSON line per second from the running service; exit 0 iff still ready."""
+    next_at = time.monotonic()
+    for remaining in range(max(1, seconds), 0, -1):
+        status = installed_request("GET", "/status")
+        print(json.dumps(watch_line(status)), flush=True)
+        if remaining > 1:
+            next_at += WATCH_INTERVAL_S
+            await asyncio.sleep(max(0, next_at - time.monotonic()))
+    return 0 if status["resourceSafety"]["state"] == "ready" else 1
+
+
 async def main(args):
+    if args.watch:
+        return await watch(args.watch)
     if args.installed:
         started = time.monotonic()
         while True:
@@ -182,6 +231,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--wait", type=int, default=0, help="Seconds to wait through installed recovery"
+    )
+    parser.add_argument(
+        "--watch",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Print one JSON line per second of the running service's lag signals for N "
+        "seconds (from the container, like --installed)",
     )
     parser.add_argument("--workers", type=int, choices=range(1, 33))
     parser.add_argument("--weights")

@@ -9,6 +9,7 @@ it would have taken and changes nothing.
 """
 
 import logging
+import math
 import time
 import weakref
 from collections import deque
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from . import catalog
-from .resources import MIB
+from .resources import MIB, charged_bytes, headroom_mib
 
 LOGGER = logging.getLogger(__name__)
 
@@ -87,11 +88,32 @@ class Decision:
     reason: str | None = None
 
 
+def control_lag(transcribers, now):
+    """Oldest undecoded audio among the transcribers holding a lease, in seconds. The FIFO
+    wait is excluded: a speaker parked on a slot is not engine lag."""
+    lag = 0.0
+    for transcriber in transcribers:
+        since, lease_at = transcriber.pending_since, transcriber.lease_at
+        if since is not None and lease_at is not None and transcriber.has_lease():
+            lag = max(lag, now - max(since, lease_at))
+    return lag
+
+
+def caption_age(transcribers, now):
+    """Oldest undecoded audio among all live transcribers, slot wait included: what a
+    viewer experiences."""
+    return max(
+        (now - t.pending_since for t in transcribers if t.pending_since is not None),
+        default=0.0,
+    )
+
+
 class LagMeter:
     """Rolling lag statistics. `observe()` keeps per-second maxima of the control lag and
     `sustained()` is their rolling minimum over the window (the harness definition,
     rt_common.py: momentary decode latency averages out, a growing backlog does not).
-    `record()` keeps recent per-request latencies for a p95."""
+    `record()` keeps recent per-request latencies for `last()` and `p95()`, the backends'
+    status figures (engines.LagMeter protocol)."""
 
     WINDOW_S = 5  # rt_common.py SUSTAIN_WINDOW; the shed and hold-off derivations use it
     BUCKETS = 10  # two windows of history (design); only the latest window is read
@@ -130,26 +152,14 @@ class LagMeter:
     def record(self, seconds):
         self.requests.append(seconds)
 
+    def last(self):
+        return self.requests[-1] if self.requests else 0.0
+
     def p95(self):
         if not self.requests:
-            return None
+            return 0.0
         ordered = sorted(self.requests)
-        return ordered[int(0.95 * (len(ordered) - 1))]
-
-
-def _headroom_mib(sample):
-    """memory.max minus non-reclaimable charge: the kernel reclaims file pages before an
-    OOM, except the shmem part (tmpfs, which only swap could take and swap is 0). Without
-    memory.stat the file figure is 0 and headroom is pessimistic."""
-    limit = sample.get("memoryLimitBytes")
-    if not limit:
-        return None, None
-    current = sample.get("memoryCurrentBytes")
-    if current is None:
-        current = sample.get("memoryFraction", 0.0) * limit
-    reclaimable = (sample.get("memoryFileBytes") or 0) - (sample.get("memoryShmemBytes") or 0)
-    used = current - max(0, reclaimable)
-    return (limit - used) / MIB, used / MIB
+        return ordered[math.ceil(0.95 * len(ordered)) - 1]  # nearest rank
 
 
 class LoadGovernor:
@@ -160,6 +170,7 @@ class LoadGovernor:
         per_speaker_mib=0,
         thresholds=THRESHOLDS,
         observe_only=None,
+        transcribers=None,
         clock=time.monotonic,
         wall_clock=time.time,
     ):
@@ -170,8 +181,10 @@ class LoadGovernor:
         self.clock, self.wall_clock = clock, wall_clock
         self.seats = weakref.WeakKeyDictionary()  # transcriber -> admitted_at
         self._active_at = weakref.WeakKeyDictionary()  # transcriber -> last tick with a lease
-        # Every transcriber admit() has seen, for caption age; a closed track drops out.
-        self.transcribers = weakref.WeakSet()
+        # The live transcribers lag and caption age are read from: the backend's WeakSet
+        # when the safety monitor feeds the governor, else the ones admit() has seen; a
+        # closed track drops out of either.
+        self.transcribers = weakref.WeakSet() if transcribers is None else transcribers
         self.lag = LagMeter()
         self.sample = {}
         self.lag_now = self.lag_sustained = self.caption_age = 0.0
@@ -221,7 +234,7 @@ class LoadGovernor:
             return None
         if len(self.seats) >= self.ceiling:
             return "ceiling"
-        headroom, _ = _headroom_mib(self.sample)
+        headroom = headroom_mib(self.sample)
         # One allowance for this speaker and one for growth before the next sample.
         if headroom is not None and headroom < 2 * self.per_speaker_mib:
             return "memory"
@@ -244,13 +257,7 @@ class LoadGovernor:
         self._active_at.pop(transcriber, None)
 
     def _lag_now(self, now):
-        # Control lag excludes the FIFO wait: a speaker parked on a slot is not engine lag.
-        lag = 0.0
-        for transcriber in self.transcribers:
-            since, lease_at = transcriber.pending_since, transcriber.lease_at
-            if since is not None and lease_at is not None and transcriber.has_lease():
-                lag = max(lag, now - max(since, lease_at))
-        return lag
+        return control_lag(self.transcribers, now)
 
     def tick(self, sample, now=None):
         """Once per second from the safety monitor: refresh the inputs, expire idle seats,
@@ -266,10 +273,7 @@ class LoadGovernor:
             self.cpu_stall = None
         self._stall_usec, self._tick_at = stall_usec, now
         self.lag_now = self._lag_now(now)
-        self.caption_age = max(
-            (now - t.pending_since for t in self.transcribers if t.pending_since is not None),
-            default=0.0,
-        )
+        self.caption_age = caption_age(self.transcribers, now)
         self.lag.observe(self.lag_now, now)
         self.lag_sustained = self.lag.sustained(now)
         for transcriber in list(self.seats):
@@ -332,7 +336,7 @@ class LoadGovernor:
 
     def status(self):
         now = self.clock()
-        headroom, used = _headroom_mib(self.sample)
+        headroom, charged = headroom_mib(self.sample), charged_bytes(self.sample)
         limit = self.sample.get("memoryLimitBytes")
         return {
             "open": not self.closed,
@@ -348,8 +352,8 @@ class LoadGovernor:
             "captionAgeSeconds": round(self.caption_age, 3),
             "cpuStall": None if self.cpu_stall is None else round(self.cpu_stall, 3),
             "cpuPressureAvg10": self.sample.get("cpuPressureRecent"),
-            "memoryHeadroomMiB": None if headroom is None else int(headroom),
-            "memoryUsedMiB": None if used is None else int(used),
+            "memoryHeadroomMiB": headroom,
+            "memoryUsedMiB": None if charged is None else charged // MIB,
             "memoryLimitMiB": None if not limit else int(limit / MIB),
             "memoryStatAvailable": self.sample.get("memoryStatAvailable"),
             "pressureAvailable": self.sample.get("pressureAvailable"),

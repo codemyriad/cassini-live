@@ -8,6 +8,8 @@ import time
 from contextlib import suppress
 
 from . import catalog
+from .diagnostics import process_usage
+from .load import LoadGovernor, per_speaker_mib
 from .pool import CapacityError
 from .recovery import RecoveryJournal, RecoveryPolicy, recovery_problem
 from .resources import budget_problem, load_problem, pressure_problem, signature, snapshot
@@ -92,6 +94,8 @@ class SafetyController:
         self.fresh = False
         self.attempt_started = None
         self._outcome = None
+        self.governor = None
+        self._engine_cpu = None  # (pid, cpu seconds, clock) at the previous tick
         self._hook(pool)
 
     @property
@@ -101,6 +105,19 @@ class SafetyController:
     def _hook(self, pool):
         pool.resource_check = lambda: pressure_problem(self.reader())
         pool.load_check = lambda: load_problem(self.reader(), self.engine_id)
+        # 0.7.3 observes only (0.8.0-instant-admission.md, step 4): the governor reads the
+        # backend's live transcribers from the 1 s tick and reports what it would decide;
+        # nothing consults admit() and no transcriber is marked. The seat ceiling is the
+        # backend's structural size until step 6 re-derives it from the engine threads.
+        self.governor = LoadGovernor(
+            ceiling=getattr(pool, "size", 0),
+            per_speaker_mib=per_speaker_mib(self.engine_id),
+            observe_only=True,
+            transcribers=getattr(pool, "transcribers", None),
+            clock=self.clock,
+            wall_clock=self.wall_clock,
+        )
+        self._engine_cpu = None
 
     def replace_pool(self, pool):
         # Only a stopped controller may swap engines; the monitor owns the running pool.
@@ -149,6 +166,7 @@ class SafetyController:
             "nextAttemptAt": self.wall_clock() + retry if retry else None,
             "closingRooms": len(getattr(self.service, "closing", {})),
             "cpuHealth": self.cpu_health,
+            "admission": self.governor.status(),
         }
 
     def require_ready(self):
@@ -331,6 +349,7 @@ class SafetyController:
             # Generation fences and complete teardown are prerequisites for reuse.
             async with asyncio.timeout(catalog.get(self.engine_id).requirements.start_timeout_s):
                 await self.pool.start()
+            self.governor.ceiling = self.pool.size  # auto_size may have resized the backend
             self.assessment.start()
             self.phase = "calibrating"
             self.first.set()
@@ -341,7 +360,8 @@ class SafetyController:
             LOGGER.warning("Caption supervision failed (%s)", type(error).__name__)
             # A refused load names its reason; an administrator's rollback message shows it.
             await self.trip(
-                str(error) if isinstance(error, CapacityError) and str(error)
+                str(error)
+                if isinstance(error, CapacityError) and str(error)
                 else "Recognition workers or resource monitoring failed"
             )
 
@@ -355,7 +375,10 @@ class SafetyController:
             await asyncio.sleep(max(0, expected - self.clock()))
             now = self.clock()
             lag, expected = now - expected, now + self.policy.monitor
+            started = time.perf_counter()
             current = self.reader()
+            self._observe(current, now)
+            tick_ms = round((time.perf_counter() - started) * 1000, 2)
             problem = pressure_problem(current)
             if signature(current) != signature(self.initial):
                 await self.trip("Resource limits changed; reassessing capacity automatically")
@@ -374,6 +397,8 @@ class SafetyController:
                     if before is not None and after is not None
                     else None
                 ),
+                # Snapshot, duty sample and governor tick; the design budgets 5 ms.
+                "monitorTickMs": tick_ms,
             }
             pressure_ticks = pressure_ticks + 1 if cpu_problem else 0
             if problem or pressure_ticks >= 3 or self.pool.failure_circuit_open:
@@ -401,6 +426,32 @@ class SafetyController:
                 ready_since = None
             # Excess demand is handled by bounded queues and admission, not a
             # service-wide restart. Real resource pressure remains monitored.
+
+    def _observe(self, current, now):
+        """Feed the governor one sample: the snapshot plus the engine host's duty. In
+        observe-only mode this changes nothing a caller sees beyond /status."""
+        task = getattr(self.assessment, "task", None)
+        self.governor.measuring = bool(task) and not task.done()
+        self.governor.tick({**current, "engineDuty": self._engine_duty(now)}, now)
+
+    def _engine_duty(self, now):
+        """CPU of the shared engine host per decode thread since the previous tick (the
+        harness reports 0.98 at saturation); None for Whistle, before the first delta and
+        across a host restart. One /proc read, well under the tick budget."""
+        pid = getattr(self.pool, "host_pid", None)
+        if pid is None:
+            self._engine_cpu = None
+            return None
+        try:
+            cpu, _ = process_usage(pid)
+        except (OSError, ValueError, IndexError):
+            self._engine_cpu = None
+            return None
+        previous, self._engine_cpu = self._engine_cpu, (pid, cpu, now)
+        if previous is None or previous[0] != pid:
+            return None
+        threads = getattr(self.pool, "threads", 1)
+        return round(max(0.0, cpu - previous[1]) / max(0.001, now - previous[2]) / threads, 3)
 
     async def trip(self, reason, *, insufficient=False):
         if self.state == "ready":
