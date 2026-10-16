@@ -3,12 +3,12 @@
 The kernel's cgroup limits protect the call (docs/proposals/0.8.0-instant-admission.md);
 this module only decides whether one more speaker fits and which stream to pause when
 captions fall behind. Pure and in-memory: `admit()` reads the sample cached by the last
-tick plus transcriber fields, never a file. Until the staging lag run fixes the
-thresholds (`Thresholds.provisional`) the governor observes: nothing consults `admit()`
-yet (0.8.0 step 8), so the tick seats every live transcriber it first sees holding a
-lease, records the decision it would have taken and changes nothing. Once the staging
-run clears `provisional`, transcribers ask `admit()` before every slot or worker wait
-(0.8.0 step 8) and a refusal holds that speaker off.
+tick plus transcriber fields, never a file. Transcribers ask `admit()` before every
+slot or worker wait. Until the staging lag run fixes the thresholds
+(`Thresholds.provisional`) the governor observes: it admits everyone, records the
+decision it would have taken and marks nothing; the tick also seats a live speaker it
+first sees holding a lease. Once the run clears `provisional`, a refusal holds that
+speaker off and a sustained backlog pauses the newest one.
 """
 
 import logging
@@ -308,12 +308,13 @@ class LoadGovernor:
         self.tick_ms = round((time.perf_counter() - started) * 1000, 2)
 
     def _observe_seats(self, now):
-        """Observe-only stand-in for the admit() call that 0.8.0 step 8 puts before the
-        slot wait: a live transcriber first seen holding a lease is admitted at this tick,
-        at most one tick after the real decision point and with the same inputs (the
-        cached sample and the other speakers' lag), so seats, refusals and would-be sheds
-        in the staging run are real figures. Never while measuring: synthetic tracks must
-        not be seated. A closed track's seat goes with the object or after seat_idle_s."""
+        """Observe-only backstop for the admit() call before the slot wait (a backend
+        without a governor installed when its transcriber started never asked): a live
+        transcriber first seen holding a lease is admitted at this tick, at most one tick
+        after the real decision point and with the same inputs (the cached sample and the
+        other speakers' lag), so seats, refusals and would-be sheds are real figures. Never
+        while measuring: synthetic tracks must not be seated. A closed track's seat goes
+        with the object or after seat_idle_s."""
         for transcriber in list(self.transcribers):
             if transcriber not in self.seats and transcriber.has_lease():
                 self.admit(transcriber, now)

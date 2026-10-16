@@ -1,8 +1,8 @@
 # Verification for 0.6.0
 
-## 0.7.3 lag measurement (staging)
+## Lag measurement (staging, observe-only build)
 
-Not yet run. Staging validation plan 1 of the
+Not yet run. 0.7.3 and 0.8.0 both observe only until it has run. Staging validation plan 1 of the
 [0.8.0 design](proposals/0.8.0-instant-admission.md): during a real Talk call,
 `docker exec nc_app_live_transcription python -m cassini_live.capacity --watch 600
 > lag.jsonl` with 1, then 2, then 3 simultaneous speakers reading aloud for at least

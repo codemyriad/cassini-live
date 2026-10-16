@@ -347,7 +347,7 @@ def test_thresholds_cannot_leave_provisional_without_the_measurement_date():
 
 
 def test_observe_mode_seats_live_speakers_from_the_tick_and_marks_nothing():
-    # Nothing calls admit() in 0.7.3: the tick stands in for it, with the candidate's own
+    # A speaker that never asked admit() is seated by the observing tick, with its own
     # backlog left out of the lag rule, as it is at the real decision point (no lease yet).
     gov, clock = governor(ceiling=1, observe_only=True)
     first, second = Speaker(), Speaker()

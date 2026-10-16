@@ -8,28 +8,31 @@ Audio stays on your infrastructure. There is no speech API subscription,
 saved transcript or recording to clean up afterward.
 
 I want captions to be useful without making the rest of the server miserable.
-If the machine cannot keep up, Cassini Live should refuse to caption.
+The kernel's limits keep the call safe; if the machine cannot keep up, Cassini
+Live captions fewer speakers rather than everyone late.
 
 ## Where it stands
 
-**0.7.3 is a development release.** It adds a choice of speech engine, including
-two optional, more accurate NVIDIA Nemotron engines downloaded on demand, on top of
-automatic recovery after resource pressure, worker handoffs that prefer pauses in
+**0.8.0 is a development release.** It offers a choice of speech engine, including
+two optional, more accurate NVIDIA Nemotron engines downloaded on demand,
+per-speaker admission on live load, worker handoffs that prefer pauses in
 speech, and an optional dashboard inside the call. Captions and the dashboard have run in a real Talk browser call
 with recorded speech. Validation in everyday meetings is still needed.
 
-0.7.3 is the observe-only instrumentation build for the planned
-[instant-admission redesign](docs/proposals/0.8.0-instant-admission.md): it
-measures live caption lag, memory headroom and CPU stall every second, reports
-them under `resourceSafety.admission` in `/status` and in
-`python -m cassini_live.capacity --watch N`, and changes no behaviour. The
-staging lag measurement sizes the 0.8.0 thresholds from these numbers.
+0.8.0 implements the [instant-admission design](docs/proposals/0.8.0-instant-admission.md).
+Captions start as soon as the engine has loaded: there is no capacity test on
+every start, switch or restart any more. Each speaker is admitted when they
+start talking, from live caption lag, memory headroom and CPU stall; when
+captions fall behind, the newest speaker is paused instead of every room
+closing; only an OOM kill or repeated engine crashes stop captions. Until the
+staging lag measurement fixes its thresholds, admission observes only and
+reports what it would do under `resourceSafety.admission` in `/status`.
 
 * One speech engine serves the whole server. Administrators choose it under
   **Administration settings → Assistant → Cassini Live**. The **?** next to the
   section title opens an admin-only settings page with every engine's details,
-  live download and switch progress, cancel, model removal, licenses and the
-  capacity check.
+  live download and switch progress, cancel, model removal, licenses, the live
+  speaker count and an on-demand capacity measurement.
 * Whistle is the bundled default. It runs on the CPU and needs about 2 GiB of
   container memory. It supports seven languages: English, German, French,
   Spanish, Italian, Dutch and Polish. Broad accuracy testing across these
@@ -39,8 +42,8 @@ staging lag measurement sizes the 0.8.0 thresholds from these numbers.
   English is English only; Nemotron Multilingual covers the same seven
   languages. Each needs 2.25-3 GiB of container memory and twice that on the
   host. They are not in the image: Cassini Live downloads one (about 450 MiB)
-  when an administrator chooses it, and rolls back if it does not pass the
-  capacity check. See [choose a speech engine](docs/install.md#choose-a-speech-engine).
+  when an administrator chooses it, and rolls back if it does not load. See
+  [choose a speech engine](docs/install.md#choose-a-speech-engine).
 * The Nemotron model weights have their own licenses, separate from Cassini
   Live's AGPL: the NVIDIA Open Model License for Nemotron English and
   OpenMDW-1.1 for Nemotron Multilingual. The settings page shows each license
@@ -52,17 +55,32 @@ staging lag measurement sizes the 0.8.0 thresholds from these numbers.
   Ten unmuted microphones do not reserve ten recognizers, though receiving and
   checking their audio still costs resources.
 * Speakers share recognition time fairly, with bounded queues and waits.
-* Before accepting calls, a bundled recording measures how many simultaneous
-  speakers the installation can handle, among ten open audio tracks.
+* An administrator can measure how many simultaneous speakers the installation
+  handles, with a bundled recording among ten open audio tracks. The result is
+  shown, never used as a gate.
 
-The service requires enforced CPU, memory and process limits, with swap disabled.
-It refuses unsafe configurations before loading recognition workers. During use,
-resource pressure or repeated failures stop captions. After resources recover,
-it waits, retests and becomes available automatically. Repeated failures make
-retries less frequent; container restarts preserve that delay. The operating
-system enforces the limits even if the application misbehaves. An interrupted
-call may need captions toggled back on once the service is ready.
-See [the safety policy and capacity test](docs/capacity.md).
+The service requires enforced CPU, memory and process limits, with swap disabled,
+and refuses to load an engine that would not fit. The operating system enforces
+the limits even if the application misbehaves. An OOM kill or repeated engine
+crashes stop captions; the service waits, with longer waits after repeated
+failures (container restarts preserve them), and becomes available again
+automatically. An interrupted call may need captions toggled back on.
+See [load, admission and capacity](docs/capacity.md).
+
+Changes in 0.8.0:
+
+* No automatic capacity check: a start, engine switch, rollback or restart is
+  ready in load time instead of up to two minutes.
+* Per-speaker admission and lag-driven shedding (observe-only until measured).
+* Removed trips: CPU pressure, memory or PID use above 80%, low host memory and
+  changed limits no longer close every room; the governor holds or pauses
+  speakers instead.
+* Half-host CPU and memory and the PID count are advice, not requirements; PSI
+  is optional. Whistle is no longer capped at two rooms.
+* A late answer from a live engine loses one request instead of counting as a
+  crash.
+* A 0.7.x recovery journal and settings are read as they are; a 0.7.x
+  capacity-check cooldown or verdict is dropped on the first start.
 
 An optional [diagnostic video](docs/diagnostic-video.md) shows resource usage and
 measured caption headroom inside a call, including its own overhead. We enable
@@ -94,7 +112,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.7.3 .`.
+`docker build -t cassini-live:0.8.0 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish

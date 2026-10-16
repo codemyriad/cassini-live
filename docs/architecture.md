@@ -60,10 +60,14 @@ received frames. Its pinned model is included at build time; runtime never downl
 A full queue discards its oldest chunk. Queued chunks older than four seconds are also
 discarded, including a second age check after waiting for a worker. Sequence
 numbers force recognition to flush across gaps rather than splice discontinuous
-audio. Capture continues while a failed recognizer is replaced. Workers are
-leased only for speech, with two-second bounded capacity waits; exhausting
-actual resource pressure closes caption rooms through the safety controller.
-Excess speaking demand drops audio without restarting the service. FIFO futures directly hand returning workers to
+audio. Capture continues while a failed recognizer is replaced. Before a
+worker or slot is leased for a segment, the speaker asks the load governor
+(`load.py`) for a seat: it decides from live lag, memory headroom and CPU stall,
+never from a file read on this path. Workers are leased only for speech, with
+two-second bounded waits for a seat or a worker. When captions fall behind for
+five seconds, the governor pauses the newest speaker, which ends its segment in
+its own task. Excess speaking demand drops audio without restarting the
+service; only an OOM kill or repeated engine crashes close caption rooms. FIFO futures directly hand returning workers to
 waiting speakers, including safe return of leases if cancellation races handoff.
 With waiters, a recognizer prefers a VAD pause already buffered between one and
 two seconds of supplied audio, otherwise it cuts at two seconds. The remainder
@@ -88,10 +92,9 @@ change (at most every three seconds, and in 5% download steps). An invalid choic
 is written back to the active engine, with the reason in the status text.
 `admin_form.py` builds the form from plain data and has no side effects.
 
-A switch checks eligibility and the license, downloads and verifies the model
-while the old engine keeps serving, closes caption rooms as on an overload
-pause, loads the new engine and runs the capacity check. Any failure rolls back
-to the previous engine. The choice is saved in the app's persistent storage and
+A switch checks eligibility, downloads and verifies the model while the old
+engine keeps serving, closes caption rooms, and is done once the new engine has
+loaded. A failed load rolls back to the previous engine. The choice is saved in the app's persistent storage and
 restored at startup, after the model files are verified again.
 
 The Whistle path is unchanged: one worker subprocess per simultaneous speaker,
@@ -163,23 +166,25 @@ runs a paced ten-track meeting through real VAD and Whistle (set
 `NEEDLE3_LIB_PATH` to the native engine). Add `--speakers 2` for overlap.
 This fixture bypasses WebRTC; it is not a substitute for a real Talk call.
 
-## Capacity assessment
+## Capacity measurement
 
-`cassini_live.capacity` exercises the actual gate, queues and preloaded worker
-pool using the bundled public-domain fixture. Startup runs the assessment in
-the background while `/status` and the settings form show `checking`. Caption requests receive HTTP 503 until the workload passes and the resource
-controller admits calls. Admission then uses the measured speaking budget. The compatibility wake endpoint rejects browser users
-and active/in-flight caption rooms; it cannot force a reload or bypass cooldowns. Simulated counters do not contaminate live
-call health. Results remain in memory and are remeasured after restart.
+`cassini_live.capacity` exercises the actual gate, queues and loaded engine
+using the bundled public-domain fixture, only when an administrator asks (the
+settings page, or `--installed --measure` from the container). It refuses while
+any call has captions or is being set up, and calls asking during the run get
+HTTP 503 with Retry-After. The governor neither seats nor sheds its synthetic
+speakers, and simulated counters and latencies do not contaminate live call
+health. The result is shown and kept in memory; admission never reads it.
 
 The standalone CLI uses its own pool for testing an image before installation.
-The installed CLI reads status without creating an additional competing pool. See [assessment criteria](capacity.md).
+See [load, admission and capacity](capacity.md).
 
 ## Automatic recovery
 
-One supervisor owns model loading, calibration, ready-state monitoring and
-recovery. Cheap headroom checks precede any expensive retry; exponential backoff
-is persisted before loading models. Disable cancels this supervisor and awaits
+One supervisor owns model loading, ready-state monitoring and recovery. A
+memory fit check precedes every engine process start, restarts included, and
+refuses a load into a container the kernel has just OOM-killed; exponential
+backoff is persisted before loading models. Disable cancels this supervisor and awaits
 cleanup. Worker generations reject stale returns after a restart. Room close
 tasks remain tracked and shielded from caller cancellation, and pending joins
 recheck their room generation before accepting subscriptions.
