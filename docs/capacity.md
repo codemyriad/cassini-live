@@ -190,10 +190,22 @@ Add `--watch N` instead to print one JSON line per second for N seconds with the
 live lag signals the [0.8.0 design](proposals/0.8.0-instant-admission.md)
 is measured from: control lag, its 5-second sustained minimum, caption age,
 p95 request latency, container CPU stall, engine duty, memory use and headroom,
-the drop, wait and host-restart counters, the governor's seat count and the
-cost of its tick. In 0.7.3 the load governor observes only: `/status` reports
-its readings and the decisions it would take under `resourceSafety.admission`
-(`observeOnly: true`), and nothing acts on them.
+the drop, wait and host-restart counters, the governor's seat count, the cost
+of the governor's tick (`tickMs`) and of the whole monitor tick
+(`monitorTickMs`: resource snapshot, engine duty sample and governor; the 5 ms
+budget is about this one). A read the service fails, for example while it
+restarts after a trip, prints a line with an `error` field and the run goes on.
+Memory use is `memory.current` minus the reclaimable page cache (`memory.stat`
+`file` minus `shmem`: tmpfs pages sit in `file`, but with swap off nothing can
+take them), and headroom is the memory limit minus that.
+
+In 0.7.3 the load governor observes only. Nothing consults its admission
+decision yet, so once per second it seats every live speaker it first sees
+holding a recognition lease, evaluates the admission rules as it would have at
+the start of that speaker's segment (at most one second earlier, with the same
+inputs) and records the result: `/status` reports its readings, the seats,
+the last refusal and the sheds it would have made under
+`resourceSafety.admission` (`observeOnly: true`), and nothing acts on them.
 
 The startup check is mandatory, including after an upgrade. The old
 `CASSINI_CAPACITY_CHECK` setting no longer disables it.

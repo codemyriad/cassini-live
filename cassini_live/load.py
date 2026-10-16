@@ -4,8 +4,9 @@ The kernel's cgroup limits protect the call (docs/proposals/0.8.0-instant-admiss
 this module only decides whether one more speaker fits and which stream to pause when
 captions fall behind. Pure and in-memory: `admit()` reads the sample cached by the last
 tick plus transcriber fields, never a file. Until the staging lag run fixes the
-thresholds (`Thresholds.provisional`) the governor observes: it records every decision
-it would have taken and changes nothing.
+thresholds (`Thresholds.provisional`) the governor observes: nothing consults `admit()`
+yet (0.8.0 step 8), so the tick seats every live transcriber it first sees holding a
+lease, records the decision it would have taken and changes nothing.
 """
 
 import logging
@@ -51,9 +52,13 @@ class Thresholds:
     # Unjustified; checked in the Talk UI.
     notice_interval: float = 60.0
     # True until the staging run writes measured values; the governor then leaves
-    # observe-only mode (CI asserts measured_on is set before provisional is cleared).
+    # observe-only mode. __post_init__ refuses to clear it without the run's date.
     provisional: bool = True
     measured_on: str | None = None
+
+    def __post_init__(self):
+        if not self.provisional and not self.measured_on:
+            raise ValueError("Measured thresholds must record measured_on (the staging run date)")
 
 
 THRESHOLDS = Thresholds()
@@ -214,7 +219,11 @@ class LoadGovernor:
         self.last_refusal = {"at": self.wall_clock(), "reason": reason}
         if reason in {"lag", "cpu"} and not self.closed:
             self.closed_reason, self._calm_since = reason, None
-            LOGGER.info("Caption admission closed (%s)", reason)
+            LOGGER.info(
+                "Caption admission %s (%s)",
+                "would close; observing" if self.observe_only else "closed",
+                reason,
+            )
         if not self.observe_only:
             return Decision(False, reason)
         # Observing: the speaker goes on, so the seat count must keep matching reality.
@@ -242,7 +251,7 @@ class LoadGovernor:
             return self.closed_reason
         if self.cpu_stall is not None and self.cpu_stall >= self.thresholds.cpu_stall_admit:
             return "cpu"
-        if self._lag_now(now) >= self.thresholds.lag_admit:
+        if self._lag_now(now, excluding=transcriber) >= self.thresholds.lag_admit:
             return "lag"
         return None
 
@@ -256,8 +265,10 @@ class LoadGovernor:
         self.seats.pop(transcriber, None)
         self._active_at.pop(transcriber, None)
 
-    def _lag_now(self, now):
-        return control_lag(self.transcribers, now)
+    def _lag_now(self, now, excluding=None):
+        # A candidate's own backlog is no evidence against it: at the decision point it
+        # holds no lease yet, and the observe-only tick seats it up to one tick later.
+        return control_lag((t for t in self.transcribers if t is not excluding), now)
 
     def tick(self, sample, now=None):
         """Once per second from the safety monitor: refresh the inputs, expire idle seats,
@@ -276,6 +287,8 @@ class LoadGovernor:
         self.caption_age = caption_age(self.transcribers, now)
         self.lag.observe(self.lag_now, now)
         self.lag_sustained = self.lag.sustained(now)
+        if self.observe_only and not self.measuring:
+            self._observe_seats(now)
         for transcriber in list(self.seats):
             if transcriber.has_lease():
                 self._active_at[transcriber] = now
@@ -286,6 +299,17 @@ class LoadGovernor:
         if not self.measuring:
             self._shed(now)
         self.tick_ms = round((time.perf_counter() - started) * 1000, 2)
+
+    def _observe_seats(self, now):
+        """Observe-only stand-in for the admit() call that 0.8.0 step 8 puts before the
+        slot wait: a live transcriber first seen holding a lease is admitted at this tick,
+        at most one tick after the real decision point and with the same inputs (the
+        cached sample and the other speakers' lag), so seats, refusals and would-be sheds
+        in the staging run are real figures. Never while measuring: synthetic tracks must
+        not be seated. A closed track's seat goes with the object or after seat_idle_s."""
+        for transcriber in list(self.transcribers):
+            if transcriber not in self.seats and transcriber.has_lease():
+                self.admit(transcriber, now)
 
     def _reopen(self, now):
         # Hysteresis: half the admission thresholds for one full window, so a reopened

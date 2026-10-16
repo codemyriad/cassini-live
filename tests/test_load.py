@@ -163,6 +163,12 @@ def test_lag_refuses_from_the_control_lag_of_leased_speakers():
     speaker.speak(clock.now, lag=3.0)
     speaker.leased = False
     assert gov.admit(Speaker()).admitted
+    # Nor is the wait a holder just served: only the backlog since its lease counts.
+    speaker.leased = True
+    speaker.lease_at = clock.now - 0.2  # pending_since is still 3 s back
+    assert gov.admit(Speaker()).admitted and gov.lag_now == 0.0
+    gov.tick(CALM)
+    assert gov.lag_now == pytest.approx(0.2)
 
 
 def test_seat_holders_are_never_refused():
@@ -320,6 +326,48 @@ def test_observe_mode_follows_provisional_thresholds_by_default():
     assert LoadGovernor(ceiling=2, thresholds=measured).observe_only is False
 
 
+def test_thresholds_cannot_leave_provisional_without_the_measurement_date():
+    with pytest.raises(ValueError, match="measured_on"):
+        Thresholds(provisional=False)
+    with pytest.raises(ValueError, match="measured_on"):
+        replace(THRESHOLDS, provisional=False, measured_on="")
+
+
+def test_observe_mode_seats_live_speakers_from_the_tick_and_marks_nothing():
+    # Nothing calls admit() in 0.7.3: the tick stands in for it, with the candidate's own
+    # backlog left out of the lag rule, as it is at the real decision point (no lease yet).
+    gov, clock = governor(ceiling=1, observe_only=True)
+    first, second = Speaker(), Speaker()
+    first.speak(clock.now, lag=1.5)
+    second.speak(clock.now, lag=1.5)
+    gov.transcribers.add(first)
+    gov.tick(CALM)
+    assert set(gov.seats) == {first} and gov.last_refusal is None and gov.lag_now == 1.5
+    gov.transcribers.add(second)
+    gov.tick(CALM)
+    assert set(gov.seats) == {first, second}  # observing: seated despite the refusal
+    assert gov.last_refusal == {"at": 5000.0, "reason": "ceiling"}
+    assert gov.status()["speaking"] == 2 and gov.closed is False
+    assert all(s.shed_reason is None and s.paused_until is None for s in (first, second))
+    # A seat is never re-evaluated, and a parked waiter is not seated until it is served.
+    waiter = Speaker()
+    waiter.pending_since = clock.now - 3.0
+    gov.transcribers.add(waiter)
+    gov.tick(CALM)
+    assert waiter not in gov.seats and gov.last_refusal["reason"] == "ceiling"
+    gov.measuring = True  # synthetic tracks of a capacity run are never seated
+    waiter.speak(clock.now)
+    gov.tick(CALM)
+    assert waiter not in gov.seats
+    gov.measuring = False
+    gov.tick(CALM)
+    assert waiter in gov.seats
+    gov, clock = governor(ceiling=1)  # acting mode: seats come from admit() only
+    gov.transcribers.add(first)
+    gov.tick(CALM)
+    assert not gov.seats
+
+
 def test_status_shape_matches_the_design():
     gov, clock = governor()
     leased, parked = seated(gov, clock, 2)
@@ -436,11 +484,15 @@ def test_lag_meter_p95_of_recent_requests():
 def test_control_lag_and_caption_age_read_the_given_transcribers():
     from cassini_live.load import caption_age, control_lag
 
-    holder, waiter = Speaker(), Speaker()
+    holder, waiter, served = Speaker(), Speaker(), Speaker()
     holder.speak(100.0, lag=0.5)
     waiter.pending_since = 97.0  # parked on the slot FIFO: no lease
     assert control_lag([holder, waiter], 100.0) == 0.5
     assert caption_age([holder, waiter], 100.0) == 3.0
+    served.speak(100.0)  # just handed the slot it waited 3 s for: lag counts from the lease
+    served.pending_since, served.lease_at = 97.0, 99.8
+    assert control_lag([holder, served], 100.0) == pytest.approx(0.5)
+    assert control_lag([served], 100.0) == pytest.approx(0.2)
     assert control_lag([], 100.0) == caption_age([], 100.0) == 0.0
 
 
@@ -454,4 +506,4 @@ def test_governor_reads_a_backend_transcriber_set_when_given_one():
     speaker.speak(Clock.now, lag=1.5)
     gov.tick(CALM)
     assert gov.lag_now == 1.5 and gov.transcribers is live
-    assert gov.status()["lagSeconds"] == 1.5 and gov.status()["seats"] == 0
+    assert gov.status()["lagSeconds"] == 1.5 and gov.status()["seats"] == 1

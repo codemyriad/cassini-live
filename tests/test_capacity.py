@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import http.client
 import json
 from unittest.mock import AsyncMock
 
@@ -239,6 +240,7 @@ async def test_watch_prints_one_json_line_per_second_from_status(monkeypatch, ca
                 "lastShed": None,
                 "tickMs": 0.3,
             },
+            "cpuHealth": {"eventLoopLagMs": 0.4, "monitorTickMs": 1.7},
         },
         "p95RequestSeconds": 0.5,
         "droppedSpeechChunks": 0,
@@ -255,13 +257,58 @@ async def test_watch_prints_one_json_line_per_second_from_status(monkeypatch, ca
         "at", "state", "lagSeconds", "lagSustainedSeconds", "captionAgeSeconds", "cpuStall",
         "cpuPressureAvg10", "engineDuty", "memoryUsedMiB", "memoryHeadroomMiB",
         "p95RequestSeconds", "droppedSpeechChunks", "capacityWaits", "hostRestarts", "seats",
-        "speaking", "lastRefusal", "lastShed", "tickMs",
+        "speaking", "lastRefusal", "lastShed", "tickMs", "monitorTickMs",
     ]  # fmt: skip
     assert lines[0]["engineDuty"] == 0.7 and lines[0]["hostRestarts"] == 0
+    assert lines[0]["tickMs"] == 0.3 and lines[0]["monitorTickMs"] == 1.7
     status["resourceSafety"]["state"] = "recovering"
     del status["resourceSafety"]["admission"]  # an older service: the line still prints
+    del status["resourceSafety"]["cpuHealth"]
     del status["hostRestarts"]  # Whistle has no host
     assert await capacity.watch(1) == 1
     (line,) = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert line["state"] == "recovering" and line["lagSeconds"] is None
     assert line["hostRestarts"] is None and line["p95RequestSeconds"] == 0.5
+    assert line["monitorTickMs"] is None and "error" not in line
+
+
+async def test_watch_survives_a_failed_read_and_keeps_its_cadence(monkeypatch, capsys):
+    # A trip restarts the container mid-run; the seconds after it are the ones the
+    # threshold derivation needs, so one failed read must not end the run.
+    status = {"resourceSafety": {"state": "ready", "admission": {"lagSeconds": 0.1}}}
+    failures = [
+        ConnectionRefusedError(111, "Connection refused"),
+        TimeoutError("timed out"),
+        RuntimeError("GET /status returned HTTP 503"),
+        json.JSONDecodeError("Expecting value", "", 0),
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ]
+    reads = iter([status, *failures, status])
+
+    def installed_request(method, path):
+        result = next(reads)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(capacity, "installed_request", installed_request)
+    monkeypatch.setattr(capacity, "WATCH_INTERVAL_S", 0.01)
+    assert await capacity.watch(7) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(lines) == 7 and lines[0]["state"] == lines[6]["state"] == "ready"
+    assert [line["state"] for line in lines[1:6]] == [None] * 5
+    assert [line["error"].split(":")[0] for line in lines[1:6]] == [
+        "ConnectionRefusedError",
+        "TimeoutError",
+        "RuntimeError",
+        "JSONDecodeError",
+        "RemoteDisconnected",
+    ]
+    assert list(lines[1]) == [*lines[0], "error"] and lines[1]["lagSeconds"] is None
+
+    # The exit status reports the last read: a service still down at the end is not ready.
+    def refused(method, path):
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    monkeypatch.setattr(capacity, "installed_request", refused)
+    assert await capacity.watch(1) == 1

@@ -12,12 +12,14 @@ with `stress-ng --cpu 4 --timeout 90` on the host; then the admin measurement at
 the run unless stated). The thresholds derived from them go into `load.Thresholds`
 with `measured_on` set.
 
-| Run | Speakers | Engine | lagSeconds | lagSustainedSeconds | captionAgeSeconds | p95RequestSeconds | cpuStall | cpuPressureAvg10 | engineDuty | memoryUsedMiB | memoryHeadroomMiB (min) | droppedSpeechChunks | capacityWaits | hostRestarts | tickMs |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| | | | | | | | | | | | | | | | |
+| Run | Speakers | Engine | lagSeconds | lagSustainedSeconds | captionAgeSeconds | p95RequestSeconds | cpuStall | cpuPressureAvg10 | engineDuty | memoryUsedMiB | memoryHeadroomMiB (min) | droppedSpeechChunks | capacityWaits | hostRestarts | tickMs | monitorTickMs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | | | | | | | | | | | | | | | |
 
 Derived: `lag_admit`, `lag_shed`, `cpu_stall_admit`, per-speaker memory delta,
-`SUPERVISOR_MARGIN`, `seat_idle_s`. Tick budget: `tickMs` < 5 ms.
+`SUPERVISOR_MARGIN`, `seat_idle_s`. Tick budget: `monitorTickMs` < 5 ms (the
+resource snapshot, the engine duty sample and the governor tick together;
+`tickMs` is the governor's in-memory bookkeeping alone).
 
 ## Diagnostic video
 

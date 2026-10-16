@@ -498,12 +498,34 @@ async def test_monitor_feeds_the_governor_each_tick_without_changing_admission(m
         assert "engineDuty" in guard.governor.sample and admission["engineDuty"] is None
         assert isinstance(status["cpuHealth"]["monitorTickMs"], float)
         assert admission["tickMs"] <= status["cpuHealth"]["monitorTickMs"]
-        # Nothing consults admit() in 0.7.3: no seats, no refusal, the measured limit rules.
+        # No live transcriber, so nothing to seat; the measured limit still rules.
         assert admission["seats"] == 0 and admission["lastRefusal"] is None
         assert guard.state == "ready" and pool.admission_limit == 2
         assert guard.last_refusal is None
     finally:
         await guard.close()
+
+
+def test_observing_governor_seats_the_backend_live_speakers_without_marking_them():
+    from tests.test_load import Speaker
+
+    pool = WorkerPool(1, worker_factory=FakeWorker)
+    guard = safe_factory(pool, CapacityAssessment(pool))
+    first, second = Speaker(), Speaker()
+    pool.transcribers.add(first)
+    pool.transcribers.add(second)
+    first.speak(10.0)
+    guard._observe(dict(SAFE), 10.0)
+    admission = guard.status()["admission"]
+    assert (admission["seats"], admission["speaking"]) == (1, 1)
+    assert admission["lastRefusal"] is None
+    second.speak(11.0)  # beyond the one-seat ceiling: recorded, seated, nothing marked
+    guard._observe(dict(SAFE), 11.0)
+    admission = guard.status()["admission"]
+    assert (admission["seats"], admission["speaking"]) == (2, 2)
+    assert admission["lastRefusal"]["reason"] == "ceiling" and admission["open"]
+    assert second.shed_reason is None and second.paused_until is None
+    assert guard.last_refusal is None and pool.admission_limit == 1
 
 
 def test_governor_is_marked_measuring_while_the_assessment_runs():

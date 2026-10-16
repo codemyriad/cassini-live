@@ -105,10 +105,11 @@ class SafetyController:
     def _hook(self, pool):
         pool.resource_check = lambda: pressure_problem(self.reader())
         pool.load_check = lambda: load_problem(self.reader(), self.engine_id)
-        # 0.7.3 observes only (0.8.0-instant-admission.md, step 4): the governor reads the
-        # backend's live transcribers from the 1 s tick and reports what it would decide;
-        # nothing consults admit() and no transcriber is marked. The seat ceiling is the
-        # backend's structural size until step 6 re-derives it from the engine threads.
+        # 0.7.3 observes only (0.8.0-instant-admission.md, step 4): nothing consults
+        # admit() and no transcriber is marked. The governor reads the backend's live
+        # transcribers from the 1 s tick, seats the ones it sees holding a lease and
+        # reports the decisions it would have taken. The seat ceiling is the backend's
+        # structural size until step 6 re-derives it from the engine threads.
         self.governor = LoadGovernor(
             ceiling=getattr(pool, "size", 0),
             per_speaker_mib=per_speaker_mib(self.engine_id),

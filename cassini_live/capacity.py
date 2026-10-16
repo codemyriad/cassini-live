@@ -122,9 +122,7 @@ def installed_request(method, path):
         )
         response = connection.getresponse()
         if response.status != 200:
-            raise RuntimeError(
-                f"Capacity check HTTP {response.status}; check that no calls are active"
-            )
+            raise RuntimeError(f"{method} {path} returned HTTP {response.status}")
         return json.loads(response.read())
     finally:
         connection.close()
@@ -133,14 +131,21 @@ def installed_request(method, path):
 WATCH_INTERVAL_S = 1.0  # the safety monitor's tick; a faster read would repeat samples
 
 
-def watch_line(status):
+# Read failures the service recovers from on its own: a restarting container (refused
+# or reset connection, socket timeout), an error page or a body cut off mid-write.
+READ_FAILURES = (OSError, http.client.HTTPException, RuntimeError, ValueError)
+
+
+def watch_line(status, error=None):
     """One per-second record of the lag signals (0.8.0-instant-admission.md, staging
     validation plan 1) from a /status body: the governor's admission block plus the
-    backend counters that show when the backlog turns into drops."""
-    admission = status["resourceSafety"].get("admission") or {}
+    backend counters that show when the backlog turns into drops. A failed read keeps
+    the columns (all None) and names the error, so the file stays one row per second."""
+    safety = status.get("resourceSafety") or {}
+    admission = safety.get("admission") or {}
     return {
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "state": status["resourceSafety"]["state"],
+        "state": safety.get("state"),
         **{
             key: admission.get(key)
             for key in (
@@ -162,19 +167,33 @@ def watch_line(status):
             key: admission.get(key)
             for key in ("seats", "speaking", "lastRefusal", "lastShed", "tickMs")
         },
+        # The whole monitor tick (snapshot, duty sample and governor), the figure the
+        # design's 5 ms budget is about; tickMs above is the governor alone.
+        "monitorTickMs": (safety.get("cpuHealth") or {}).get("monitorTickMs"),
+        **({"error": error} if error else {}),
     }
 
 
 async def watch(seconds):
-    """Print one JSON line per second from the running service; exit 0 iff still ready."""
+    """Print one JSON line per second from the running service; exit 0 iff still ready.
+    A read the service fails (restarting after a trip, timing out, truncating the body)
+    prints an error line and the run goes on: the seconds after a trip are the ones the
+    threshold derivation needs."""
     next_at = time.monotonic()
+    ready = False
     for remaining in range(max(1, seconds), 0, -1):
-        status = installed_request("GET", "/status")
-        print(json.dumps(watch_line(status)), flush=True)
+        try:
+            line = watch_line(installed_request("GET", "/status"))
+        except READ_FAILURES as error:
+            line = watch_line({}, error=f"{type(error).__name__}: {error}")
+        ready = line["state"] == "ready"
+        print(json.dumps(line), flush=True)
         if remaining > 1:
-            next_at += WATCH_INTERVAL_S
+            # A read that outlasted the interval (the 15 s socket timeout) re-anchors
+            # instead of firing the missed reads back to back on one second.
+            next_at = max(next_at + WATCH_INTERVAL_S, time.monotonic())
             await asyncio.sleep(max(0, next_at - time.monotonic()))
-    return 0 if status["resourceSafety"]["state"] == "ready" else 1
+    return 0 if ready else 1
 
 
 async def main(args):
