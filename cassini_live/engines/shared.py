@@ -2,7 +2,8 @@
 
 One host process serves every speaker. Admission is a count of speaking slots equal
 to the measured speaker count; a slot is held for one gate segment, never preempted.
-Native streams stay open across pauses and are bounded by max_streams.
+Native streams stay open across pauses, close after a minute of silence, and are bounded
+by max_streams.
 """
 
 import asyncio

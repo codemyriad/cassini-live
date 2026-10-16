@@ -89,11 +89,12 @@ turn-taking harness passed at least 16 participants on 2 CPUs. The limit is
 **provisional** until a staging call measures per-track CPU and memory.
 
 Tracks are not seats: only speakers are admitted to a Whistle worker or a
-Nemotron slot. With Nemotron, each participant who has spoken keeps a native
-engine stream until their track closes, and the engine holds at most 12 (the
-memory floor below allows 12 × 16 MiB). In a call where more than 12 different
-people speak, the 13th one's speech is refused ("Too many open caption
-streams") until a speaker who has spoken leaves.
+Nemotron slot. With Nemotron, a participant who has spoken keeps a native
+engine stream across short pauses, so the next turn continues the same
+context, and gives it back after a minute of silence. The engine holds at most
+12 streams (the memory floor below allows 12 × 16 MiB), so up to 12 different
+people can speak within any one minute; a 13th person speaking in that minute
+is refused ("Too many open caption streams") until someone's stream idles out.
 
 ## Shedding
 

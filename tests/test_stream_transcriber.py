@@ -648,3 +648,37 @@ async def test_admission_and_slot_share_one_bounded_wait(monkeypatch):
     # Seat after 0.2 s, then the slot gets only the remaining 0.1 s, not another 0.3 s.
     assert time.monotonic() - started < 0.45 and fake.capacity_waits == 1
     fake.release_slot(held)
+
+
+async def test_an_idle_stream_is_closed_and_reopened_at_the_next_turn(monkeypatch):
+    # Twenty people in a call must not hold twenty native streams: a speaker silent for
+    # STREAM_IDLE_S gives the stream back, and their next turn opens a new one.
+    monkeypatch.setattr(StreamTranscriber, "STREAM_IDLE_S", 0.05)
+    fake = await backend()
+    captions = asyncio.Queue()
+    track = fake.transcriber("s", "en", captions)
+    decoding = asyncio.create_task(track._decode())
+    track.queue.put_nowait(chunk(0))
+    track.queue.put_nowait(chunk(1, end=True))
+    async with asyncio.timeout(5):
+        while not (fake.streams and fake.streams[0].calls[-1] == ("cancel",)):
+            await asyncio.sleep(0.01)
+    assert track.engine_stream is None and fake.busy == 0
+    track.queue.put_nowait(chunk(2))
+    track.queue.put_nowait(chunk(3, end=True))
+    track.queue.put_nowait(None)
+    async with asyncio.timeout(5):
+        await decoding
+    first, second = fake.streams
+    assert [c[0] for c in first.calls] == ["audio", "audio", "commit", "cancel"]
+    assert [c[0] for c in second.calls][:2] == ["audio", "audio"]
+    assert [e.message for e in events(captions) if e.final] == ["w w", "w w"]
+
+
+async def test_a_speaker_holding_a_slot_is_never_idled(monkeypatch):
+    monkeypatch.setattr(StreamTranscriber, "STREAM_IDLE_S", 0.01)
+    fake = await backend()
+    track = fake.transcriber("s", "en", asyncio.Queue())
+    await run(track, chunk(0), chunk(1, end=True))
+    (stream,) = fake.streams
+    assert [c[0] for c in stream.calls] == ["audio", "audio", "commit", "cancel"]

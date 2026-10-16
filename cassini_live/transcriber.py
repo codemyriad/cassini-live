@@ -430,6 +430,11 @@ class StreamTranscriber(WhistleTranscriber):
     # speaker keeps audio as long as the stale limit allows.
     SEGMENT_SECONDS = 8
     SLOT_WAIT_S = 4
+    # A stream left open after a segment is closed after this much silence, so the engine's
+    # stream limit (catalog.MAX_STREAMS) bounds the people who spoke in the last minute, not
+    # everyone who ever spoke in a call. Derived, not measured: native context older than
+    # a minute of silence carries nothing a new turn needs; reopening costs one request.
+    STREAM_IDLE_S = 60
 
     def __init__(self, *args, **kwargs):
         self.slot = None
@@ -507,10 +512,24 @@ class StreamTranscriber(WhistleTranscriber):
             self.pool.audio_seconds += len(samples) / 16000
             await self._emit(result)
 
+    async def _next_chunk(self):
+        """The next chunk; an idle open stream is closed while waiting for it."""
+        if self.engine_stream is None or self.slot is not None:
+            return await self.queue.get()
+        try:
+            return await asyncio.wait_for(self.queue.get(), self.STREAM_IDLE_S)
+        except TimeoutError:
+            try:
+                await self._end_stream("idle")
+            except Exception as error:
+                LOGGER.warning("Could not close an idle caption stream (%s)", type(error).__name__)
+                self._drop_stream()
+            return await self.queue.get()
+
     async def _decode(self):
         expected = 0
         while True:
-            chunk = await self.queue.get()
+            chunk = await self._next_chunk()
             if chunk is not None:
                 self.pending_since = chunk.created_at
             try:
