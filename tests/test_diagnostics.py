@@ -9,8 +9,17 @@ import av
 import pytest
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
-from cassini_live.diagnostic_video import HEIGHT, WIDTH, DashboardTrack, history_column, render
-from cassini_live.diagnostics import DiagnosticVideo, process_usage
+from cassini_live.diagnostic_video import (
+    FRAME_CAP,
+    HEIGHT,
+    QUANTIZER,
+    QUANTIZER_MAX,
+    WIDTH,
+    DashboardTrack,
+    history_column,
+    render,
+)
+from cassini_live.diagnostics import NAME_BYTES, DiagnosticVideo, clip_name, process_usage
 
 
 async def test_sparse_frames_decode_and_have_bounded_cost():
@@ -22,7 +31,7 @@ async def test_sparse_frames_decode_and_have_bounded_cost():
             track.next_frame = 0  # accelerate pacing, preserve the real 2s video timestamps
             track.origin = time.monotonic() - i * 2
             packet = await track.recv()
-            assert packet.size <= 32768
+            assert packet.size <= FRAME_CAP
             frames = decoder.decode(packet)
             assert len(frames) == 1
             assert (frames[0].width, frames[0].height) == (WIDTH, HEIGHT)
@@ -211,6 +220,8 @@ async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
 
     from websockets.asyncio.server import serve
 
+    from cassini_live.diagnostic_video import LINE_LIMIT
+
     received = []
     offered = asyncio.Event()
     byed = asyncio.Event()
@@ -230,8 +241,10 @@ async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
         port = server.sockets[0].getsockname()[1]
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
-            "-m",
-            "cassini_live.diagnostic_video",
+            "-c",
+            # The real entry point, without nice 19: on a loaded machine the child would
+            # miss its one-second shutdown sends and the test would flake.
+            "from cassini_live.diagnostic_video import run; run(nice=0)",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -251,11 +264,22 @@ async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
         }
         proc.stdin.write((json.dumps(config) + "\n").encode())
         await proc.stdin.drain()
-        await asyncio.wait_for(offered.wait(), 10)
+        # Bounded but generous: importing av and aiortc takes seconds on a busy machine.
+        await asyncio.wait_for(offered.wait(), 30)
+        # A metrics line over the child's limit is skipped and still answered; the next
+        # one is read normally.
+        proc.stdin.write(json.dumps({"lanes": [], "pad": "x" * 3 * LINE_LIMIT}).encode() + b"\n")
+        await proc.stdin.drain()
+        report = json.loads(await asyncio.wait_for(proc.stdout.readline(), 15))
+        assert report["skippedSamples"] == 1 and report["state"] != "failed"
+        proc.stdin.write(b'{"vadActive": 1}\n')
+        await proc.stdin.drain()
+        report = json.loads(await asyncio.wait_for(proc.stdout.readline(), 15))
+        assert report["skippedSamples"] == 1
         proc.stdin.close()
         proc.terminate()
-        await asyncio.wait_for(proc.wait(), 5)
-        await asyncio.wait_for(byed.wait(), 2)
+        await asyncio.wait_for(proc.wait(), 15)
+        await asyncio.wait_for(byed.wait(), 5)
 
     incalls = [
         m["internal"]["incall"]["incall"]
@@ -528,3 +552,304 @@ async def test_publisher_end_is_logged_with_its_reason(monkeypatch, caplog):
     manager.start("room")
     await manager.task
     assert "Diagnostic video ended (paused: insufficient diagnostic headroom)" in caplog.text
+
+
+def busy_history(lanes=10, period=2, paused=(1, 4, 7)):
+    """Ten lanes changing state every `period` seconds, several paused stretches and an
+    uneven lag graph: the busiest lanes view the reviewers measured (41-61 KB at 0.7.4)."""
+    now = time.monotonic()
+    states = ["speech", "lost", "paused", "waiting", None]
+    return [
+        {
+            "t": now - 120 + j,
+            "lanes": {
+                i + 1: (
+                    "paused"
+                    if i in paused and (j // 10) % 2
+                    else states[(i + j // period) % len(states)]
+                )
+                for i in range(lanes)
+            },
+            "finals": j % 3 == 0,
+            "drops": 0,
+            "lag": (j * 7919 % 251) / 100,
+            "shed": j % 17 == 0,
+        }
+        for j in range(120)
+    ]
+
+
+def busy_data(name="W" * 40):
+    return {
+        **FULL,
+        "admission": {**ADMISSION, "observeOnly": True, "seats": 8, "ceiling": 8},
+        "decision": {"at": time.time(), "verb": "keep paused", "who": name, "text": "x" * 60},
+        "lanes": [
+            {
+                "id": i + 1,
+                "name": name,
+                "scribe": i % 4 + 1 if i % 3 == 0 else 0,
+                "waiting": i % 3 == 1,
+                "paused": i % 3 == 2,
+                "lag": 2.71,
+            }
+            for i in range(10)
+        ],
+    }
+
+
+@pytest.mark.parametrize("name", ["W" * 40, "\U0001f600" * 20, "Ж" * 40])
+async def test_busiest_frames_stay_under_the_cap_and_never_raise(name):
+    track = DashboardTrack()
+    decoder = av.CodecContext.create("vp8", "r")
+    try:
+        track.update(busy_data(name))
+        for column in busy_history():
+            track.history.append(column)
+        for i in range(KEYFRAMES := 6):
+            track.next_frame = 0
+            track.origin = time.monotonic() - i  # stay within the lanes view
+            packet = await track.recv()
+            assert packet.size <= FRAME_CAP
+            assert len(decoder.decode(packet)) == 1
+            track.history.append(busy_history()[i])
+        assert track.frames == KEYFRAMES and track.skipped == 0
+        assert QUANTIZER <= track.quantizer <= QUANTIZER_MAX
+    finally:
+        track.stop()
+
+
+async def test_a_frame_too_big_even_when_coarse_is_skipped_then_a_keyframe_follows(monkeypatch):
+    from cassini_live import diagnostic_video
+
+    track = DashboardTrack()
+    decoder = av.CodecContext.create("vp8", "r")
+    image = render(busy_data(), busy_history())
+    try:
+        first = track._encode(image, 0, True)
+        assert first is not None and len(decoder.decode(first)) == 1
+        monkeypatch.setattr(diagnostic_video, "FRAME_CAP", 500)
+        assert track._encode(image, 90000, False) is None
+        assert track.skipped == 1 and track.force_key and track.quantizer == QUANTIZER_MAX
+        monkeypatch.undo()
+        # The next frame is a keyframe even off the keyframe schedule: the encoder's
+        # reference was never sent, and the viewer still holds the first picture.
+        track.frames, track.view = 1, "lanes"
+        track.next_frame, track.origin = 0, time.monotonic()
+        packet = await track.recv()
+        assert packet.is_keyframe and not track.force_key
+        assert len(decoder.decode(packet)) == 1
+    finally:
+        track.stop()
+
+
+async def test_a_view_change_returns_to_the_finest_quantizer():
+    track = DashboardTrack()
+    try:
+        track.update(busy_data())
+        for column in busy_history():
+            track.history.append(column)
+        track.next_frame, track.origin = 0, time.monotonic()
+        await track.recv()
+        assert track.quantizer > QUANTIZER  # the busy lanes view needed a coarser one
+        track.next_frame, track.origin = 0, time.monotonic() - 20  # pipeline view
+        await track.recv()
+        assert track.quantizer == QUANTIZER and track.view == "pipeline"
+    finally:
+        track.stop()
+
+
+async def test_oversized_lines_are_dropped_whole():
+    from cassini_live.diagnostic_video import read_line
+
+    reader = asyncio.StreamReader(limit=64)
+    reader.feed_data(b"a" * 200 + b"\n" + b"ok\n" + b"b" * 70)
+    reader.feed_data(b"c" * 70 + b"\n" + b"next\n")
+    reader.feed_eof()
+    assert await read_line(reader) is None
+    assert await read_line(reader) == b"ok\n"
+    assert await read_line(reader) is None
+    assert await read_line(reader) == b"next\n"
+    assert await read_line(reader) == b""
+
+
+def test_names_are_cut_by_the_bytes_they_cost_in_the_line():
+    import json
+
+    assert clip_name("x" * 200) == "x" * 40
+    assert clip_name("Ж" * 40) == "Ж" * 40  # 6 bytes escaped: 240
+    assert clip_name("\U0001f600" * 40) == "\U0001f600" * 20  # 12 bytes escaped
+    for name in ("x" * 200, "Ж" * 80, "\U0001f600" * 40, "Guest · " + "\U0001f600" * 40):
+        assert len(json.dumps(clip_name(name))) - 2 <= NAME_BYTES
+
+
+def widest(value):
+    """The widest JSON a status value of this type can plausibly take."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, dict):
+        return {key: widest(item) for key, item in value.items()}
+    if isinstance(value, int):
+        return -(10**12)
+    if isinstance(value, str):
+        return "x" * 24
+    return -1.2345678901234567e-300  # floats and None (numbers not yet measured)
+
+
+@pytest.mark.parametrize("reason", [None, "lag", "cpu", "memory", "ceiling", "hold", "shed"])
+async def test_worst_case_sample_line_fits_the_child_limit(monkeypatch, reason):
+    import json
+
+    import cassini_live.diagnostics as module
+    from cassini_live.diagnostic_video import LINE_LIMIT
+    from cassini_live.load import LoadGovernor
+
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    lines, shown = [], []
+
+    class Pipe:
+        def write(self, data):
+            lines.append(data)
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Out:
+        async def readline(self):
+            return b'{"state": "failed"}\n'
+
+    class Child:
+        pid, returncode, stdin, stdout = 123, None, Pipe(), Out()
+
+        def terminate(self):
+            self.returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def spawn(*args, **kwargs):
+        return Child()
+
+    class Transcriber:
+        SEGMENT_SECONDS = 15
+
+        def __init__(self, worker):
+            big = 10**12
+            self.gate = SimpleNamespace(
+                active=True, chunks_emitted=big, last_probability=0.123456789
+            )
+            self.queue = SimpleNamespace(qsize=lambda: big)
+            self.lost_chunks = self.lease_samples = big
+            self.worker, self.paused_until, self.pending_since = worker, 1e18, -1e9
+            self.pending = "x"
+            self.has_lease = lambda: False
+
+    workers = [object() for _ in range(12)]
+    mine = {f"s{i}": Transcriber(workers[i] if i % 2 else None) for i in range(12)}
+    # 40 emoji: 480 bytes once escaped, before the cut.
+    owner = SimpleNamespace(
+        transcribers=mine,
+        speaker_name=lambda sid: "\U0001f600" * 40,
+        defunct=asyncio.Event(),
+        backend_url="https://cloud.example",
+        show_names=shown.append,
+    )
+    other = SimpleNamespace(transcribers={"o": Transcriber(None)}, defunct=asyncio.Event())
+    governor = LoadGovernor(ceiling=8)
+    status = {key: widest(value) for key, value in governor.status().items()}
+    status.update(
+        lastRefusal={"at": -1.2345678901234567e-300, "reason": "memory"},
+        lastShed={"at": -1.2345678901234567e-300, "lag": -1.2345678901234567e-300},
+    )
+    governor.status = lambda: dict(status)
+    first = next(iter(mine.values()))
+    governor.last_decision = {
+        "at": 1.0,
+        "reason": None if reason == "shed" else reason,
+        "seats": -(10**12),
+        "ceiling": -(10**12),
+        "lag": -1.2345678901234567e30,
+        "cpuStall": -1.2345678901234567e30,
+        "headroomMiB": -(10**12),
+    }
+    governor.last_decision_ref = weakref.ref(first)
+    if reason == "shed":
+        governor.last_shed = {"at": 2.0, "lag": -1.2345678901234567e30}
+        governor.last_shed_ref = weakref.ref(first)
+    big = 10**12
+    pool = SimpleNamespace(
+        busy=big,
+        admission_limit=big,
+        waiting=big,
+        workers=set(workers),
+        dropped_chunks=big,
+        chunks_processed=big,
+        audio_seconds=1.2345678901234567e30,
+        scheduling_yields=big,
+        stream_ends={},
+        finals_emitted=big,
+        partials_emitted=big,
+        engine_id="nemotron-multilingual",
+        threads=big,
+        restarts=big,
+        lag=SimpleNamespace(p95=lambda: -1.2345678901234567e-300),
+    )
+    settings = SimpleNamespace(
+        server="wss://example.invalid", model_dump=lambda: {"stunservers": [], "turnservers": []}
+    )
+    service = SimpleNamespace(
+        settings=settings,
+        admission=SimpleNamespace(
+            state="ready", pool=pool, governor=governor, tracks=[None] * 99, max_tracks=big
+        ),
+        clients={"room": owner, **{f"r{i}": other for i in range(9)}},
+    )
+    manager = DiagnosticVideo(service)
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(module, "process_usage", lambda pid: (0, 1))
+    monkeypatch.setattr(
+        module,
+        "snapshot",
+        lambda: {
+            "memoryFraction": 0.2,
+            "memoryLimitBytes": 2 * 1024**3,
+            "hostAvailableBytes": 10**18,
+            "hostMemoryBytes": 10**18,
+            "cpuQuotaCpus": -1.2345678901234567e-300,
+            "oomKills": big,
+        },
+    )
+    monkeypatch.setattr(manager, "_host_cpu", lambda: (100, 90))
+    monkeypatch.setattr(manager, "_caption_cpu", lambda: 0)
+    monkeypatch.setattr(manager, "_cpu_weight", lambda: 10000)
+    await manager._run("room")
+    sample = json.loads(lines[-1])
+    assert len(sample["lanes"]) == 10 and all(len(lane["name"]) == 20 for lane in sample["lanes"])
+    assert sample["decision"]["who"] == "\U0001f600" * 20
+    # Measured: 6401 bytes at most (names 11 x 240, every number 24 characters wide);
+    # at least 1.5 KiB must stay free for fields added later.
+    assert len(lines[-1]) <= LINE_LIMIT - 1536
+    # Names were read only while the video ran.
+    assert shown == [True, False]
+
+
+@pytest.mark.parametrize(
+    "segment, label", [(None, "per piece"), (0, "per piece"), (8, "per piece, 8 s max")]
+)
+def test_pipeline_names_no_segment_maximum_without_a_microphone(monkeypatch, segment, label):
+    from cassini_live import diagnostic_video
+
+    drawn = []
+    real = diagnostic_video.ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, *args, **kwargs):
+        drawn.append(text)
+        return real(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(diagnostic_video.ImageDraw.ImageDraw, "text", spy)
+    render({**FULL, "lanes": [], "segmentSeconds": segment}, [], "pipeline")
+    assert any(label == text or label in text.split("\n") for text in drawn)
+    assert not any("None" in text for text in drawn)

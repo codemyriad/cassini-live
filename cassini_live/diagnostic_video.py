@@ -59,7 +59,19 @@ VIEW_S = 20
 # A late joiner sees the feed within 4 s (it waited up to 2 s at 0.5 fps all-keyframe).
 KEYFRAME_EVERY = 4
 QUANTIZER = 40  # text stays legible at 960x540; see DashboardTrack for frame sizes
+# A frame over FRAME_CAP is re-encoded at a coarser quantizer, 8 steps at a time, and
+# skipped if still too big at QUANTIZER_MAX. Measured on the busiest lanes view (ten
+# lanes changing state every column, a noisy lag graph, 40-character names): 54 KB at
+# 40, 38 KB at 48, 26 KB at 56. Text is still readable at 56.
+QUANTIZER_STEP, QUANTIZER_MAX = 8, 56
+# Per-frame byte cap, from the first diagnostic video (e8015c1, unexplained there): at
+# the 128 kbit/s the offer asks for, 32 KiB is two seconds of sending, so one frame can
+# never queue more than two frame periods behind itself.
+FRAME_CAP = 32768
 NAME_MAX = 40  # characters; longer names are cut with an ellipsis before drawing
+# Longest metrics line read from the parent; diagnostics.NAME_BYTES keeps samples well
+# under it, and a longer line is skipped, not fatal.
+LINE_LIMIT = 8192
 
 BG = "#090909"
 LANE_BG = "#141413"
@@ -77,12 +89,16 @@ WAITING = "#4f8a99"
 GOLD = "#f6b84d"
 AMBER = "#fcb700"
 AMBER_BG = "#2d2208"
+# Paused speech: a flat mid-dark amber fill inside a bright amber edge. Darker than the
+# captioned and lost fills, filled where held is only an outline, so the four states
+# differ in lightness and not only in hue. Flat on purpose: the 0.7.4 45-degree
+# hatching cost VP8 41-61 KB per keyframe once a lane paused (over the frame cap).
+PAUSED_BG = "#6b4f05"
 RED = "#ff6f4c"
 RED_BG = "#2d1510"
 
 _FONTS = {}
 _BASE_IMAGES = {}
-_STRIPES = None
 
 
 def _font(kind, size):
@@ -122,26 +138,6 @@ def _saturn(image, x, y, size=32):
     draw.line(points, fill=CYAN, width=3 * scale, joint="curve")
     small = layer.resize((size, size), Image.Resampling.LANCZOS)
     image.paste(small, (x, y), small)
-
-
-def _stripes():
-    """Amber diagonal hatching for paused speech, pasted through a mask per box."""
-    global _STRIPES
-    if _STRIPES is None:
-        tile = Image.new("RGB", (WIDTH, 40), AMBER_BG)
-        draw = ImageDraw.Draw(tile)
-        for x in range(-40, WIDTH + 40, 9):
-            draw.line((x, 40, x + 40, 0), fill=AMBER, width=4)
-        _STRIPES = tile
-    return _STRIPES
-
-
-def _paste_stripes(image, box):
-    x0, y0, x1, y1 = (int(v) for v in box)
-    if x1 <= x0 or y1 <= y0:
-        return
-    region = _stripes().crop((x0, 0, x1, min(40, y1 - y0)))
-    image.paste(region, (x0, y0))
 
 
 def _header(image, draw, data, pill, title=None):
@@ -187,7 +183,7 @@ def _base_image(view):
             items = [
                 ("fill", CYAN, "captioned"),
                 ("outline", WAITING, "held"),
-                ("stripes", AMBER, "paused"),
+                ("paused", AMBER, "paused"),
                 ("fill", RED, "lost"),
             ]
             widths = [14 + 6 + legend.getlength(label) for _, _, label in items]
@@ -199,7 +195,7 @@ def _base_image(view):
                 elif kind == "outline":
                     draw.rectangle(box, outline=colour, width=3)
                 else:
-                    _paste_stripes(image, (x, 193, x + 14, 207))
+                    draw.rectangle(box, fill=PAUSED_BG, outline=AMBER, width=2)
                 draw.text((x + 20, 206), label, font=legend, fill=TEXT_SOFT, anchor="ls")
                 x += w + 18
             draw.rectangle((LANES_X, GRAPH_Y, NOW_X - 1, GRAPH_Y + GRAPH_H - 1), fill=LANE_BG)
@@ -420,7 +416,7 @@ def _render_lanes(data, history):
                 if state == "waiting":
                     draw.rectangle(box, outline=WAITING, width=3)
                 elif state == "paused":
-                    _paste_stripes(image, (left, y, right + 1, y + lane_h))
+                    draw.rectangle(box, fill=PAUSED_BG, outline=AMBER, width=2)
                 else:
                     draw.rectangle(box, fill=RED if state == "lost" else CYAN)
             start = i
@@ -584,7 +580,10 @@ def _render_pipeline(data, history):
             "2 · CUT",
             "Speech pieces",
             "1 s",
-            f"per piece, {data.get('segmentSeconds', 8)} s max",
+            # Each engine cuts at its own length; unknown until a microphone opens.
+            f"per piece, {segment} s max"
+            if (segment := data.get("segmentSeconds"))
+            else "per piece",
             f"queue {int(data.get('queuedChunks', 0))} of {6 * max(1, len(lanes))}\n"
             "older than 4 s:\ndropped, not late",
             CYAN,
@@ -770,6 +769,20 @@ class DashboardTrack(VideoStreamTrack):
         super().__init__()
         self.data = {}
         self.history = deque(maxlen=COLUMNS)
+        self.view = None
+        self.next_frame = 0
+        self.origin = time.monotonic()
+        self.frames = 0
+        self.skipped = 0
+        self.force_key = False
+        self.last_frame = time.monotonic()
+        self.bytes = 0
+        self._open(QUANTIZER)
+
+    def _open(self, quantizer):
+        """A fresh encoder at a fixed quantizer; its first frame is a keyframe. One at a
+        time: each libvpx encoder at 960x540 holds about 19 MiB of the 128 MiB budget."""
+        self.quantizer = quantizer
         self.codec = av.CodecContext.create("libvpx", "w")
         self.codec.width, self.codec.height = WIDTH, HEIGHT
         self.codec.pix_fmt = "yuv420p"
@@ -780,50 +793,86 @@ class DashboardTrack(VideoStreamTrack):
         # 36, too close to the 32 KiB frame cap), 2 KiB for an unchanged inter frame.
         # One keyframe per KEYFRAME_EVERY frames averages about 70 kbit/s.
         self.codec.bit_rate = 96000
-        self.codec.qmin = QUANTIZER
-        self.codec.qmax = QUANTIZER
+        self.codec.qmin = quantizer
+        self.codec.qmax = quantizer
         self.codec.options = {
             "deadline": "realtime",
             "cpu-used": "8",
             "lag-in-frames": "0",
-            "crf": str(QUANTIZER),
+            "crf": str(quantizer),
         }
-        self.view = None
-        self.next_frame = 0
-        self.origin = time.monotonic()
-        self.frames = 0
-        self.last_frame = time.monotonic()
-        self.bytes = 0
 
     def update(self, data):
         if self.data:
             self.history.append(history_column(self.data, data, time.monotonic()))
         self.data = data
 
+    def _encode(self, image, pts, key):
+        """One packet of at most FRAME_CAP bytes, or None to skip this frame.
+
+        A frame over the cap is encoded again, as a keyframe, by a coarser encoder, up to
+        QUANTIZER_MAX. Inter frames reference the encoder's last frame, so after a frame
+        that was never sent the next one must be a keyframe."""
+        while True:
+            frame = av.VideoFrame.from_image(image)
+            frame.pts = pts
+            frame.time_base = self.codec.time_base
+            if key:
+                frame.pict_type = av.video.frame.PictureType.I
+            packets = self.codec.encode(frame)
+            if len(packets) == 1 and packets[0].size <= FRAME_CAP:
+                return packets[0]
+            if self.quantizer >= QUANTIZER_MAX:
+                # Viewers keep the previous picture; the stream itself must not end.
+                self.skipped += 1
+                self.force_key = True
+                return None
+            self._open(min(QUANTIZER_MAX, self.quantizer + QUANTIZER_STEP))
+            key = True
+
     async def recv(self):
-        await asyncio.sleep(max(0, self.next_frame - time.monotonic()))
-        self.next_frame = time.monotonic() + FRAME_S
-        view = "lanes" if int((time.monotonic() - self.origin) // VIEW_S) % 2 == 0 else "pipeline"
-        frame = av.VideoFrame.from_image(render(self.data, self.history, view))
-        frame.pts = int((time.monotonic() - self.origin) * 90000)
-        frame.time_base = self.codec.time_base
-        # The packets bypass aiortc's encoder, so a viewer's keyframe request cannot be
-        # honoured: a periodic keyframe bounds a late joiner's wait instead. A view change
-        # redraws everything, so it starts a keyframe too.
-        if self.frames % KEYFRAME_EVERY == 0 or view != self.view:
-            frame.pict_type = av.video.frame.PictureType.I
-        self.view = view
-        packets = self.codec.encode(frame)
-        if len(packets) != 1 or packets[0].size > 32768:
-            raise RuntimeError("Diagnostic frame exceeds budget")
+        while True:
+            await asyncio.sleep(max(0, self.next_frame - time.monotonic()))
+            self.next_frame = time.monotonic() + FRAME_S
+            elapsed = time.monotonic() - self.origin
+            view = "lanes" if int(elapsed // VIEW_S) % 2 == 0 else "pipeline"
+            # The packets bypass aiortc's encoder, so a viewer's keyframe request cannot be
+            # honoured: a periodic keyframe bounds a late joiner's wait instead. A view
+            # change redraws everything, so it starts a keyframe too, and goes back to the
+            # finest quantizer: a busy view should not coarsen the next one.
+            key = self.frames % KEYFRAME_EVERY == 0 or view != self.view or self.force_key
+            if view != self.view and self.quantizer != QUANTIZER:
+                self._open(QUANTIZER)
+            self.view = view
+            image = render(self.data, self.history, view)
+            packet = self._encode(image, int(elapsed * 90000), key)
+            if packet is not None:
+                break
+        self.force_key = False
         self.frames += 1
         self.last_frame = time.monotonic()
-        self.bytes += packets[0].size
-        return packets[0]
+        self.bytes += packet.size
+        return packet
 
 
-async def main():
-    os.nice(19)
+async def read_line(reader):
+    """One line from the parent; None for a line over the reader's limit, which is consumed
+    whole and dropped so the next read starts at the next line; b"" at the end of input."""
+    oversized = False
+    while True:
+        try:
+            line = await reader.readuntil(b"\n")
+        except asyncio.LimitOverrunError as error:
+            await reader.readexactly(error.consumed)
+            oversized = True
+            continue
+        except asyncio.IncompleteReadError:
+            return b""
+        return None if oversized else line
+
+
+async def main(nice=19):
+    os.nice(nice)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     # Bound allocations in the optional process independently of application logic.
     resource.setrlimit(resource.RLIMIT_AS, (768 * 1024**2, 768 * 1024**2))
@@ -832,7 +881,7 @@ async def main():
     if main_task is not None:
         with suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
-    reader = asyncio.StreamReader(limit=8192)
+    reader = asyncio.StreamReader(limit=LINE_LIMIT)
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     config = json.loads(await asyncio.wait_for(reader.readline(), 8))
     backend = config["backend"]
@@ -947,11 +996,17 @@ async def main():
                 async def updates():
                     previous_bytes, previous_time = 0, time.monotonic()
                     announced = 0.0
+                    skipped_samples = 0
                     while True:
-                        line = await asyncio.wait_for(reader.readline(), 10)
-                        if not line:
+                        line = await asyncio.wait_for(read_line(reader), 10)
+                        if line == b"":
                             return
-                        track.update(json.loads(line))
+                        # An oversized sample is skipped, but still answered: the parent
+                        # reads one reply per line it writes.
+                        if line is None:
+                            skipped_samples += 1
+                        else:
+                            track.update(json.loads(line))
                         stats = await sender.getStats()
                         sent = sum(s.bytesSent for s in stats.values() if s.type == "outbound-rtp")
                         now = time.monotonic()
@@ -994,6 +1049,9 @@ async def main():
                                     "state": pc.connectionState,
                                     "frames": track.frames,
                                     "kbps": round(kbps, 1),
+                                    "skippedFrames": track.skipped,
+                                    "skippedSamples": skipped_samples,
+                                    "quantizer": track.quantizer,
                                 }
                             ),
                             flush=True,
@@ -1028,11 +1086,17 @@ async def main():
         await pc.close()
 
 
-if __name__ == "__main__":
+def run(nice=19):
+    """The child's entry point. Tests pass nice=0: at 19 on a loaded machine the child's
+    one-second shutdown sends (incall 0, bye) can miss their deadlines."""
     try:
-        asyncio.run(main())
+        asyncio.run(main(nice))
     except asyncio.CancelledError:
         raise SystemExit(0)
     except Exception as error:
         print(json.dumps({"state": "failed", "error": type(error).__name__}), flush=True)
         raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    run()

@@ -18,8 +18,9 @@ is closed), and how far captions trail speech, on a 0–3 s bar marked at the
 admit and shed thresholds.
 
 One lane per open microphone scrolls two minutes of history: speech that was
-captioned, speech held waiting for a seat, speech paused by shedding (amber
-stripes) and audio lost. The speaker's display name sits over the lane's
+captioned (light cyan), speech held waiting for a seat (a teal outline), speech
+paused by shedding (dark amber inside a bright amber edge) and audio lost
+(red). The four differ in lightness as well as hue. The speaker's display name sits over the lane's
 oldest end. A tag beside each lane shows the slot (Nemotron) or scribe
 (Whistle) it holds and that speaker's own lag, or *held*, *paused* or *idle*.
 
@@ -47,19 +48,36 @@ container started.
 ## Names
 
 Talk's call events carry no display names, so the app reads the room's
-participant list from Talk as the Nextcloud user who enabled captions there, at
-most once every 10 seconds, and only while the diagnostic video is enabled.
-Names reach the video for the room that hosts it. Lanes from other captioned
-rooms read *other call*, and the decision line calls their speakers "someone in
+participant list from Talk, as the Nextcloud user who most recently enabled
+captions there. It does so only for the room that hosts the running video and
+only while it runs, at most once every 10 seconds; a participant who joins while
+a read is in flight is picked up by one more read once the 10 seconds have
+passed. The first read as a given user costs two requests (nc_py_api also reads
+the server's capabilities when it switches user); later reads cost one. If Talk
+refuses that user (403 or 404, for example after they left the room), the app
+stops asking as them until the next user enables captions there.
+
+Names reach the video for the room that hosts it and are dropped from memory
+when the video stops or moves to another room. Lanes from other captioned rooms
+read *other call*, and the decision line calls their speakers "someone in
 another call". Guests show as "Guest · name". When the list cannot be read the
-lanes read *Participant*; captions are unaffected. Names are never logged.
+lanes read *Participant*; captions are unaffected. Names are never logged. Each
+name is cut to 40 characters and to 240 bytes as it travels to the video
+process (20 emoji), which keeps every metrics line well inside the pipe's 8 KiB
+line limit; a longer line would be skipped, not fatal.
 
 ## Cost and limits
 
 There is at most one video publisher per installation. It sends 960×540 VP8 at
 one frame per second, matching the governor's one-second tick, with a keyframe
 every four frames and at each view change, so a late joiner waits at most four
-seconds. Locally, rendering and encoding cost 9–13 ms of CPU per frame (about
+seconds. Each frame is capped at 32 KiB, two seconds of the 128 kbit/s the
+publisher asks for. Frames encode at quantizer 40; a frame over the cap is
+encoded again at 48 and then 56 (the busiest lanes view measured 54 KB at 40 and
+26 KB at 56), and in the unlikely case it is still too big it is skipped: viewers
+keep the previous picture and the next frame is a keyframe. The next view goes
+back to quantizer 40. A skipped frame is logged once per video. Locally,
+rendering and encoding cost 9–13 ms of CPU per frame (about
 1–1.5 % of one CPU) and 55–65 kbit/s for an unchanging picture. At 0.5 fps the
 whole publisher measured 1.5–4.9 % of one CPU on staging; the 1 fps figure
 there is still to be measured. It uses one codec thread and a low-priority

@@ -18,6 +18,29 @@ SAMPLE_S = 1.0
 # Stop the child after 6 s above 15 % of one CPU (three 2 s samples before 0.7.4).
 HIGH_SAMPLES = 6
 VERBS = {None: "admit", "shed": "keep paused"}
+SKIPS = {
+    "skippedFrames": "a frame over its size cap",
+    "skippedSamples": "a metrics line over its length limit",
+}
+# Names are the only unbounded text in a sample line, which the child reads with an 8 KiB
+# limit (diagnostic_video.LINE_LIMIT). Each is cut to NAME_BYTES as json.dumps writes it:
+# non-ASCII is escaped, 6 bytes per character and 12 per emoji, so 240 bytes keep 40
+# characters of any alphabet (NAME_CHARS) and 20 emoji. Ten lane names and the
+# decision's "who" cost at most 11 x 240 = 2640 bytes; with every number 24 characters
+# wide the line measures 6401 bytes, 1.75 KiB under the limit
+# (test_worst_case_sample_line_fits_the_child_limit keeps at least 1.5 KiB free).
+NAME_CHARS, NAME_BYTES = 40, 240
+
+
+def clip_name(name):
+    """Cut a display label to NAME_CHARS characters and NAME_BYTES JSON-encoded bytes."""
+    kept, used = [], 0
+    for char in name[:NAME_CHARS]:
+        used += len(json.dumps(char)) - 2
+        if used > NAME_BYTES:
+            break
+        kept.append(char)
+    return "".join(kept)
 
 
 def process_usage(pid):
@@ -158,12 +181,7 @@ class DiagnosticVideo:
             (c, sid, t) for c in clients for sid, t in list(getattr(c, "transcribers", {}).items())
         ]
         name = getattr(owner, "speaker_name", lambda _sid: None)
-        labels = {
-            # 40 characters bound the line the child reads (8 KiB pipe limit).
-            t: (name(sid) or "Participant")[:40]
-            for c, sid, t in speakers
-            if c is owner
-        }
+        labels = {t: clip_name(name(sid) or "Participant") for c, sid, t in speakers if c is owner}
         return speakers, labels
 
     def _lane_samples(self, pool, owner, speakers, labels, now):
@@ -214,7 +232,7 @@ class DiagnosticVideo:
         return {**self.metrics, "enabled": self.enabled, "state": self.state}
 
     async def _run(self, token):
-        process = None
+        process = owner = None
         try:
             owner = self.service.clients.get(token)
             data = snapshot()
@@ -255,7 +273,11 @@ class DiagnosticVideo:
             previous_host = self._host_cpu()
             previous_caption = self._caption_cpu()
             high = 0
+            skipped = set()
             weight = self._cpu_weight()
+            # The owning room reads its participants' names only while this video runs.
+            if hasattr(owner, "show_names"):
+                owner.show_names(True)
             while True:
                 if self.service.clients.get(token) is not owner or owner.defunct.is_set():
                     self.state = "stopped: caption room closed"
@@ -355,8 +377,9 @@ class DiagnosticVideo:
                     ),
                     "p95": lag_meter.p95() if lag_meter is not None else None,
                     "threads": getattr(pool, "threads", 1),
+                    # 0 when no microphone is open: the view then names no maximum.
                     "segmentSeconds": max(
-                        (getattr(t, "SEGMENT_SECONDS", 0) for t in transcribers), default=None
+                        (getattr(t, "SEGMENT_SECONDS", 0) for t in transcribers), default=0
                     ),
                     "cpuWeight": weight,
                     "oomKills": data.get("oomKills", 0),
@@ -374,6 +397,12 @@ class DiagnosticVideo:
                     k: sample[k] for k in ("diagnosticCpu", "diagnosticMiB", "samplerMs")
                 }
                 self.metrics.update(report)
+                # Once per video each: a frame still over the cap at the coarsest
+                # quantizer, or a metrics line over the child's limit.
+                for key, what in SKIPS.items():
+                    if report.get(key) and key not in skipped:
+                        skipped.add(key)
+                        LOGGER.info("Diagnostic video skipped %s", what)
                 self.state = report.get("state", "publishing")
                 if self.state in {"failed", "closed"} or (
                     now - booted > 30 and self.state != "connected"
@@ -389,6 +418,8 @@ class DiagnosticVideo:
             self.state = "unavailable: " + type(error).__name__
         finally:
             LOGGER.info("Diagnostic video ended (%s)", self.state)
+            if owner is not None and hasattr(owner, "show_names"):
+                owner.show_names(False)
             if process and process.returncode is None:
                 if process.stdin and hasattr(process.stdin, "close"):
                     with suppress(Exception):

@@ -72,11 +72,6 @@ class PeerConnection:
 OFFER_REQUEST_COOLDOWN = 10
 
 
-def names_wanted() -> bool:
-	"""Names are read only for the opt-in diagnostic video, which alone shows them."""
-	return os.environ.get("CASSINI_LIVE_DEBUG_VIDEO", "").lower() in ("1", "true")
-
-
 def speaker_label(participant: dict) -> str:
 	"""Talk attendee -> the label the diagnostic video shows over that speaker's lane."""
 	name = str(participant.get("displayName") or "").strip()
@@ -109,12 +104,15 @@ class SpreedClient:
 		self.targets: dict[str, Target] = {}
 		self.target_lock = asyncio.Lock()
 		self.nc_sid_map: dict[str, str] = {}  # {"nc_session_id": "session_id"}, use the same target lock
-		# Display names for the diagnostic video, read as the Nextcloud user who enabled
-		# captions here: {"nc_session_id": label}. Never logged; only this room's video
-		# shows them.
+		# Display names for the diagnostic video, read as the latest Nextcloud user who
+		# enabled captions here, only while this room owns the running video:
+		# {"nc_session_id": label}. Never logged.
 		self.name_user: str | None = None
+		self.names_shown = False
 		self.speaker_names: dict[str, str] = {}
 		self._names_at = 0.0
+		self._names_again = False
+		self._names_app: AsyncNextcloudApp | None = None
 		self._names_task: asyncio.Task | None = None
 		# the first target's Nextcloud session ID, used to defer the first target add until we join the call
 		self._nc_sid_wait_stash: dict[str, None] = {}
@@ -636,28 +634,54 @@ class SpreedClient:
 			})
 
 	def note_user(self, user_id: str | None):
-		"""Remember a Nextcloud user who is in this room, to read participant names as."""
-		if user_id and not self.name_user:
+		"""Read participant names as the latest Nextcloud user who enabled captions here."""
+		if user_id and user_id != self.name_user:
 			self.name_user = user_id
 			self.refresh_names()
 
-	def refresh_names(self):
-		"""Coalesce participant changes into at most one names request per NAMES_REFRESH_S."""
-		if not self.name_user or self._closing or self.defunct.is_set() or not names_wanted():
+	def show_names(self, shown: bool):
+		"""Names are read and kept only while this room's diagnostic video runs."""
+		self.names_shown = shown
+		if shown:
+			self.refresh_names()
 			return
 		if self._names_task and not self._names_task.done():
+			self._names_task.cancel()
+		self._names_again = False
+		self.speaker_names = {}
+
+	def refresh_names(self):
+		"""Coalesce participant changes into at most one names request per NAMES_REFRESH_S.
+		A change while a request is out gets one more request after it."""
+		if not self.name_user or not self.names_shown or self._closing or self.defunct.is_set():
+			return
+		if self._names_task and not self._names_task.done():
+			self._names_again = True
 			return
 		self._names_task = asyncio.create_task(
 			self._refresh_names(), name=f"participant_names-{self.room_token}"
 		)
 
 	async def _refresh_names(self):
-		await asyncio.sleep(max(0.0, self._names_at + NAMES_REFRESH_S - time.monotonic()))
-		self._names_at = time.monotonic()
+		while True:
+			await asyncio.sleep(max(0.0, self._names_at + NAMES_REFRESH_S - time.monotonic()))
+			if not self.name_user or not self.names_shown:
+				return
+			# Changes from here on may be missing from this reply: they ask for another.
+			self._names_again = False
+			self._names_at = time.monotonic()
+			await self._read_names(self.name_user)
+			if not self._names_again:
+				return
+
+	async def _read_names(self, user_id: str):
 		try:
-			nc = AsyncNextcloudApp()
-			await nc.set_user(self.name_user)
-			participants = await nc.ocs(
+			# One app per room: nc_py_api reads capabilities when its user changes, so
+			# only the first request as a user costs a second one.
+			if self._names_app is None:
+				self._names_app = AsyncNextcloudApp()
+			await self._names_app.set_user(user_id)
+			participants = await self._names_app.ocs(
 				"GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{self.room_token}/participants"
 			)
 		except asyncio.CancelledError:
@@ -668,6 +692,12 @@ class SpreedClient:
 				"room_token": self.room_token,
 				"tag": "participants",
 			})
+			# Refused (left the room, lost access): the next user to enable captions
+			# here is asked instead.
+			if getattr(error, "status_code", None) in (403, 404) and self.name_user == user_id:
+				self.name_user = None
+			return
+		if not self.names_shown:
 			return
 		names = {}
 		for participant in participants if isinstance(participants, list) else []:
