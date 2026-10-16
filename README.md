@@ -67,6 +67,14 @@ failures (container restarts preserve them), and becomes available again
 automatically. An interrupted call may need captions toggled back on.
 See [load, admission and capacity](docs/capacity.md).
 
+Changes in 0.8.1:
+
+* Calls with many participants: up to 24 open microphones per server (was 10),
+  and a Nemotron speaker's engine stream closes after a minute of silence, so
+  any 12 people can speak within a minute instead of only the first 12.
+* The diagnostic video lists the people who spoke in the last two minutes,
+  with a count of silent microphones.
+
 Changes in 0.8.0:
 
 * No automatic capacity check: a start, engine switch, rollback or restart is
@@ -117,7 +125,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.8.0 .`.
+`docker build -t cassini-live:0.8.1 .`.
 
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish
