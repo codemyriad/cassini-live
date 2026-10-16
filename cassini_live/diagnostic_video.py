@@ -356,12 +356,17 @@ def _render_lanes(data, history):
         )
     else:
         _label(draw, x, 100, "seats", "taken")
-    for i in range(min(ceiling, 8)):
-        bx = x + i * 32
+    # The chips share the label's 124 px column, so a high ceiling narrows them rather
+    # than running under the lag figure.
+    shown = min(ceiling, 8)
+    pitch = min(32, 124 // max(1, shown))
+    for i in range(shown):
+        bx = x + i * pitch
+        box = (bx, 142, bx + pitch - 7, 153)
         if i < seats:
-            draw.rectangle((bx, 142, bx + 25, 153), fill=CYAN)
+            draw.rectangle(box, fill=CYAN)
         else:
-            draw.rectangle((bx, 142, bx + 25, 153), outline=OUTLINE, width=3)
+            draw.rectangle(box, outline=OUTLINE, width=3)
 
     lag = admission.get("lagSeconds")
     lag_admit = float(admission.get("lagAdmit") or 1.0)
@@ -396,12 +401,16 @@ def _render_lanes(data, history):
             fill=TEXT_DIM,
             anchor="mm",
         )
-    lane_h = min(30, (LANES_H + LANE_GAP) // max(1, len(lanes)) - LANE_GAP)
-    tag_font = _font("bold", 16 if lane_h >= 24 else 12)
-    tag_mono = _font("mono", 14 if lane_h >= 24 else 11)
-    chip_size = 15 if lane_h >= 24 else 11 if lane_h >= 14 else 9
+    # Up to four lanes keep the mockup's 8 px gaps; more lanes close them to 3 px so ten
+    # lanes stay 13 px tall, enough for the 11-12 px tag and name text below.
+    gap = LANE_GAP if len(lanes) <= 4 else 3
+    lane_h = min(30, (LANES_H + gap) // max(1, len(lanes)) - gap)
+    # Text never taller than its lane: full size from 24 px lanes, then just under the lane.
+    tag_font = _font("bold", 16 if lane_h >= 24 else max(8, lane_h - 2))
+    tag_mono = _font("mono", 14 if lane_h >= 24 else max(8, lane_h - 3))
+    chip_size = 15 if lane_h >= 24 else max(8, lane_h - 3)
     for row, lane in enumerate(lanes):
-        y = LANES_Y + row * (lane_h + LANE_GAP)
+        y = LANES_Y + row * (lane_h + gap)
         draw.rectangle((LANES_X, y, NOW_X - 1, y + lane_h - 1), fill=LANE_BG)
         states = [c["lanes"].get(lane["id"]) for c in columns]
         start = 0
@@ -423,9 +432,10 @@ def _render_lanes(data, history):
         # The speaker's name, over the lane's oldest end.
         text, kind, ink = _lane_label(lane)
         font = _font(kind, chip_size)
-        text = _fit(text, font, LANES_W // 2)
+        # A quarter of the lane: a long name must not hide the recent history.
+        text = _fit(text, font, LANES_W // 4)
         cw = font.getlength(text) + 16
-        ch = max(10, min(22, lane_h - 8))
+        ch = max(9, min(22, lane_h - 4))
         cy = y + (lane_h - ch) / 2
         draw.rounded_rectangle((LANES_X + 6, cy, LANES_X + 6 + cw, cy + ch), 3, fill=CHIP_BG)
         draw.text((LANES_X + 14, y + lane_h / 2), text, font=font, fill=ink, anchor="lm")
