@@ -87,7 +87,7 @@ async def test_a_crash_waits_out_only_its_cooldown(harness):
         await advance(guard, clock, 1)
         await until(lambda: guard.state == "ready")
         # Only the trip counts; the successful reload does not add a failure.
-        assert len(pool.workers) == 1 and guard.failures == 1
+        assert len(pool.workers) == pool.size and guard.failures == 1
     finally:
         await guard.close()
 
@@ -212,7 +212,6 @@ async def test_only_sustained_ready_resets_backoff(harness):
 async def test_configuration_fix_recalculates_default_workers(harness):
     guard, pool, data, clock = harness
     pool.size = 4
-    guard.auto_size = True
     data["cpuQuotaCpus"] = None
     data["effectiveCpus"] = 8
     try:
@@ -700,16 +699,17 @@ def test_the_journal_records_the_app_version(tmp_path):
     assert journal.read()["appVersion"] == __version__
 
 
-async def test_explicit_workers_above_the_ceiling_are_clamped(harness, caplog):
+async def test_the_backend_always_follows_the_cpu_ceiling(harness, caplog):
+    # 0.8.2: there is no explicit worker count; a backend built larger is sized to the
+    # CPU ceiling (Whistle on 4 CPUs seats 2) with no warning or advice.
     guard, pool, data, clock = harness
-    pool.size = 5  # CASSINI_LIVE_WORKERS=5; Whistle on 4 CPUs seats 2
-    guard.auto_size = False
+    pool.size = 5
     try:
         await guard.start()
         await until(lambda: guard.state == "ready")
         assert pool.size == 2 and guard.governor.ceiling == 2
-        assert any("CASSINI_LIVE_WORKERS is 5" in note for note in guard.status()["advice"])
-        assert "CASSINI_LIVE_WORKERS=5 is above the CPU ceiling of 2" in caplog.text
+        assert not any("CASSINI_LIVE_WORKERS" in note for note in guard.status()["advice"])
+        assert "CASSINI_LIVE_WORKERS" not in caplog.text
     finally:
         await guard.close()
 

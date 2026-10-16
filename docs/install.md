@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.8.1`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.8.2`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.8.1 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.8.2 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry
@@ -169,9 +169,8 @@ with at least 6 GiB RAM and eight CPUs:
 docker update --cpus=4 --memory=3g --memory-swap=3g nc_app_live_transcription
 ```
 
-Persist the same values in the AppAPI daemon's deployment options. With
-Nemotron, `CASSINI_LIVE_WORKERS` sets the maximum number of simultaneous
-speakers instead of a number of worker processes.
+Persist the same values in the AppAPI daemon's deployment options. The number
+of simultaneous speakers follows the CPU limit; there is nothing else to set.
 
 ## Check before a release
 
@@ -183,13 +182,18 @@ Call media and captions must not appear in the container filesystem or logs.
 
 With Whistle, the default is one recognition worker per two quota CPUs, capped
 at four. With Nemotron, one shared engine process serves up to four simultaneous
-speakers, depending on the CPU quota.
-`CASSINI_LIVE_WORKERS` can reduce this count; a value above the CPU ceiling is
-clamped to it, with a warning in the log and on the settings page. Speech waits
-briefly for workers. When captions fall behind, the newest speaker's captions
+speakers, depending on the CPU quota. To serve fewer speakers, lower the CPU
+limit. Speech waits briefly for workers. When captions fall behind, the newest speaker's captions
 pause for a few seconds while the others keep theirs; only an OOM kill or
 repeated engine crashes stop caption rooms. The Talk meeting itself continues
 without captions.
+
+## Upgrading to 0.8.2
+
+0.8.2 removes the `CASSINI_LIVE_WORKERS` setting: Cassini Live sizes itself
+from the container's CPU limit. A value left in the deploy options from an
+earlier registration is ignored, whatever it is, and logged once at startup.
+It disappears when the ExApp is registered again with this manifest.
 
 ## Rollback
 

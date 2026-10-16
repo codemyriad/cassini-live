@@ -21,7 +21,7 @@ secret once in deploy options; its URL is discovered from Talk.
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.8.1</version>
+  <version>0.8.2</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -35,7 +35,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.8.1</image-tag>
+      <image-tag>0.8.2</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -48,11 +48,6 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
         <name>CASSINI_TALK_HPB_URL</name>
         <display-name>HPB URL override (optional)</display-name>
         <description>Leave empty to discover from Talk. Override only when the container needs a different address.</description>
-      </variable>
-      <variable>
-        <name>CASSINI_LIVE_WORKERS</name>
-        <display-name>Concurrent speaking segments (optional)</display-name>
-        <description>Caps how many people can speak with captions at the same time (Whistle: recognition workers; Nemotron: simultaneous speakers). Leave empty to size from the CPU quota, up to four. A value above the CPU ceiling is clamped to it with a warning. Silent tracks do not count. Range: 1 to 32.</description>
       </variable>
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>

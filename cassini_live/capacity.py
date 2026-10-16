@@ -276,11 +276,8 @@ async def main(args):
             await asyncio.sleep(1)
     else:
         config = Config.from_env()
-        size = args.workers or (
-            config.workers
-            if config.workers_explicit or args.engine == catalog.DEFAULT_ENGINE
-            else catalog.worker_ceiling(args.engine, limits()["effectiveCpus"])
-        )
+        # Sized like the service: the safety controller follows the CPU limit.
+        size = catalog.worker_ceiling(args.engine, limits()["effectiveCpus"])
         pool = engines.create_backend(
             args.engine,
             size=size,
@@ -328,7 +325,6 @@ if __name__ == "__main__":
         help="Print one JSON line per second of the running service's lag signals for N "
         "seconds (from the container, like --installed)",
     )
-    parser.add_argument("--workers", type=int, choices=range(1, 33))
     parser.add_argument("--weights")
     parser.add_argument(
         "--engine",

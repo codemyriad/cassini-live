@@ -2,12 +2,13 @@ import asyncio
 import base64
 import http.client
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from cassini_live import capacity
+from cassini_live import capacity, catalog
 from cassini_live.capacity import CapacityAssessment
 from cassini_live.config import Config
 from cassini_live.pool import WorkerPool
@@ -153,6 +154,32 @@ def test_cpu_quota_limits_default_workers(tmp_path, monkeypatch):
     monkeypatch.setattr("cassini_live.config.limits", lambda: measured)
     monkeypatch.delenv("CASSINI_LIVE_WORKERS", raising=False)
     assert Config.from_env().workers == 1
+
+
+@pytest.mark.parametrize("leftover", ["2", "abc", "99", "0", ""])
+def test_a_leftover_workers_setting_is_ignored(leftover, monkeypatch, caplog):
+    # Deploy options registered before 0.8.2 may still carry CASSINI_LIVE_WORKERS.
+    monkeypatch.setattr("cassini_live.config.limits", lambda: {"effectiveCpus": 4.0})
+    monkeypatch.setenv("CASSINI_LIVE_WORKERS", leftover)
+    with caplog.at_level(logging.INFO, logger="cassini_live.config"):
+        config = Config.from_env()
+    assert config.workers == catalog.worker_ceiling(catalog.DEFAULT_ENGINE, 4.0) == 2
+    notes = [r for r in caplog.records if "CASSINI_LIVE_WORKERS" in r.getMessage()]
+    assert [(r.levelno, r.getMessage()) for r in notes] == [
+        (
+            logging.INFO,
+            "CASSINI_LIVE_WORKERS is no longer used; "
+            "Cassini Live sizes itself from the container's CPU limit",
+        )
+    ]
+
+
+def test_no_leftover_workers_setting_logs_nothing(monkeypatch, caplog):
+    monkeypatch.setattr("cassini_live.config.limits", lambda: {"effectiveCpus": 4.0})
+    monkeypatch.delenv("CASSINI_LIVE_WORKERS", raising=False)
+    with caplog.at_level(logging.INFO, logger="cassini_live.config"):
+        Config.from_env()
+    assert "CASSINI_LIVE_WORKERS" not in caplog.text
 
 
 async def test_real_calibration_cancellation_cleans_up_decoder_leases():

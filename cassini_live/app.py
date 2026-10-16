@@ -63,7 +63,6 @@ def create_app(
     storage = state_dir()
     if safety_factory is SafetyController:
         safety.journal = RecoveryJournal(storage / "cassini-live-recovery.json")
-        safety.auto_size = not bool(os.environ.get("CASSINI_LIVE_WORKERS"))
     service.admission = safety
     manager = EngineManager(
         safety,

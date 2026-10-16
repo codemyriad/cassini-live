@@ -154,10 +154,9 @@ number of workers (Whistle) or simultaneous speakers (Nemotron).
 | Free disk to download | none (bundled) | about 1.3 GiB, once |
 | Load timeout | 30 s | 120 s |
 
-`CASSINI_LIVE_WORKERS` lowers the ceiling (with Nemotron, the number of
-seats). A value above the CPU ceiling is clamped to it: the service logs a
-warning, the settings page shows it as advice on the engine, and captions run
-with the ceiling's count. Whistle hands a busy worker to a waiting speaker
+The ceiling always follows the container's CPU limit; there is no setting to
+raise or lower it. Below it, admission holds or pauses speakers on live load,
+and the kernel's limits bound the rest. Whistle hands a busy worker to a waiting speaker
 after two seconds of audio, preferring a pause in speech; Nemotron keeps a slot
 for one segment (at most 8 s) and never preempts.
 
@@ -245,8 +244,8 @@ extra workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.8.0 \
-  -m cassini_live.capacity --workers 2
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.8.2 \
+  -m cassini_live.capacity
 ```
 
 This standalone mode loads the engine under the same rules, then runs the
