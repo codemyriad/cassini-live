@@ -9,7 +9,7 @@ from contextlib import suppress
 from aiortc.mediastreams import MediaStreamError
 from av import AudioResampler
 
-from .engines.shared import EngineFailed
+from .engines.shared import EngineFailed, LateReply
 from .pool import CapacityError
 from .speech import SpeechGate
 from .talk.types import StreamEndedException, Transcript
@@ -432,6 +432,13 @@ class StreamTranscriber(WhistleTranscriber):
             except CapacityError:
                 self.pool.capacity_waits += 1
                 self._note_drop()
+                await self._clear_preview()
+            except LateReply:
+                # The host lives on but this answer is lost: drop the piece and reopen the
+                # stream at the next one, so no native state spans a missing reply.
+                LOGGER.warning("Caption engine answered late; reopening this speaker's stream")
+                self._note_drop()
+                await self._release(healthy=False)
                 await self._clear_preview()
             except EngineFailed:
                 # The engine restarts itself; never from here.

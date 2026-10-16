@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from cassini_live import catalog, transcriber
-from cassini_live.engines.shared import EngineStreamError, SharedEngine
+from cassini_live.engines.shared import EngineStreamError, LateReply, SharedEngine
 from cassini_live.speech import SpeechChunk, SpeechGate
 from cassini_live.transcriber import StreamTranscriber
 from tests.fakes_engine import CHUNK, FakeBackend, FakeHostProcess
@@ -292,6 +292,24 @@ async def test_stream_error_cancels_only_that_stream(caplog):
     fake.stream_error = None
     await run(fake.transcriber("t", "en", captions), chunk(0, end=True))
     assert len(fake.streams) == 2
+
+
+async def test_late_reply_drops_the_piece_and_reopens_the_stream():
+    fake = await backend()
+    captions = asyncio.Queue()
+    track = fake.transcriber("s", "en", captions)
+    fake.stream_error = LateReply("late")
+    await run(track, chunk(0))
+    # The piece is lost and counted; the stream is cancelled, the slot freed.
+    assert track.lost_chunks == 1 and fake.dropped_chunks == 1
+    assert track.engine_stream is None and fake.busy == 0
+    (first,) = fake.streams
+    assert not first.alive
+    fake.stream_error = None
+    await run(track, chunk(0, end=True))
+    # The next speech opens a fresh stream and is captioned.
+    assert len(fake.streams) == 2
+    assert [e.message for e in events(captions) if e.final] == ["w"]
 
 
 async def test_host_failure_drops_references():

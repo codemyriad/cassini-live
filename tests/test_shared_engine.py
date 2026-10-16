@@ -5,7 +5,7 @@ import pytest
 
 from cassini_live import catalog
 from cassini_live.engines import create_backend
-from cassini_live.engines.shared import EngineFailed, EngineStreamError, SharedEngine
+from cassini_live.engines.shared import EngineFailed, EngineStreamError, LateReply, SharedEngine
 from cassini_live.pool import CapacityError, WorkerPool
 from tests.fakes_engine import CHUNK, FakeHostProcess
 
@@ -92,10 +92,11 @@ async def test_status_reports_recorded_lag_and_last_message_time():
     clock = [100.0]
     shared, _ = engine(clock=lambda: clock[0])
     await shared.start()
-    # The ready message is read by the spawn, not by the reader.
-    assert shared.last_message_at is None
-    stream = await shared.open_stream("en")
+    # The ready message counts: a host that just loaded is not silent.
     assert shared.last_message_at == 100.0
+    clock[0] = 101.0
+    stream = await shared.open_stream("en")
+    assert shared.last_message_at == 101.0
     clock[0] = 103.5
     await stream.audio(SPEECH)
     assert shared.last_message_at == 103.5
@@ -322,17 +323,54 @@ async def test_restart_load_check_failure_opens_the_circuit():
     await shared.close()
 
 
-async def test_request_timeout_counts_as_host_failure():
-    shared, hosts = engine(request_timeout=0.05)
+async def test_late_answer_from_a_live_host_keeps_the_host():
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
     await shared.start()
     stream = await shared.open_stream("en")
     hosts[0].mute = True
+    with pytest.raises(LateReply):
+        await stream.audio(SPEECH)
+    # Only this request is lost: no failure, no restart, the host stays up.
+    assert shared.failures == 0 and shared.ready and shared.restarts == 0
+    assert not hosts[0].closed and not shared.failure_circuit_open
+    await shared.close()
+
+
+async def test_silent_host_fails_on_timeout():
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
+    await shared.start()
+    stream = await shared.open_stream("en")
+    hosts[0].mute = True
+    clock[0] = shared.host_silence  # nothing heard from the host for the silence bound
     with pytest.raises(EngineFailed):
         await stream.audio(SPEECH)
     assert shared.failures == 1 and not stream.alive
     await wait_for(lambda: shared.restarts == 1)
     assert hosts[0].closed
     await shared.close()
+
+
+async def test_exited_host_fails_on_timeout_even_if_recently_heard():
+    clock = [0.0]
+    shared, hosts = engine(request_timeout=0.05, clock=lambda: clock[0])
+    await shared.start()
+    stream = await shared.open_stream("en")
+    hosts[0].mute = True
+    request = asyncio.create_task(stream.audio(SPEECH))
+    await asyncio.sleep(0.01)
+    hosts[0].returncode = -9  # exited after the write, stdout not yet at EOF
+    with pytest.raises(EngineFailed):
+        await request
+    assert shared.failures == 1
+    await shared.close()
+
+
+def test_host_silence_defaults_to_two_request_timeouts():
+    shared, _ = engine(request_timeout=5.0)
+    assert shared.host_silence == 10.0
+    assert engine(request_timeout=5.0, host_silence=3.0)[0].host_silence == 3.0
 
 
 async def test_cancel_never_raises_on_a_dead_host():

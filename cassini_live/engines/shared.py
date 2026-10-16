@@ -37,6 +37,10 @@ class EngineStreamError(RuntimeError):
     """The host refused or failed one stream and lives on."""
 
 
+class LateReply(EngineStreamError):
+    """A live host missed the request timeout: this request is lost, the host is not."""
+
+
 @dataclass(eq=False)
 class Slot:
     index: int
@@ -147,6 +151,7 @@ class SharedEngine:
         max_streams: int = catalog.MAX_STREAMS,
         max_batch: int | None = None,
         request_timeout: float = 5.0,
+        host_silence: float | None = None,
         ready_timeout: float = 120.0,
         process_factory=EngineHostProcess,
         clock=time.monotonic,
@@ -162,6 +167,9 @@ class SharedEngine:
         self.max_streams = max_streams
         self.max_batch = max_batch or engine.requirements.max_batch
         self.request_timeout = request_timeout
+        # Derived (0.8.0-instant-admission.md): a live host answers something within two
+        # request timeouts even under cpu.weight 10; a host silent that long is hung.
+        self.host_silence = host_silence if host_silence is not None else 2 * request_timeout
         self.ready_timeout = ready_timeout
         self.process_factory = process_factory
         self.clock = clock
@@ -198,7 +206,7 @@ class SharedEngine:
         self.lag = LagMeter()
         # Every live transcriber on this backend; the load governor reads their lag.
         self.transcribers = weakref.WeakSet()
-        # Clock reading of the last host reply; step 5 tells a late reply from a dead host.
+        # Clock reading of the last host message; tells a late reply from a hung host.
         self.last_message_at = None
 
     @property
@@ -328,6 +336,10 @@ class SharedEngine:
             await host.send(message)
             return await asyncio.wait_for(future, self.request_timeout)
         except TimeoutError:
+            if host.returncode is None and not self._host_silent():
+                # Starved, not dead: under cpu.weight 10 three late answers in a minute
+                # must not close every room. Only this request is lost.
+                raise LateReply("late") from None
             self._host_failed(host, "request timeout")
             raise EngineFailed("Speech engine did not answer in time") from None
         except (OSError, EOFError):
@@ -336,6 +348,10 @@ class SharedEngine:
         finally:
             if self.pending.get(stream_id) is future:
                 del self.pending[stream_id]
+
+    def _host_silent(self):
+        last = self.last_message_at
+        return last is None or self.clock() - last >= self.host_silence
 
     async def _read(self, host):
         try:
@@ -432,6 +448,7 @@ class SharedEngine:
             await host.close()
             return
         self.rss_mib = message.get("rssMiB")
+        self.last_message_at = self.clock()
         self.process = host
         self.ready = True
         self._reader = asyncio.create_task(self._read(host))
