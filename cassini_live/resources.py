@@ -10,7 +10,8 @@ from . import catalog
 LOGGER = logging.getLogger(__name__)
 MIB = 1024 * 1024
 # Unjustified: reused from the diagnostic video's headroom constant (diagnostics.py). Measuring
-# the supervisor's RSS with 10 tracks and the video on, then 1.5x the peak, would justify it.
+# the supervisor's RSS with safety.MAX_TRACKS (24) tracks and the video on, then 1.5x the
+# peak, would justify it (a track adds 0.6-0.9 MiB locally, see safety.MAX_TRACKS).
 SUPERVISOR_MARGIN_MIB = 128
 _stat_warned = False
 

@@ -69,8 +69,31 @@ the lag has been under half the threshold, and the CPU stall under half its
 threshold, for five seconds.
 
 Rooms are not counted: a room opens whenever captions are ready and the
-ten-track budget has room, and its speakers go through admission like any
+audio-track budget has room, and its speakers go through admission like any
 other. The old Whistle two-room cap is gone.
+
+## Open microphones
+
+Every open microphone in a captioned call is one audio track, and the service
+receives at most **24** at once across all rooms (it was 10, which left half of
+a 20-person call unheard). A participant over the budget goes without captions
+until a track frees; the room and everyone else keep theirs.
+
+A track costs a little CPU and memory whether or not its participant speaks:
+WebRTC receive, Opus decoding and the voice gate. Speech detection was measured
+at 0.0045 CPU-s per second of audio; with Opus and aiortc estimated at
+0.01-0.02 cores, that is 0.0145-0.0245 cores per track, 0.35-0.6 cores for 24.
+A local loopback run (no SFU, one laptop CPU) measured 0.025-0.03 cores and
+0.6-0.9 MiB per added track: 0.6 cores and 23 MiB for 24 tracks. The Nemotron
+turn-taking harness passed at least 16 participants on 2 CPUs. The limit is
+**provisional** until a staging call measures per-track CPU and memory.
+
+Tracks are not seats: only speakers are admitted to a Whistle worker or a
+Nemotron slot. With Nemotron, each participant who has spoken keeps a native
+engine stream until their track closes, and the engine holds at most 12 (the
+memory floor below allows 12 × 16 MiB). In a call where more than 12 different
+people speak, the 13th one's speech is refused ("Too many open caption
+streams") until a speaker who has spoken leaves.
 
 ## Shedding
 

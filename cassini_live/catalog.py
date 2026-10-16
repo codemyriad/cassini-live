@@ -11,7 +11,13 @@ from typing import Literal
 EngineId = Literal["whistle", "nemotron-en", "nemotron-multilingual"]
 DEFAULT_ENGINE: EngineId = "whistle"
 MIB = 1024 * 1024
-MAX_STREAMS = 12  # safety.max_tracks (10) plus a margin of 2
+# Native streams on a shared engine host. A speaker's stream opens at its first admitted
+# speech and stays open across pauses until its track ends (transcriber.StreamTranscriber),
+# so this bounds the participants who have spoken, not the seats. It was safety.max_tracks
+# (10) plus a margin of 2; with 24 tracks a 13th distinct speaker's speech is refused
+# ("Too many open caption streams") until a speaker leaves. Raising it raises the memory
+# floor by stream_mib per stream (see _SHARED below).
+MAX_STREAMS = 12
 # Memory is measured (local/stt-eval/resources/specs.md, 2026-10-15): resident 944-947 MiB
 # after load (en), 957-965 MiB (multilingual), peak about 1.47 GiB with 6 streams. CPU comes
 # from a harness at 1.3x speed, not yet from a Cassini capacity run, so it stays provisional.

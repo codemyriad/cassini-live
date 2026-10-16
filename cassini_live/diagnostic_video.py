@@ -171,6 +171,52 @@ def _header(image, draw, data, pill, title=None):
         draw.text((x - w / 2, 40), badge, font=font, fill=TEXT_DIM, anchor="mm")
 
 
+LANES_TITLE = "SPEAKERS, LAST TWO MINUTES"
+LEGEND = (
+    ("fill", CYAN, "captioned"),
+    ("outline", WAITING, "held"),
+    ("paused", AMBER, "paused"),
+    ("fill", RED, "lost"),
+)
+
+
+def _legend_widths():
+    legend = _font("regular", 15)
+    return [14 + 6 + legend.getlength(label) for _, _, label in LEGEND]
+
+
+def _legend_x():
+    """Where the lanes legend starts, flush with the right margin."""
+    widths = _legend_widths()
+    return WIDTH - 32 - sum(widths) - 18 * (len(LEGEND) - 1)
+
+
+def _title_end():
+    """Where the letter-spaced lanes title ends (as _spaced advances)."""
+    font = _font("bold", 14)
+    return 32 + sum(font.getlength(ch) + font.size * 0.12 for ch in LANES_TITLE)
+
+
+def _left_out(data):
+    """'+N silent mics · +M more speakers': open tracks and speakers without a lane."""
+    silent = int(data.get("silentMics", 0) or 0)
+    hidden = int(data.get("hiddenSpeakers", 0) or 0)
+    parts = []
+    if silent:
+        parts.append(f"+{silent} silent {_plural(silent, 'mic', 'mics')}")
+    if hidden:
+        parts.append(f"+{hidden} more {_plural(hidden, 'speaker', 'speakers')}")
+    return " · ".join(parts)
+
+
+def _mics(data):
+    """Every open microphone: the lanes plus the tracks the lanes leave out."""
+    lanes = data.get("lanes", [])
+    return (
+        len(lanes) + int(data.get("silentMics", 0) or 0) + int(data.get("hiddenSpeakers", 0) or 0)
+    )
+
+
 def _base_image(view):
     if view not in _BASE_IMAGES:
         image = Image.new("RGB", (WIDTH, HEIGHT), BG)
@@ -178,17 +224,11 @@ def _base_image(view):
         _saturn(image, 32, 24, 34)
         draw.text((76, 40), "Cassini", font=_font("bold", 26), fill=TEXT_MAIN, anchor="lm")
         if view == "lanes":
-            _spaced(draw, 32, 206, "SPEAKERS, LAST TWO MINUTES", _font("bold", 14), TEXT_DIM)
+            _spaced(draw, 32, 206, LANES_TITLE, _font("bold", 14), TEXT_DIM)
             legend = _font("regular", 15)
-            items = [
-                ("fill", CYAN, "captioned"),
-                ("outline", WAITING, "held"),
-                ("paused", AMBER, "paused"),
-                ("fill", RED, "lost"),
-            ]
-            widths = [14 + 6 + legend.getlength(label) for _, _, label in items]
-            x = WIDTH - 32 - sum(widths) - 18 * (len(items) - 1)
-            for (kind, colour, label), w in zip(items, widths, strict=True):
+            widths = _legend_widths()
+            x = _legend_x()
+            for (kind, colour, label), w in zip(LEGEND, widths, strict=True):
                 box = (x, 193, x + 13, 206)
                 if kind == "fill":
                     draw.rectangle(box, fill=colour)
@@ -390,17 +430,26 @@ def _render_lanes(data, history):
         mx = x + round(min(3.0, value) * scale)
         draw.rectangle((mx - 1, 138, mx, 157), fill=mark)
 
-    # Lanes: one per open microphone, newest column against the "now" line.
-    lanes = sorted(data.get("lanes", []), key=lambda lane: lane["id"])[:10]
+    # Lanes: the speakers heard in the last two minutes, in the order the sampler keeps
+    # stable (diagnostics._lane_samples), newest column against the "now" line.
+    lanes = data.get("lanes", [])[:10]
     columns = history[-COLUMNS:]
     if not lanes:
+        mics = _mics(data)
         draw.text(
             (LANES_X + LANES_W // 2, LANES_Y + LANES_H // 2),
-            "No microphones open",
+            f"Nobody spoke in the last two minutes · {mics} {_plural(mics, 'mic', 'mics')} open"
+            if mics
+            else "No microphones open",
             font=_font("regular", 20),
             fill=TEXT_DIM,
             anchor="mm",
         )
+    elif left_out := _left_out(data):
+        # Between the title and the legend, small and dim: who has no lane.
+        x0, x1 = _title_end() + 16, _legend_x() - 16
+        small = _font("regular", 13)
+        draw.text((x0, 206), _fit(left_out, small, x1 - x0), font=small, fill=TEXT_DIM, anchor="ls")
     # Up to four lanes keep the mockup's 8 px gaps; more lanes close them to 3 px so ten
     # lanes stay 13 px tall, enough for the 11-12 px tag and name text below.
     gap = LANE_GAP if len(lanes) <= 4 else 3
@@ -559,7 +608,7 @@ def _render_pipeline(data, history):
     now = time.monotonic()
     finals = sum(c["finals"] for c in history if c["t"] >= now - 60)
     span = now - history[0]["t"] if history else 0
-    lanes = data.get("lanes", [])
+    mics = _mics(data)
     seats = int(admission.get("seats", data.get("busy", 0)) or 0)
     ceiling = int(admission.get("ceiling", data.get("capacity", 0)) or 0)
     closed = bool(admission) and not admission.get("open", True)
@@ -582,7 +631,7 @@ def _render_pipeline(data, history):
             "1 · LISTEN",
             "Microphones",
             str(int(data.get("vadActive", 0))),
-            f"voices of {len(lanes)} {_plural(len(lanes), 'mic', 'mics')}",
+            f"voices of {mics} {_plural(mics, 'mic', 'mics')}",
             "voice gate per mic\n32 ms frames\nsilence ends a turn",
             CYAN,
         ),
@@ -594,7 +643,7 @@ def _render_pipeline(data, history):
             f"per piece, {segment} s max"
             if (segment := data.get("segmentSeconds"))
             else "per piece",
-            f"queue {int(data.get('queuedChunks', 0))} of {6 * max(1, len(lanes))}\n"
+            f"queue {int(data.get('queuedChunks', 0))} of {6 * max(1, mics)}\n"
             "older than 4 s:\ndropped, not late",
             CYAN,
         ),

@@ -9,7 +9,7 @@ from cassini_live import capacity
 from cassini_live.capacity import CapacityAssessment
 from cassini_live.pool import CapacityError, WorkerPool
 from cassini_live.resources import MIB, static_problem
-from cassini_live.safety import ResourceRefused, SafetyController
+from cassini_live.safety import ResourceRefused, SafetyController, TrackBudgetFull
 from tests.test_streaming import FakeWorker
 
 SAFE = {
@@ -145,14 +145,14 @@ def test_track_reservations_are_atomic_and_released_once():
     pool = WorkerPool(1, worker_factory=FakeWorker)
     guard = safe_factory(pool, CapacityAssessment(pool))
     guard.state = "ready"
-    leases = [guard.reserve_track() for _ in range(10)]
+    leases = [guard.reserve_track() for _ in range(guard.max_tracks)]
     with pytest.raises(ResourceRefused):
         guard.reserve_track()
     leases[0].release()
     leases[0].release()
-    assert len(guard.tracks) == 9
+    assert len(guard.tracks) == guard.max_tracks - 1
     guard.reserve_track()
-    assert len(guard.tracks) == 10
+    assert len(guard.tracks) == guard.max_tracks
 
 
 async def test_repeated_worker_failure_stops_replacement_loop():
@@ -168,8 +168,8 @@ async def test_repeated_worker_failure_stops_replacement_loop():
 
 
 async def test_track_budget_refuses_only_that_participant(monkeypatch, caplog):
-    # Review 0.8.0: with no room cap, a refused eleventh track used to close the whole
-    # room and evict its ten captioned speakers. Now only the eleventh goes without.
+    # Review 0.8.0: with no room cap, a refused track over the budget used to close the
+    # whole room and evict its captioned speakers. Now only that participant goes without.
     from cassini_live.talk import client as transport
     from cassini_live.talk.types import HPBSettings
 
@@ -181,7 +181,8 @@ async def test_track_budget_refuses_only_that_participant(monkeypatch, caplog):
         pool, CapacityAssessment(pool), service, reader=lambda: dict(SAFE)
     )
     client.admission.state = "ready"
-    leases = [client.admission.reserve_track() for _ in range(10)]
+    ceiling = client.admission.max_tracks
+    leases = [client.admission.reserve_track() for _ in range(ceiling)]
     client.close = AsyncMock()
     requested = []
     client.send_offer_request = AsyncMock(side_effect=requested.append)
@@ -191,23 +192,23 @@ async def test_track_budget_refuses_only_that_participant(monkeypatch, caplog):
 
     monkeypatch.setattr(transport, "RTCPeerConnection", unexpected_allocation)
     for _ in range(2):
-        await client.handle_offer({"message": {"sender": {"sessionid": "eleventh"}}})
+        await client.handle_offer({"message": {"sender": {"sessionid": "over_budget"}}})
     assert client._close_task is None and not client.close.await_count
-    assert not client.peer_connections and client._refused_tracks == {"eleventh"}
+    assert not client.peer_connections and client._refused_tracks == {"over_budget"}
     assert caplog.text.count("Caption track budget reached") == 1  # logged once
-    assert len(client.admission.tracks) == 10  # the hard ceiling holds
+    assert len(client.admission.tracks) == ceiling  # the hard ceiling holds
 
     leases[0].release()  # a captioned speaker leaves: the refused one is asked again
     await asyncio.sleep(0)
-    assert requested == ["eleventh"]
+    assert requested == ["over_budget"]
 
     async def accepted(message, sid, lease):
         assert lease in client.admission.tracks
 
     client._accept_offer = accepted
-    offer = {"sender": {"sessionid": "eleventh"}, "data": {"payload": {"sdp": "m=audio 9"}}}
+    offer = {"sender": {"sessionid": "over_budget"}, "data": {"payload": {"sdp": "m=audio 9"}}}
     await client.handle_offer({"message": offer})
-    assert client._refused_tracks == set() and len(client.admission.tracks) == 10
+    assert client._refused_tracks == set() and len(client.admission.tracks) == ceiling
 
 
 async def test_track_retry_skips_a_participant_already_connecting():
@@ -443,6 +444,17 @@ def test_rooms_are_bounded_by_tracks_not_by_a_tested_speaker_count(engine_id):
         guard.reserve_track()
     with pytest.raises(ResourceRefused, match="audio-track budget"):
         guard.allow_room(5)
+
+
+def test_twenty_four_tracks_fit_and_the_twenty_fifth_waits_for_a_free_one():
+    guard = SafetyController(SimpleNamespace(engine_id="nemotron-en"), SimpleNamespace(result={}))
+    guard.state = "ready"
+    assert guard.max_tracks == 24 and guard.status()["maxTracks"] == 24
+    leases = [guard.reserve_track() for _ in range(24)]
+    with pytest.raises(TrackBudgetFull):
+        guard.reserve_track()
+    leases[0].release()
+    assert guard.reserve_track() and len(guard.tracks) == 24
 
 
 def test_measuring_refuses_rooms_and_tracks():

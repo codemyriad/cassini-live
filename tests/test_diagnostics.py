@@ -382,6 +382,43 @@ def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
     assert video._lane_sample(pool, first)["id"] == samples[0]["id"]
 
 
+def test_lanes_header_counts_mics_without_a_lane_and_empty_states(monkeypatch):
+    from cassini_live import diagnostic_video
+
+    drawn = []
+    real = diagnostic_video.ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, *args, **kwargs):
+        drawn.append((xy, text, kwargs.get("font")))
+        return real(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(diagnostic_video.ImageDraw.ImageDraw, "text", spy)
+    lanes = [{"id": i, "name": f"Person {i}", "active": True} for i in range(10)]
+    render({**FULL, "lanes": lanes, "silentMics": 13, "hiddenSpeakers": 2}, [], "lanes")
+    (xy, _, font), *_ = [d for d in drawn if d[1] == "+13 silent mics · +2 more speakers"]
+    # Between the title and the legend, on the title's baseline.
+    assert xy[1] == 206 and xy[0] > diagnostic_video._title_end()
+    assert xy[0] + font.getlength("+13 silent mics · +2 more speakers") < (
+        diagnostic_video._legend_x()
+    )
+    drawn.clear()
+    render({**FULL, "lanes": lanes[:1], "silentMics": 1}, [], "lanes")
+    assert "+1 silent mic" in [text for _, text, _ in drawn]
+    drawn.clear()
+    render({**FULL, "lanes": lanes[:2]}, [], "lanes")
+    assert not [text for _, text, _ in drawn if str(text).startswith("+")]
+    drawn.clear()
+    render({**FULL, "lanes": [], "silentMics": 20}, [], "lanes")
+    assert "Nobody spoke in the last two minutes · 20 mics open" in [t for _, t, _ in drawn]
+    drawn.clear()
+    render({**FULL, "lanes": []}, [], "lanes")
+    assert "No microphones open" in [t for _, t, _ in drawn]
+    drawn.clear()
+    # The pipeline counts every open microphone, not only the lanes.
+    render({**FULL, "lanes": lanes[:3], "silentMics": 17}, [], "pipeline")
+    assert "voices of 20 mics" in [t for _, t, _ in drawn]
+
+
 def test_lanes_render_with_history_and_without_data():
     data = {"capacity": 2, "spare": 1, "busy": 1, "vadActive": 1, "lanes": [{"id": 1, "scribe": 1}]}
     history = [{"t": time.monotonic(), "lanes": {1: "speech"}, "finals": 1, "drops": 0}]
@@ -490,7 +527,8 @@ def test_names_cross_the_pipe_for_the_owning_room_only(monkeypatch):
     )
     other = SimpleNamespace(transcribers={"s2": theirs}, speaker_name={"s2": "Bob Secret"}.get)
     speakers, labels = video._speakers(owner, [owner, other])
-    lanes = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    lanes, silent, hidden = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    assert (silent, hidden) == (0, 0)
     by_id = {lane["id"]: lane for lane in lanes}
     assert by_id[video._lane(mine)]["name"] == "Ana Ferreira"
     assert by_id[video._lane(unknown)]["name"] == "Participant"
@@ -500,8 +538,100 @@ def test_names_cross_the_pipe_for_the_owning_room_only(monkeypatch):
     # With more than ten speakers, the owning room's lanes are kept.
     crowd = [SimpleNamespace(transcribers={f"x{i}": Transcriber()}) for i in range(12)]
     speakers, labels = video._speakers(owner, [*crowd, owner])
-    lanes = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    lanes, silent, hidden = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
     assert len(lanes) == 10 and sum("name" in lane for lane in lanes) == 2
+    assert (silent, hidden) == (0, 4)
+    assert [lane.get("name") for lane in lanes[:2]] == ["Ana Ferreira", "Participant"]
+
+
+class Mic:
+    """A transcriber whose gate the test drives: speak() moves its chunk counter."""
+
+    def __init__(self):
+        self.gate = SimpleNamespace(active=False, chunks_emitted=0)
+        self.lost_chunks, self.worker, self.paused_until = 0, None, None
+        self.pending_since = None
+        self.queue = SimpleNamespace(qsize=lambda: 0)
+
+    def speak(self):
+        self.gate.chunks_emitted += 1
+
+
+def crowd_room(video, n):
+    mics = [Mic() for _ in range(n)]
+    owner = SimpleNamespace(
+        transcribers={f"s{i}": mic for i, mic in enumerate(mics)},
+        speaker_name=lambda sid: f"Person {sid[1:]}",
+    )
+    pool = SimpleNamespace(workers=set(), waiting=0)
+
+    def sample(now):
+        speakers, labels = video._speakers(owner, [owner])
+        lanes, silent, hidden = video._lane_samples(pool, owner, speakers, labels, now)
+        return [lane["name"] for lane in lanes], silent, hidden
+
+    return mics, sample
+
+
+def test_lanes_show_the_most_recent_speakers_in_a_stable_order(monkeypatch):
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    video = DiagnosticVideo(SimpleNamespace())
+    mics, sample = crowd_room(video, 25)
+    # A first sighting is only a baseline: nobody has a lane yet.
+    assert sample(1000.0) == ([], 25, 0)
+    for i in range(12):  # twelve people speak in turn, one per second
+        mics[i].speak()
+        sample(1001.0 + i)
+    names, silent, hidden = sample(1013.0)
+    # Ten lanes for the ten most recent speakers, in the order they first spoke.
+    assert names == [f"Person {i}" for i in range(2, 12)]
+    assert (silent, hidden) == (13, 2)
+    # Someone already shown speaking again keeps their row.
+    mics[7].gate.active = True
+    assert sample(1014.0) == (names, 13, 2)
+    mics[7].gate.active = False
+    # A silent microphone that starts talking appears last and the oldest speaker leaves.
+    mics[20].speak()
+    names, silent, hidden = sample(1015.0)
+    assert names == [f"Person {i}" for i in range(3, 12)] + ["Person 20"]
+    assert (silent, hidden) == (12, 3)
+
+
+def test_a_speaker_silent_for_two_minutes_loses_the_lane(monkeypatch):
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    video = DiagnosticVideo(SimpleNamespace())
+    mics, sample = crowd_room(video, 3)
+    sample(0.0)
+    mics[0].speak()
+    mics[1].speak()
+    assert sample(1.0) == (["Person 0", "Person 1"], 1, 0)
+    mics[1].speak()
+    assert sample(60.0) == (["Person 0", "Person 1"], 1, 0)
+    assert sample(121.0) == (["Person 0", "Person 1"], 1, 0)  # exactly two minutes
+    assert sample(121.5) == (["Person 1"], 2, 0)
+    assert sample(180.5) == ([], 3, 0)
+    # Back after the window: a new appearance, after anyone already shown.
+    mics[2].speak()
+    sample(181.0)
+    mics[0].gate.active = True
+    assert sample(182.0) == (["Person 2", "Person 0"], 1, 0)
+
+
+def test_engaged_speakers_always_have_a_lane(monkeypatch):
+    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
+    video = DiagnosticVideo(SimpleNamespace())
+    mics, sample = crowd_room(video, 14)
+    sample(0.0)
+    for mic in mics[:12]:
+        mic.speak()
+    sample(1.0)
+    # Silent at the gate, but holding a slot or paused: kept over more recent speakers.
+    mics[12].worker, mics[13].paused_until = object(), 1e9
+    for mic in mics[:12]:
+        mic.speak()
+    names, silent, hidden = sample(2.0)
+    assert "Person 12" in names and "Person 13" in names
+    assert (len(names), silent, hidden) == (10, 0, 4)
 
 
 def test_decision_line_names_only_the_owning_room():
@@ -829,7 +959,7 @@ async def test_worst_case_sample_line_fits_the_child_limit(monkeypatch, reason):
     sample = json.loads(lines[-1])
     assert len(sample["lanes"]) == 10 and all(len(lane["name"]) == 20 for lane in sample["lanes"])
     assert sample["decision"]["who"] == "\U0001f600" * 20
-    # Measured: 6401 bytes at most (names 11 x 240, every number 24 characters wide);
+    # Measured: 6440 bytes at most (names 11 x 240, every number 24 characters wide);
     # at least 1.5 KiB must stay free for fields added later.
     assert len(lines[-1]) <= LINE_LIMIT - 1536
     # Names were read only while the video ran.

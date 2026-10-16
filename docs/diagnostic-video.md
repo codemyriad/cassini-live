@@ -17,12 +17,26 @@ taken out of the seat ceiling (with "holding: lag" and the like when admission
 is closed), and how far captions trail speech, on a 0–3 s bar marked at the
 admit and shed thresholds.
 
-One lane per open microphone scrolls two minutes of history: speech that was
+One lane per recent speaker scrolls two minutes of history: speech that was
 captioned (light cyan), speech held waiting for a seat (a teal outline), speech
 paused by shedding (dark amber inside a bright amber edge) and audio lost
 (red). The four differ in lightness as well as hue. The speaker's display name sits over the lane's
 oldest end. A tag beside each lane shows the slot (Nemotron) or scribe
 (Whistle) it holds and that speaker's own lag, or *held*, *paused* or *idle*.
+
+A large call has many open microphones and few speakers, so lanes go to the
+people heard in the last two minutes, the same window the lanes draw: a speaker
+gets a lane while their voice gate is open or has produced speech in that time,
+and always while they hold a slot or scribe, wait for one or are paused. At most
+ten lanes are shown, out of up to 24 open microphones (the track limit); past
+ten, speakers holding or waiting for a seat stay, then this room's speakers,
+then the most recent. Lanes keep the order in which their speakers first spoke
+within the window, this room's first, so rows do not move from one second to the
+next; a newcomer is added at the bottom. A speaker silent for two minutes loses
+the lane. The section title is followed by "+N silent mics" for open
+microphones without a lane and "+M more speakers" for recent speakers over ten.
+When nobody spoke in two minutes the lanes read "Nobody spoke in the last two
+minutes · N mics open".
 
 Under the lanes a graph plots the caption lag over the same two minutes against
 dashed admit and shed lines, with a mark where a speaker was (or would have

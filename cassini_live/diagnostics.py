@@ -27,9 +27,16 @@ SKIPS = {
 # non-ASCII is escaped, 6 bytes per character and 12 per emoji, so 240 bytes keep 40
 # characters of any alphabet (NAME_CHARS) and 20 emoji. Ten lane names and the
 # decision's "who" cost at most 11 x 240 = 2640 bytes; with every number 24 characters
-# wide the line measures 6401 bytes, 1.75 KiB under the limit
+# wide (silentMics and hiddenSpeakers count tracks, two digits) the line measures 6440
+# bytes, 1.7 KiB under the limit
 # (test_worst_case_sample_line_fits_the_child_limit keeps at least 1.5 KiB free).
 NAME_CHARS, NAME_BYTES = 40, 240
+# Lanes show who spoke recently, not the first open microphones: a 20-person call has
+# 20 open tracks and only a few speakers. A track qualifies for LANE_WINDOW_S after its
+# last voice, the two minutes of history the video draws (diagnostic_video.COLUMNS one-
+# second columns), so a lane never shows an empty history. At most MAX_LANES lanes: ten
+# stay 13 px tall in the video's lane band, enough for their name and tag text.
+LANE_WINDOW_S, MAX_LANES = 120, 10
 
 
 def clip_name(name):
@@ -67,6 +74,9 @@ class DiagnosticVideo:
         self._lanes = weakref.WeakKeyDictionary()
         self._next_lane = 0
         self._scribes = {}
+        # Per transcriber: [first voice in the current window, last voice, the gate's
+        # emitted-chunk count at the previous sample]. Monotonic seconds; parent only.
+        self._voices = weakref.WeakKeyDictionary()
 
     def _lane(self, transcriber):
         if transcriber not in self._lanes:
@@ -184,13 +194,54 @@ class DiagnosticVideo:
         labels = {t: clip_name(name(sid) or "Participant") for c, sid, t in speakers if c is owner}
         return speakers, labels
 
+    @staticmethod
+    def _engaged(pool, transcriber, now):
+        """Holding a slot, held waiting for one or paused: shown whatever its gate says."""
+        if getattr(transcriber, "worker", None) is not None:
+            return True
+        queued = transcriber.queue.qsize() if hasattr(transcriber, "queue") else 0
+        if queued > 0 and pool.waiting:
+            return True
+        paused_until = getattr(transcriber, "paused_until", None)
+        return paused_until is not None and paused_until > now
+
+    def _note_voices(self, pool, transcribers, now):
+        """Record who spoke since the previous sample: the gate is open, its chunk counter
+        moved (it restarts at 0 when a language change rebuilds the gate), or the
+        transcriber is engaged. A first sighting only sets the counter's baseline."""
+        for transcriber in transcribers:
+            gate = transcriber.gate
+            chunks = getattr(gate, "chunks_emitted", 0)
+            record = self._voices.get(transcriber)
+            if record is None:
+                record = self._voices[transcriber] = [None, None, chunks]
+            previous, record[2] = record[2], chunks
+            grew = chunks > previous or (chunks < previous and chunks > 0)
+            if grew or getattr(gate, "active", False) or self._engaged(pool, transcriber, now):
+                if record[1] is None or now - record[1] > LANE_WINDOW_S:
+                    record[0] = now  # a new appearance: it joins the end of the order
+                record[1] = now
+
     def _lane_samples(self, pool, owner, speakers, labels, now):
-        # Ten lanes at most; the viewers' own room comes first.
-        ordered = sorted(speakers, key=lambda speaker: speaker[0] is not owner)
-        return [
+        """Lanes for the speakers heard in the last LANE_WINDOW_S, and the counts left out:
+        open microphones silent all that time, and recent speakers past MAX_LANES."""
+        self._note_voices(pool, [t for _, _, t in speakers], now)
+        recent = []
+        for client, _, transcriber in speakers:
+            first, last, _ = self._voices[transcriber]
+            engaged = self._engaged(pool, transcriber, now)
+            if engaged or (last is not None and now - last <= LANE_WINDOW_S):
+                recent.append((client, transcriber, first, last, engaged))
+        # Kept: engaged speakers, then the owning room's, then the most recent.
+        recent.sort(key=lambda r: (not r[4], r[0] is not owner, -r[3]))
+        shown = recent[:MAX_LANES]
+        # Displayed in order of appearance, owning room first, so rows do not jump.
+        shown.sort(key=lambda r: (r[0] is not owner, r[2], self._lane(r[1])))
+        lanes = [
             self._lane_sample(pool, t, labels.get(t), c is not owner, now)
-            for c, _, t in ordered[:10]
+            for c, t, _, _, _ in shown
         ]
+        return lanes, len(speakers) - len(recent), len(recent) - len(shown)
 
     @staticmethod
     def _cpu_weight():
@@ -310,6 +361,7 @@ class DiagnosticVideo:
                 clients = list(self.service.clients.values())
                 speakers, labels = self._speakers(owner, clients)
                 transcribers = [t for _, _, t in speakers]
+                lanes, silent, hidden = self._lane_samples(pool, owner, speakers, labels, now)
                 governor = getattr(safety, "governor", None)
                 admission = governor.status() if governor is not None else {}
                 if governor is not None:
@@ -370,7 +422,9 @@ class DiagnosticVideo:
                     "waiting": pool.waiting,
                     "diagnosticCpu": round(used * 100, 2),
                     "diagnosticMiB": round(rss / 1024**2, 1),
-                    "lanes": self._lane_samples(pool, owner, speakers, labels, now),
+                    "lanes": lanes,
+                    "silentMics": silent,
+                    "hiddenSpeakers": hidden,
                     "admission": admission,
                     "decision": (
                         self._decision(governor, owner, labels) if governor is not None else None

@@ -43,6 +43,19 @@ LEGACY_TRIPS = (
 # Retry-After while an engine loads. Measured warm loads take 1.2-1.9 s (specs.md:48); a
 # cold one can take up to start_timeout_s, so this only paces client retries.
 LOADING_RETRY_S = 5
+# Open audio tracks across all rooms, provisional until a staging call measures per-track
+# CPU and memory. A track costs CPU whether or not its participant speaks: VAD measured
+# 0.0045 CPU-s per audio-s (local/stt-eval/resources/specs.md) plus Opus decode and aiortc,
+# estimated at 0.01-0.02 cores, so 0.0145-0.0245 cores per track and 0.35-0.6 cores for 24,
+# mostly spent on silent microphones. The Nemotron turn-taking harness passed >= 16
+# participants at 2 CPU. A local loopback run (2026-10-16, Ryzen AI 9 HX PRO 370; aiortc
+# receive, Opus decode, 16 kHz resample and a SpeechGate per track, no SFU) measured
+# 0.025-0.03 cores and 0.6-0.9 MiB RSS per added track: 0.6 cores and +23 MiB at 24.
+# 24 opens every microphone of a 20-person call with room for a few rejoins; 10 left half
+# of such a call unheard. Recognition does not scale with it: seats come from the engine
+# (catalog.worker_ceiling), and a shared engine's native streams, one per participant who
+# has spoken, are bounded by catalog.MAX_STREAMS (12).
+MAX_TRACKS = 24
 
 
 class ResourceRefused(RuntimeError):
@@ -110,7 +123,7 @@ class SafetyController:
         self.monitor = None
         self.lock = asyncio.Lock()
         self.initial = None
-        self.max_tracks = 10
+        self.max_tracks = MAX_TRACKS
         self.desired_enabled = False
         self.auto_size = False
         self.failures = 0
