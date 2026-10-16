@@ -69,6 +69,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <route><url>^/?settings/api/state$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/engine$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/cancel$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/capacity$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/models/[a-z0-9-]+$</url><verb>DELETE</verb><access_level>ADMIN</access_level></route>
     </routes>
   </external-app>

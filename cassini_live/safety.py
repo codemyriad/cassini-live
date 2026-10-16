@@ -94,6 +94,7 @@ class SafetyController:
         self.attempt_started = None
         # An administrator's capacity measurement holds the service; calls wait it out.
         self.measuring = False
+        self.on_measured = None  # notified when a measurement ends, e.g. to republish
         # oomKills when the engine last became ready: a restart past a later kill is refused.
         self.oom_baseline = None
         self._outcome = None
@@ -157,20 +158,13 @@ class SafetyController:
         if self.state == "ready" and not self.measuring:
             return 0
         if self.measuring:
-            return max(1, int(self.assessment_remaining()))
+            remaining = getattr(self.assessment, "remaining", lambda: self.policy.poll)
+            return max(1, int(remaining()))
         if self.phase == "cooling_down":
             return max(1, int(self.next_attempt - self.clock()))
         if self.phase == "loading":
             return LOADING_RETRY_S
         return int(self.policy.poll)
-
-    def assessment_remaining(self):
-        """Seconds a running capacity measurement may still hold the service."""
-        started = getattr(self.assessment, "started_at", None)
-        budget = getattr(self.assessment, "budget_s", 0)
-        if started is None:
-            return budget
-        return max(0, budget - (self.clock() - started))
 
     def status(self):
         retry = self._retry_after()
@@ -230,11 +224,33 @@ class SafetyController:
         # Do not hold the lifecycle lock during model loading: disable must cancel it.
         await self.first.wait()
 
-    async def recheck(self):
-        # A manual request cannot bypass the persisted cooldown or race a load.
-        if not self.desired_enabled:
-            raise ResourceRefused("Caption service is disabled")
-        self.wake.set()
+    async def measure(self, calls_starting=lambda: 0):
+        """Run an administrator's capacity measurement on the idle, ready engine. Calls are
+        refused from the moment it is claimed: `measuring` is set before the rooms and the
+        calls being set up are checked, with no await between, so a call either sees it or
+        is seen. Its result is displayed, never used as a gate."""
+        if self.state != "ready":
+            raise ResourceRefused(f"Captions are not ready: {self.reason}")
+        if self.measuring:
+            raise ResourceRefused("A capacity measurement is already running")
+        self.measuring = True
+        problem = None
+        if calls_starting() or getattr(self.service, "clients", None):
+            problem = "Measuring needs every captioned call to end first"
+        elif not self.pool.is_idle():
+            problem = "Captions are still in use"
+        if problem:
+            self.measuring = False
+            raise ResourceRefused(problem)
+        self.governor.measuring = True
+        self.assessment.start()
+        self.assessment.task.add_done_callback(self._measured)
+
+    def _measured(self, task):
+        self.measuring = False
+        self.governor.measuring = False
+        if not task.cancelled() and self.on_measured is not None:
+            self.on_measured()
 
     async def _pause(self, seconds):
         try:

@@ -391,6 +391,35 @@ def test_cancel(page):
     error(client.post("/settings/api/cancel", headers=plain, json={}), 403, "csrf")
 
 
+# Capacity measurement (0.8.0: administrator-triggered only)
+
+
+def test_measure_capacity(page):
+    manager, client, headers = page
+    url = "/settings/api/capacity"
+    plain = same_origin(headers)
+    del plain["X-Cassini-Request"]
+    error(client.post(url, headers=plain, json={}), 403, "csrf")
+    error(client.post(url, headers=same_origin(headers, **{"Sec-Fetch-Site": "cross-site"}),
+                      json={}), 403, "csrf")
+    error(client.post(url, headers={**headers, "X-Cassini-Request": "1",
+                                    "Sec-Fetch-Site": "same-origin"}, content="x"), 415,
+          "unsupported_media_type")
+    no_user = {**same_origin(headers),
+               "AUTHORIZATION-APP-API": base64.b64encode(b":test-exapp-secret").decode()}
+    error(client.post(url, headers=no_user, json={}), 403, "forbidden")
+    # The real manager refuses with why: the test app's backend is not idle and loaded.
+    error(client.post(url, headers=same_origin(headers), json={}), 409, "unavailable")
+    manager.status = SwitchStatus("downloading", "nemotron-en", "whistle")
+    error(client.post(url, headers=same_origin(headers), json={}), 409, "busy")
+    manager.status = SwitchStatus()
+    manager.measure = AsyncMock(return_value={"state": "checking", "testedSpeakers": 0})
+    response = client.post(url, headers=same_origin(headers), json={})
+    assert response.status_code == 202 and response.json()["capacity"]["state"] == "checking"
+    assert "panel" in response.json()
+    assert_secure(response)
+
+
 # Models
 
 

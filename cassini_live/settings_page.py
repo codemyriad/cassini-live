@@ -213,6 +213,15 @@ def create_router(manager: EngineManager, status_body: Callable[[], dict]) -> AP
         switch = await manager.request_switch(engine)
         return json_response({"switch": switch.to_json(), "panel": manager.panel()}, 202)
 
+    @router.post("/settings/api/capacity")
+    @guard
+    async def capacity(request: Request):
+        await require_same_origin(request)
+        # Refused with 409 while calls have captions, a change runs or captions are not
+        # ready; captions answer 503 with Retry-After while it runs.
+        result = await manager.measure()
+        return json_response({"capacity": result, "panel": manager.panel()}, 202)
+
     @router.post("/settings/api/cancel")
     @guard
     async def cancel(request: Request):

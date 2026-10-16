@@ -91,19 +91,56 @@ def test_capacity_endpoint_rejects_users_and_active_calls(headers):
     )
 
 
-def test_call_request_cannot_bypass_capacity_check(headers):
+def test_a_call_waits_out_a_running_measurement(headers):
     app, service = make_app()
     check = app.state.assessment
     check.interrupt = AsyncMock()
-    app.state.safety.state = "checking"
+    app.state.safety.state, app.state.safety.measuring = "ready", True
     response = TestClient(app).post(
         "/api/v1/call/transcribe",
         headers=headers,
         json={"roomToken": "room", "ncSessionId": "session"},
     )
-    assert response.status_code == 503
+    assert response.status_code == 503 and int(response.headers["Retry-After"]) >= 1
     check.interrupt.assert_not_awaited()
     service.request.assert_not_awaited()
+
+
+def test_capacity_endpoint_delegates_to_the_manager(headers):
+    app, _ = make_app()
+    client = TestClient(app)
+    system = {**headers, "AUTHORIZATION-APP-API": base64.b64encode(b":test-exapp-secret").decode()}
+    manager = app.state.manager
+    manager.measure = AsyncMock(return_value={"state": "checking", "testedSpeakers": 0})
+    response = client.post("/capacity/check", headers=system)
+    assert response.status_code == 200 and response.json() == {"state": "checking"}
+    from cassini_live.engine_switch import SwitchRefused
+
+    manager.measure = AsyncMock(side_effect=SwitchRefused(409, "busy", "Wait for the change"))
+    assert client.post("/capacity/check", headers=system).status_code == 409
+
+
+async def test_measure_cli_waits_for_the_result(monkeypatch, capsys):
+    calls = []
+    states = iter(["checking", "checking", "passed"])
+
+    def installed_request(method, path):
+        calls.append((method, path))
+        if method == "POST":
+            return {"state": "checking"}
+        return {
+            "capacityAssessment": {"state": next(states), "testedSpeakers": 2},
+            "resourceSafety": {"state": "ready"},
+        }
+
+    async def no_sleep(_):
+        pass
+
+    monkeypatch.setattr(capacity, "installed_request", installed_request)
+    monkeypatch.setattr(capacity.asyncio, "sleep", no_sleep)
+    assert await capacity.measure_installed() == 0
+    assert calls[0] == ("POST", "/capacity/check") and len(calls) == 4
+    assert '"passed"' in capsys.readouterr().out
 
 
 def test_cpu_quota_limits_default_workers(tmp_path, monkeypatch):

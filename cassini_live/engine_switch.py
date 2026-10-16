@@ -17,6 +17,7 @@ from . import catalog, eligibility, engines
 from .config import LANGUAGE_NAMES, LANGUAGES
 from .eligibility import NetworkProbe, Reason
 from .model_store import ModelError, ModelStore
+from .safety import ResourceRefused
 from .settings import EngineSettings, SettingsStore
 
 LOGGER = logging.getLogger(__name__)
@@ -106,6 +107,9 @@ class EngineManager:
         self.watch: asyncio.Task | None = None
         self.restore_watch = False
         self.cancel_reason: str | None = None
+        # Calls whose captions are being set up; the app keeps the count.
+        self.calls_starting: Callable[[], int] = lambda: 0
+        safety.on_measured = self.notify
         self._facts = None
         try:
             self.saved = settings.read()
@@ -532,6 +536,17 @@ class EngineManager:
         finally:
             message = "Cassini Live was disabled during the change"
             self._set("cancelled", "", error={"code": "disabled", "message": message})
+
+    async def measure(self) -> dict:
+        """Start an administrator's capacity measurement (0.8.0: never automatic)."""
+        if self.busy or self.lock.locked():
+            raise SwitchRefused(409, "busy", "Wait for the speech engine change to finish")
+        try:
+            await self.safety.measure(self.calls_starting)
+        except ResourceRefused as refused:
+            raise SwitchRefused(409, "unavailable", str(refused)) from None
+        self.notify()
+        return self.safety.assessment.result
 
     async def cancel(self, reason: str = "Cancelled by an administrator") -> SwitchStatus:
         if not self.busy or self.task is None:

@@ -215,6 +215,9 @@ class LoadGovernor:
     def admit(self, transcriber, now=None):
         """Decision at the start of a gate segment, before the slot or worker wait."""
         now = self.clock() if now is None else now
+        if self.measuring:
+            # The measurement's synthetic speakers: never seated, refused or counted.
+            return Decision(True)
         self.transcribers.add(transcriber)
         reason = self._refusal(transcriber, now)
         if reason is None:

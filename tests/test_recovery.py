@@ -275,16 +275,64 @@ async def test_missing_psi_no_longer_blocks_captions(harness):
         await guard.close()
 
 
-async def test_status_request_does_not_recalibrate_or_raise_backoff(harness):
+async def test_a_measurement_holds_calls_and_never_reloads_or_counts(harness, monkeypatch):
+    from cassini_live.safety import ResourceRefused
+
+    gate = asyncio.Event()
+
+    async def scenario(pool, count):
+        await gate.wait()
+        pool.capacity_waits += 5  # synthetic pressure must not reach the call counters
+        pool.lag.record(9.0)
+        return {"passed": True, "speakers": count}
+
+    monkeypatch.setattr(capacity, "scenario", scenario)
     guard, pool, _, _ = harness
     try:
         await guard.start()
         await until(lambda: guard.state == "ready")
         generation, failures = pool.generation, guard.failures
-        await guard.recheck()
-        await asyncio.sleep(0.03)
-        assert guard.state == "ready"
+        pool.lag.record(0.3)
+        await guard.measure()
+        status = guard.status()
+        assert status["phase"] == "measuring" and status["retryAfterSeconds"] >= 1
+        with pytest.raises(ResourceRefused, match="Measuring"):
+            guard.require_ready()
+        with pytest.raises(ResourceRefused, match="already running"):
+            await guard.measure()
+        assert guard.governor.measuring
+        gate.set()
+        await until(lambda: not guard.measuring)
+        assert guard.assessment.result["state"] == "passed" and not guard.governor.measuring
+        assert pool.capacity_waits == 0 and pool.lag.p95() == 0.3
+        assert guard.state == "ready" and status["state"] == "ready"
         assert pool.generation == generation and guard.failures == failures
+        guard.require_ready()
+    finally:
+        await guard.close()
+
+
+async def test_a_measurement_needs_ready_captions_and_no_calls(harness):
+    from types import SimpleNamespace
+
+    from cassini_live.safety import ResourceRefused
+
+    guard, pool, _, _ = harness
+    with pytest.raises(ResourceRefused, match="not ready"):
+        await guard.measure()
+    try:
+        await guard.start()
+        await until(lambda: guard.state == "ready")
+        with pytest.raises(ResourceRefused, match="captioned call"):
+            await guard.measure(calls_starting=lambda: 1)
+        guard.service = SimpleNamespace(clients={"room": object()}, stop_rooms=AsyncMock())
+        with pytest.raises(ResourceRefused, match="captioned call"):
+            await guard.measure()
+        guard.service = None
+        pool.acquire()  # a speaker holds a worker
+        with pytest.raises(ResourceRefused, match="in use"):
+            await guard.measure()
+        assert not guard.measuring and guard.assessment.task is None
     finally:
         await guard.close()
 
