@@ -684,3 +684,25 @@ def test_the_load_bound_is_the_engine_start_timeout_plus_room_teardown(tmp_path,
     assert h.manager._timeout() == 150
     assert _failure_code("The speech engine did not load in time") == "timeout"
     assert _failure_code("Capacity check did not establish a safe speaking budget") == "load_failed"
+
+
+async def test_explicit_workers_above_the_ceiling_are_clamped_not_blocking(
+    tmp_path, monkeypatch, caplog
+):
+    # Review 0.8.0: CASSINI_LIVE_WORKERS=3 on 2 CPUs (Nemotron ceiling 2) used to block
+    # captions as a configuration problem. It is clamped, with a warning and advice.
+    data = {**DATA, "cpuQuotaCpus": 2.0, "effectiveCpus": 2.0}
+    h = make(tmp_path, monkeypatch, data=data, ready=("nemotron-en",),
+             settings=EngineSettings(engine="nemotron-en"))
+    h.manager.config = Config(None, 3, "secret", "", workers_explicit=True)
+    await h.manager.restore()
+    assert h.manager.active == "nemotron-en" and h.safety.pool.size == 2
+    try:
+        await h.manager.start_safety()
+        await until(lambda: h.safety.state == "ready")
+        card = next(c for c in h.manager.panel()["engines"] if c["id"] == "nemotron-en")
+        assert card["eligible"] and card["advisory"]
+        assert any(r["code"] == "workers" and "3" in r["message"] for r in card["reasons"])
+    finally:
+        await h.manager.stop()
+        await h.safety.close()

@@ -698,3 +698,17 @@ def test_the_journal_records_the_app_version(tmp_path):
     journal = RecoveryJournal(tmp_path / "recovery.json")
     journal.write(0, 0, False, "Captions are ready")
     assert journal.read()["appVersion"] == __version__
+
+
+async def test_explicit_workers_above_the_ceiling_are_clamped(harness, caplog):
+    guard, pool, data, clock = harness
+    pool.size = 5  # CASSINI_LIVE_WORKERS=5; Whistle on 4 CPUs seats 2
+    guard.auto_size = False
+    try:
+        await guard.start()
+        await until(lambda: guard.state == "ready")
+        assert pool.size == 2 and guard.governor.ceiling == 2
+        assert any("CASSINI_LIVE_WORKERS is 5" in note for note in guard.status()["advice"])
+        assert "CASSINI_LIVE_WORKERS=5 is above the CPU ceiling of 2" in caplog.text
+    finally:
+        await guard.close()

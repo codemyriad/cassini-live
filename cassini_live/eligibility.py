@@ -21,7 +21,7 @@ from .model_store import ModelState
 
 ReasonCode = Literal["limits_missing", "memory_limit", "host_memory", "cpu_quota",
                      "cpu_instructions", "disk_space", "network", "storage", "architecture",
-                     "budget"]
+                     "budget", "workers"]
 NetworkStatus = Literal["reachable", "unreachable", "unknown"]
 ARCHITECTURES = ("x86_64", "aarch64")
 GIB = 1024**3
@@ -63,7 +63,16 @@ _flags: dict[Path, frozenset[str]] = {}
 
 
 # Reason codes that are installation advice (Decision 5), never a reason to refuse an engine.
-ADVICE_CODES = frozenset({"host_memory", "budget"})
+ADVICE_CODES = frozenset({"host_memory", "budget", "workers"})
+
+
+def workers_note(engine_id: str, requested: int, ceiling: int) -> str | None:
+    """Advice when CASSINI_LIVE_WORKERS asks for more than the CPU ceiling; it is clamped,
+    never a reason to block captions."""
+    if requested <= ceiling:
+        return None
+    return (f"CASSINI_LIVE_WORKERS is {requested}, above the {ceiling} simultaneous speakers "
+            f"{catalog.get(engine_id).name} can serve with this CPU quota; {ceiling} are used.")
 
 
 def cpu_flags(cpuinfo=Path("/proc/cpuinfo")) -> frozenset[str]:
