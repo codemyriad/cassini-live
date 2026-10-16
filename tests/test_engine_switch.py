@@ -168,7 +168,7 @@ async def test_switch_downloads_loads_checks_and_persists(h):
     assert "acknowledgements" not in json.loads(h.settings.path.read_text())
     order = [s for i, s in enumerate(states) if i == 0 or states[i - 1] != s]
     assert order == [
-        "validating", "downloading", "verifying", "stopping", "loading", "checking", "succeeded"
+        "validating", "downloading", "verifying", "stopping", "loading", "succeeded"
     ]
     assert h.manager.languages().keys() == {"auto", "en"}
     assert h.manager.languages()["auto"]["name"] == "Automatic (English)"
@@ -262,7 +262,7 @@ async def test_cancel_while_downloading_keeps_captions(h):
     assert h.safety.pool is h.pool and h.safety.state == "ready"
 
 
-async def test_cancel_while_checking_rolls_back(h):
+async def test_cancel_while_loading_rolls_back(h):
     gate = asyncio.Event()
     h.start_errors.clear()
     original = h.manager.backend_factory
@@ -276,7 +276,7 @@ async def test_cancel_while_checking_rolls_back(h):
     h.manager.backend_factory = gated
     h.store.ready.add("nemotron-multilingual")
     await h.manager.request_switch("nemotron-multilingual")
-    await until(lambda: h.manager.status.state == "checking")
+    await until(lambda: h.manager.status.state == "loading" and h.safety.phase == "loading")
     await h.manager.cancel()
     status = await finished(h)
     assert status.state == "cancelled" and status.rolled_back
@@ -300,7 +300,7 @@ async def test_switch_and_delete_during_the_critical_section_are_refused_at_once
     h.manager.backend_factory = gated
     h.store.ready.update({"nemotron-multilingual", "nemotron-en"})
     await h.manager.request_switch("nemotron-multilingual")
-    await until(lambda: h.manager.status.state == "checking")
+    await until(lambda: h.manager.status.state == "loading" and h.safety.phase == "loading")
     for call in (h.manager.request_switch("nemotron-en"), h.manager.delete_model("nemotron-en")):
         with pytest.raises(SwitchRefused) as refused:
             await asyncio.wait_for(call, 0.5)
@@ -350,7 +350,7 @@ async def test_cancel_during_rollback_is_refused(h):
     h.manager.status.state = "idle"
 
 
-async def test_disable_during_checking_restores_previous_without_restart(h):
+async def test_disable_during_loading_restores_previous_without_restart(h):
     gate = asyncio.Event()
     original = h.manager.backend_factory
 
@@ -362,7 +362,7 @@ async def test_disable_during_checking_restores_previous_without_restart(h):
     h.manager.backend_factory = gated
     h.store.ready.add("nemotron-multilingual")
     await h.manager.request_switch("nemotron-multilingual")
-    await until(lambda: h.manager.status.state == "checking")
+    await until(lambda: h.manager.status.state == "loading" and h.safety.phase == "loading")
     await h.manager.stop()
     assert h.manager.status.state == "cancelled"
     assert h.manager.status.error["code"] == "disabled"
@@ -650,3 +650,24 @@ async def test_restore_failed_message_names_the_fallback_once(tmp_path, monkeypa
     message = h.settings.read().last_error["message"]
     assert message == ("The Nemotron English model files are missing or damaged. "
                        "Choose it again to download it.")
+
+
+async def test_restore_clears_a_07x_capacity_verdict(tmp_path, monkeypatch):
+    error = {"code": "capacity_failed", "message": "Capacity check did not establish a safe "
+             "speaking budget", "engine": "nemotron-en", "at": 1}
+    h = make(tmp_path, monkeypatch, settings=EngineSettings(engine="whistle", last_error=error))
+    await h.manager.restore()
+    assert h.settings.read().last_error is None and h.manager.panel()["lastError"] is None
+
+
+def test_the_load_bound_is_the_engine_start_timeout_plus_room_teardown(tmp_path, monkeypatch):
+    from cassini_live.engine_switch import STOP_ROOMS_S, _failure_code
+
+    h = make(tmp_path, monkeypatch)
+    h.manager.check_timeout = None
+    assert h.manager._timeout() == catalog.get("whistle").requirements.start_timeout_s + 30
+    assert STOP_ROOMS_S == 30
+    h.safety.replace_pool(FakeBackend("nemotron-en", 1))
+    assert h.manager._timeout() == 150
+    assert _failure_code("The speech engine did not load in time") == "timeout"
+    assert _failure_code("Capacity check did not establish a safe speaking budget") == "load_failed"

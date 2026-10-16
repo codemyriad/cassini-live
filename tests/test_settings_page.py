@@ -414,7 +414,7 @@ def test_delete_models(page):
 def test_switch_and_delete_while_busy_are_refused_at_once(page):
     """The page refuses like the form does instead of queueing behind a running switch."""
     manager, client, headers = page
-    manager.status = SwitchStatus("checking", "nemotron-en", "whistle")
+    manager.status = SwitchStatus("loading", "nemotron-en", "whistle")
     body = error(post_engine(client, same_origin(headers), {"engine": "nemotron-multilingual"}),
                  409, "busy")
     assert "in progress" in body["message"]

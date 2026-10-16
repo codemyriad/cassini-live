@@ -74,7 +74,7 @@ class Manager:
 
     @property
     def busy(self):
-        return self.status.state in {"validating", "downloading", "checking", "rolling_back"}
+        return self.status.state in {"validating", "downloading", "loading", "rolling_back"}
 
     @property
     def desired(self):
@@ -344,7 +344,7 @@ async def test_status_changes_outside_the_manager_are_republished(h):
         await sync.poll_once()  # nothing changed: no new registration
         await asyncio.sleep(0.05)
         assert len(h.nc.forms) == published
-        status["captions"] = "ready"  # the capacity check finished
+        status["captions"] = "ready"  # the engine finished loading
         await sync.poll_once()
         await asyncio.sleep(0.05)
         assert h.nc.forms[-1].to_dict()["captions"] == "ready"

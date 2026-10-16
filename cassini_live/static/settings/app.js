@@ -3,19 +3,17 @@
 (function () {
   "use strict";
 
-  var BUSY = ["validating", "downloading", "verifying", "stopping", "loading", "checking",
-    "rolling_back"];
-  var CAPTIONS_OFF = ["stopping", "loading", "checking", "rolling_back"];
-  var CANCELLABLE = ["downloading", "verifying", "stopping", "loading", "checking"];
+  var BUSY = ["validating", "downloading", "verifying", "stopping", "loading", "rolling_back"];
+  var CAPTIONS_OFF = ["stopping", "loading", "rolling_back"];
+  var CANCELLABLE = ["downloading", "verifying", "stopping", "loading"];
   var FINISHED = ["succeeded", "failed", "cancelled"];
-  var STEP_ORDER = ["validating", "downloading", "verifying", "stopping", "loading", "checking"];
+  var STEP_ORDER = ["validating", "downloading", "verifying", "stopping", "loading"];
   var STEP_NAMES = {
     validating: "checking requirements",
     downloading: "downloading",
     verifying: "verifying files",
     stopping: "stopping captions",
     loading: "loading the engine",
-    checking: "capacity check",
     rolling_back: "restoring the previous engine"
   };
   var PHASE_NAMES = {
@@ -248,8 +246,10 @@
     if (!state) { return SLOW_MS; }
     var safety = state.status && state.status.resourceSafety;
     var capacity = state.status && state.status.capacityAssessment;
-    if (isBusy() || (safety && safety.state === "checking") ||
-        (capacity && capacity.state === "checking")) {
+    var calls = state.panel && state.panel.activeCalls;
+    // Live numbers move during a load, a measurement or a call; idle pages poll slowly.
+    if (isBusy() || (safety && (safety.phase === "loading" || safety.phase === "measuring")) ||
+        (capacity && capacity.state === "checking") || calls > 0) {
       return FAST_MS;
     }
     return SLOW_MS;
@@ -363,9 +363,10 @@
   function captionsText(safety) {
     if (!safety) { return "Unknown"; }
     var reason = sentence(safety.reason || "");
+    if (safety.phase === "measuring") { return "Paused: measuring capacity"; }
+    if (safety.phase === "loading") { return "Loading the engine"; }
     switch (safety.state) {
       case "ready": return "Ready";
-      case "checking": return "Running the capacity check";
       case "recovering": return "Recovering automatically: " + (reason || "waiting for resources.");
       case "blocked":
         return "Paused: " + (reason || "not enough resources.") +
@@ -401,7 +402,7 @@
     var active = engineName(panel.active);
     setText($("active-engine"), status.enabled === false ? active + " (Cassini Live is not enabled)" : active);
     setText($("captions"), captionsText(safety));
-    show($("captions-spinner"), !!safety && safety.state === "checking");
+    show($("captions-spinner"), !!safety && safety.phase === "loading");
     setText($("capacity"), capacityText(capacity));
     show($("capacity-spinner"), !!capacity && capacity.state === "checking");
     setText($("calls"), String(panel.activeCalls || 0));

@@ -1,9 +1,9 @@
 """Server-wide speech engine selection: restore, switch, roll back.
 
 One engine serves every call. A switch downloads while the old engine keeps serving, then
-stops captions like an overload pause, loads the new engine and runs the normal capacity
-check. Any failure restores the previous engine, so an administrator's choice can never
-leave the server without captions longer than one capacity check.
+stops captions, loads the new engine and is done once it is ready: no capacity check runs
+(0.8.0). A failed load restores the previous engine, so an administrator's choice can
+never leave the server without captions longer than two loads.
 """
 
 import asyncio
@@ -22,14 +22,16 @@ from .settings import EngineSettings, SettingsStore
 LOGGER = logging.getLogger(__name__)
 
 SwitchState = Literal[
-    "idle", "validating", "downloading", "verifying", "stopping", "loading", "checking",
+    "idle", "validating", "downloading", "verifying", "stopping", "loading",
     "rolling_back", "succeeded", "failed", "cancelled",
 ]
-ACTIVE_STATES = {
-    "validating", "downloading", "verifying", "stopping", "loading", "checking", "rolling_back"
-}
+ACTIVE_STATES = {"validating", "downloading", "verifying", "stopping", "loading", "rolling_back"}
 ENDED_STATES = {"succeeded", "failed", "cancelled"}
-CRITICAL_STATES = {"stopping", "loading", "checking", "rolling_back"}
+CRITICAL_STATES = {"stopping", "loading", "rolling_back"}
+# Error codes 0.7.x saved that 0.8.0 no longer produces; the form still renders them.
+LEGACY_CODES = {"capacity_failed"}
+# Bound on stop_rooms during a switch's teardown (safety._teardown), added to the load bound.
+STOP_ROOMS_S = 30
 REMOVABLE = {"ready", "partial", "corrupt"}
 # Present model files make these irrelevant when restoring a saved choice.
 DOWNLOAD_REASONS = {"network", "disk_space", "storage"}
@@ -75,14 +77,12 @@ def _name(engine_id):
     return catalog.get(engine_id).name if engine_id in catalog.ENGINES else str(engine_id)
 
 
-WAITING_PHASES = frozenset({"waiting_headroom", "cooling_down"})
+WAITING_PHASES = frozenset({"cooling_down"})
 
 
 def _failure_code(reason):
-    if "did not load in time" in reason or "did not finish in time" in reason:
+    if "did not load in time" in reason:
         return "timeout"
-    if "Capacity check" in reason or "speaking budget" in reason:
-        return "capacity_failed"
     return "load_failed"
 
 
@@ -90,10 +90,11 @@ class EngineManager:
     def __init__(self, safety, service, config, store: ModelStore, settings: SettingsStore, *,
                  backend_factory=engines.create_backend, facts=eligibility.host_facts,
                  probe: NetworkProbe | None = None, clock=time.time,
-                 check_timeout: float = 180):  # load plus four 21 s capacity scenarios
+                 check_timeout: float | None = None):
         self.safety, self.service, self.config = safety, service, config
         self.store, self.settings = store, settings
         self.backend_factory, self.facts_source, self.probe = backend_factory, facts, probe
+        # None: each engine's own load bound (start_timeout_s) plus the room teardown bound.
         self.clock, self.check_timeout = clock, check_timeout
         self.lock = asyncio.Lock()
         self.active = safety.engine_id
@@ -245,6 +246,8 @@ class EngineManager:
                     engine = catalog.DEFAULT_ENGINE
                 elif (saved.last_error or {}).get("code") == "restore_deferred":
                     saved.last_error = None  # The deferred engine is back.
+            if (saved.last_error or {}).get("code") in LEGACY_CODES:
+                saved.last_error = None  # A 0.7.x capacity verdict says nothing about 0.8.0.
             self.saved = saved
             self._save()
             if engine != self.safety.engine_id:
@@ -443,7 +446,7 @@ class EngineManager:
                 self.notify()
 
     async def _replace(self, target, previous):
-        """Critical section: captions are down from here until checking ends."""
+        """Critical section: captions are down from here until the new engine is ready."""
         self._set("stopping", "Stopping captions")
         self._save(engine=previous, pending=target)
         code, why = "load_failed", ""
@@ -451,8 +454,7 @@ class EngineManager:
             await self._stage(self.safety.close(reason="Changing the speech engine"))
             self._set("loading", f"Loading {_name(target)}")
             self.safety.replace_pool(self._backend(target))
-            self._set("checking", "Running the capacity check")
-            ok, why = await self._stage(self._check())
+            ok, why = await self._stage(self._load())
             code = _failure_code(why)
         except _Interrupted:
             ok, code, why = False, "cancelled", self.cancel_reason
@@ -466,24 +468,29 @@ class EngineManager:
             return
         await self._rollback(previous, target, code, why, cancelled=code == "cancelled")
 
-    async def _check(self):
+    async def _load(self):
         await self.safety.start(fresh=True)
         return await self._outcome()
 
+    def _timeout(self):
+        if self.check_timeout is not None:
+            return self.check_timeout
+        return catalog.get(self.safety.engine_id).requirements.start_timeout_s + STOP_ROOMS_S
+
     async def _outcome(self, *, patient=False):
-        """The check timeout bounds the attempt itself, not a cooldown or wait before it."""
-        timeout = self.check_timeout
+        """The load timeout bounds the attempt itself, not a cooldown before it."""
+        timeout = self._timeout()
         while True:
             ok, why = await self.safety.wait_outcome(timeout)
             if ok or _failure_code(why) != "timeout":
                 return ok, why
             safety = self.safety
             if safety.phase == "loading" and safety.attempt_started is not None:
-                timeout = safety.attempt_started + self.check_timeout - safety.clock()
+                timeout = safety.attempt_started + self._timeout() - safety.clock()
                 if timeout > 0:
                     continue  # The attempt began late in the wait; give it its full time.
             elif patient and safety.phase in WAITING_PHASES:
-                timeout = self.check_timeout
+                timeout = self._timeout()
                 continue  # Still in the recovery cooldown: no load has been attempted yet.
             return ok, why
 
@@ -501,7 +508,7 @@ class EngineManager:
         try:
             self.safety.replace_pool(self._backend(fallback))
             self.active = fallback
-            ok, _ = await self._check()
+            ok, _ = await self._load()
         except Exception as error:
             LOGGER.warning("Rollback to %s failed (%s)", fallback, type(error).__name__)
             ok = False
