@@ -11,7 +11,7 @@ from nc_py_api import AsyncNextcloudApp
 from nc_py_api.ex_app import run_app, set_handlers
 from pydantic import BaseModel, Field
 
-from . import __version__, catalog, settings_page, transcriber
+from . import __version__, catalog, panel_page, settings_page, transcriber
 from .auth import SafeAppAPIAuthMiddleware
 from .capacity import CapacityAssessment
 from .config import Config, state_dir
@@ -297,6 +297,7 @@ def create_app(
         }
 
     app.include_router(settings_page.create_router(manager, status_body))
+    app.include_router(panel_page.create_router())
     if production:
         sync = SettingsSync(manager, nc_factory, status_body, page_url=settings_page.page_url())
 
