@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Cassini Live transcript panel</title>
+  <link rel="stylesheet" href="install.css">
+  <script src="install.js" defer></script>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Cassini Live transcript panel</h1>
+    <p class="subtitle">A scrollable live transcript for Talk calls — including your own lines.</p>
+
+    <noscript><p class="notice">This page needs JavaScript to prepare the bookmarklet.</p></noscript>
+
+    <section>
+      <h2>Install</h2>
+      <ol>
+        <li>Show your browser's bookmarks bar (<kbd>Ctrl/⌘</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>).</li>
+        <li>Drag this button onto the bar:
+          <a id="bookmarklet" class="bookmarklet" draggable="true" href="#">📝 Live transcript</a>
+        </li>
+        <li>Join a Talk call, turn on <strong>closed captions</strong>, then click the bookmark.
+          Click it again to close the panel.</li>
+      </ol>
+      <p>Can't drag? <button id="copy-loader" type="button">Copy the bookmarklet</button>
+        and paste it as the URL of a new bookmark. <span id="copy-result" role="status"></span></p>
+    </section>
+
+    <section>
+      <h2>How it works</h2>
+      <p>The bookmark injects this app's panel script into the Talk page, same-origin through
+        Nextcloud's App API proxy. The panel listens to the captions Talk already receives and
+        renders them as a scrollable, speaker-grouped transcript. Transcript text is AI-generated.
+        Nothing is stored: the panel shows what was said while it was open, and forgets it when
+        the call page closes.</p>
+      <details>
+        <summary>Standalone flavour (works even when this app is later uninstalled)</summary>
+        <p>The whole panel as one bookmark, no loading step:
+          <button id="copy-inline" type="button">Copy the standalone bookmarklet</button>
+          <span id="copy-inline-result" role="status"></span></p>
+        <p class="notice">The standalone flavour is frozen at the version you copy; the loader
+          flavour above updates whenever the app updates.</p>
+      </details>
+    </section>
+
+    <footer>
+      <p id="version"></p>
+    </footer>
+  </main>
+</body>
+</html>
