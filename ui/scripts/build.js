@@ -77,19 +77,24 @@ const installJs = [
 const installHtml = await readFile(join(uiRoot, 'src', 'install-page.html'), 'utf8')
 const installCss = await readFile(join(uiRoot, 'src', 'install-page.css'), 'utf8')
 
-const outputs = [
-  [join(distDir, 'panel.js'), panelJs],
-  [join(distDir, 'bookmarklet-inline.txt'), inlineBookmarklet],
-  [join(distDir, 'bookmarklet-loader.txt'), loaderBookmarklet],
+// The committed outputs are what the ExApp serves; dist/ is gitignored (the
+// repo-root dist/ rule covers it) and exists for tests and local pickup, so
+// `--check` judges only the committed set.
+const committed = [
   [join(staticPanelDir, 'panel.js'), panelJs],
   [join(staticPanelDir, 'install.js'), installJs],
   [join(staticPanelDir, 'install.css'), installCss],
   [join(staticPanelDir, 'index.html'), installHtml],
 ]
+const generated = [
+  [join(distDir, 'panel.js'), panelJs],
+  [join(distDir, 'bookmarklet-inline.txt'), inlineBookmarklet],
+  [join(distDir, 'bookmarklet-loader.txt'), loaderBookmarklet],
+]
 
 if (checkMode) {
   let stale = false
-  for (const [path, content] of outputs) {
+  for (const [path, content] of committed) {
     const existing = await readFile(path, 'utf8').catch(() => null)
     if (existing !== content) {
       console.error(`stale: ${path}`)
@@ -100,11 +105,11 @@ if (checkMode) {
     console.error('Run `npm run build` in ui/ and commit the outputs.')
     process.exit(1)
   }
-  console.log('build outputs are current')
+  console.log('committed build outputs are current')
 } else {
   await mkdir(distDir, { recursive: true })
   await mkdir(staticPanelDir, { recursive: true })
-  for (const [path, content] of outputs) {
+  for (const [path, content] of [...committed, ...generated]) {
     await writeFile(path, content)
   }
   const kb = (s) => `${(Buffer.byteLength(s) / 1024).toFixed(1)} KB`
