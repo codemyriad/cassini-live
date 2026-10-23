@@ -305,6 +305,37 @@ def create_app(
     async def status():
         return status_body()
 
+    async def _user_in_room(username: str, room_token: str) -> bool:
+        # Authorize catch-up by acting as the requesting user and asking Talk for
+        # the room's participants: Talk returns them only to members, so a 200 is
+        # proof of membership and a 403/404 is a clean deny. Talk's own room ACL
+        # is the gate; we keep no separate membership state. Guests (empty
+        # username) cannot be acted-as and are refused.
+        if not username or not room_token:
+            return False
+        try:
+            nc = nc_factory()
+            await nc.set_user(username)
+            await nc.ocs("GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants")
+            return True
+        except Exception:
+            return False
+
+    @app.get("/history")
+    async def history(request: Request, token: str = ""):
+        # Late-joiner catch-up (D-830): the finals of the current call in `token`,
+        # for a participant. USER-level at the proxy; membership re-checked here
+        # because any logged-in user can reach the route.
+        if not token:
+            raise HTTPException(400, "A room token is required")
+        client = getattr(service, "clients", {}).get(token)
+        if client is None:
+            # No active caption client — nothing has been transcribed to catch up on.
+            return {"entries": []}
+        if not await _user_in_room(request.scope.get("username") or "", token):
+            raise HTTPException(403, "Not a participant of this call")
+        return {"entries": client.history_snapshot()}
+
     @app.post("/capacity/check")
     async def check_capacity(request: Request):
         # Container CLI only (capacity --installed --measure); not a browser proxy route.

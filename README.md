@@ -67,6 +67,16 @@ failures (container restarts preserve them), and becomes available again
 automatically. An interrupted call may need captions toggled back on.
 See [load, admission and capacity](docs/capacity.md).
 
+Changes in 0.10.0:
+
+* The transcript panel catches up late joiners: the app keeps a bounded
+  in-memory transcript of the current call and serves it, to participants only,
+  from `GET /history?token=<roomToken>` (any logged-in member of the call). The
+  panel shows the earlier lines, a "You joined here" divider, then the live
+  continuation. The transcript is per-call: a new call in the same conversation
+  starts fresh, and the buffer is dropped when the call's caption session ends.
+  The panel mounts as a Talk sidebar tab and is scoped to the current call.
+
 Changes in 0.9.0:
 
 * New transcript panel for Talk calls, delivered as a bookmarklet and served by

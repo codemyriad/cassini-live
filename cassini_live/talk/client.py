@@ -10,6 +10,7 @@ import logging
 import os
 import time
 import weakref
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from secrets import token_urlsafe
@@ -59,6 +60,12 @@ LOGGER = logging.getLogger("lt.spreed_client")
 # Participant names for the diagnostic video: at most one Talk participants request per
 # room every 10 s. Unjustified beyond "join bursts coalesce"; names are cosmetic.
 NAMES_REFRESH_S = 10
+
+# Bounded in-memory transcript of the current call, kept so a late joiner can
+# catch up on what was said before they arrived (D-830). Finals only; dropped
+# when the call's client closes. ~5000 finals is a long meeting at a few
+# hundred bytes each; the oldest are evicted first.
+HISTORY_MAX = 5000
 
 
 @dataclasses.dataclass
@@ -121,6 +128,8 @@ class SpreedClient:
 		self._nc_sid_wait_stash: dict[str, None] = {}
 		self.transcript_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
 		self._transcript_sender: asyncio.Task | None = None
+		# Finals of the current call, for late-joiner catch-up (D-830).
+		self.history: deque = deque(maxlen=HISTORY_MAX)
 		self.transcribers: dict[str, WhistleTranscriber] = {}
 		self.transcriber_lock = asyncio.Lock()
 		self.defunct = asyncio.Event()
@@ -585,7 +594,20 @@ class SpreedClient:
 			"bye": {}
 		})
 
+	def history_snapshot(self) -> list[dict]:
+		"""Finals said so far in this call, oldest first, for catch-up."""
+		return list(self.history)
+
 	async def send_transcript(self, transcript: Transcript):
+		# Buffer finals for late-joiner catch-up before the targets check, so the
+		# record is complete even in the brief window with no caption receivers.
+		if transcript.final and transcript.message:
+			self.history.append({
+				"speakerSessionId": transcript.speaker_session_id,
+				"message": transcript.message,
+				"langId": transcript.lang_id,
+				"t": int(time.time() * 1000),
+			})
 		async with self.target_lock:
 			if not self.targets:
 				LOGGER.debug("No targets to send transcript to, skipping", extra={

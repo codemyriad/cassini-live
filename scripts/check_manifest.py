@@ -34,6 +34,7 @@ def main():
     ]
     user_patterns = [
         "^/?status$",
+        "^/?history$",
         r"^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$",
     ]
     for pattern, verb, level in table:
