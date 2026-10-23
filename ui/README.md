@@ -40,6 +40,14 @@ delivers to this session, before any filtering — that is where the panel
 listens. Captions still have to be enabled in the call (Talk's CC menu): that
 is what makes cassini-live target this session at all.
 
+Live events only reach a session from the moment it enables captions, so a late
+joiner would miss everything said before. The panel therefore also fetches
+`GET /history?token=<roomToken>` (`history.js`) when a call starts; the store
+seeds those earlier finals as *historical* blocks and the view draws a "You
+joined here" divider before the first live block. Everything is scoped per
+conversation by `session.js`, which watches the room and call tokens and resets
+the store on a new call or a switch to another conversation.
+
 Speaker names resolve in the browser (the payload only carries the speaker's
 signalling session id). The authoritative source is `connection.joinedUsers`,
 the signalling roster that maps session id → `{userid, user.displayname}` for
@@ -57,13 +65,20 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
 - `src/tap.js` — attaches to `OCA.Talk.SimpleWebRTC`, polls until the global
   exists, follows instance replacement on call rejoin.
 - `src/names.js` — prefix-aware name resolution (see above).
-- `src/panel.js` — `createTranscriptView`: renders the store into a shadow root
-  the caller supplies. CSP discipline throughout: no `innerHTML`, styles via
-  `adoptedStyleSheets`, everything `createElement`.
-- `src/sidebar.js` — integrates the view as a sidebar tab: injects the tab
-  button + an overlay panel, survives Talk's Vue re-renders via a reconcile
-  loop, derives Talk's selected/unselected tab styling at runtime (the classes
-  are build-hashed), and suppresses the native `.transcript` overlay.
+- `src/history.js` — fetches `/history` for catch-up, tolerant of errors.
+- `src/session.js` — conversation/call scoping: resets + re-seeds the store on a
+  new call or a change of conversation; an ended call stays until navigation.
+- `src/store.js` also has `seedHistory` / `reset` and a `historical` flag per
+  block; the view draws the "You joined here" divider from it.
+- `src/panel.js` — `createTranscriptView`: renders the store (replaying current
+  state on mount) into a shadow root the caller supplies. CSP discipline
+  throughout: no `innerHTML`, styles via `adoptedStyleSheets`, everything
+  `createElement`.
+- `src/sidebar.js` — integrates the view as a sidebar tab, reactively: injects
+  only while Talk renders the sidebar on a call page and removes it when gone.
+  The tab is cloned from a live native tab (exact styling despite build-hashed
+  classes), re-skinned with a captions glyph and a "Live transcription" label;
+  it suppresses the native `.transcript` overlay while present.
 - `src/main.js` — mount/toggle entry point; exposes
   `window.__CASSINI_LIVE_PANEL__` (destroy, injectTranscript, attached).
 - `src/loader.js` — the loader bookmarklet source.

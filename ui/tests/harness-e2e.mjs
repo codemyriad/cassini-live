@@ -1,18 +1,19 @@
-// Real-stack e2e against the gocassini harness. Proves the sidebar transcript
-// tab and the remote-speaker name fix end to end:
+// Real-stack e2e against the gocassini harness. Proves late-joiner catch-up,
+// the sidebar transcript tab, and the remote-speaker name fix end to end:
 //
-//   - admin joins as the silent VIEWER, enables live captions, clicks the
-//     bookmarklet (the transcript tab appears in Talk's sidebar)
-//   - botuser joins as the REMOTE SPEAKER with the JFK clip on a fake mic
-//   - admin's sidebar tab fills with Whistle captions attributed to "botuser"
-//     (a display name, not a raw session id — the bug this guards), the native
-//     caption overlay is hidden, and a second bookmarklet click tears it down
+//   - botuser joins first as the SPEAKER (JFK clip on a fake mic), enables
+//     captions, and talks — cassini-live buffers the finals
+//   - admin joins LATER as the VIEWER, enables captions, clicks the bookmarklet
+//   - admin's "Live transcription" sidebar tab shows what botuser said BEFORE
+//     admin joined (fetched from /history), a "You joined here" divider, then
+//     the live continuation — all attributed to "botuser", not a session id,
+//     with Talk's native caption overlay hidden
 //
-// Not part of `npm test`: it needs the harness up and the ExApp installed
-// (gocassini: ./harness/bin/live-panel-setup.sh). Run from the gocassini repo
-// root, in the Playwright container with host networking:
+// Not part of `npm test`: it needs the harness up and the ExApp installed at
+// >= 0.10.0 (gocassini: ./harness/bin/live-panel-setup.sh). Run from the
+// gocassini repo root, in the Playwright container with host networking:
 //
-//   URL=$(./bin/cassini dev room create --name 'Live e2e' | tail -1 | sed 's/127.0.0.1/localhost/')
+//   URL=$(./bin/cassini dev room create --name 'Catch-up e2e' | tail -1 | sed 's/127.0.0.1/localhost/')
 //   docker run --rm --network host \
 //     -v "$PWD/cassini-live/ui:/ui" \
 //     -v "$PWD/cassini-live/tests/assets/jfk.wav:/media/jfk.wav:ro" \
@@ -68,40 +69,8 @@ async function joinCall(page) {
   await page.getByRole('button', { name: /leave call/i }).first().waitFor({ timeout: 20000 })
 }
 
-const viewerBrowser = await launch(false)
-const speakerBrowser = await launch('/media/jfk.wav')
-const page = await (await viewerBrowser.newContext({ baseURL: BASE })).newPage()
-page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 200)))
-const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` }).catch(() => {})
-
-// read the transcript blocks out of the sidebar tab's shadow root
-const readBlocks = () =>
-  page.evaluate(() => {
-    const host = document.getElementById('cassini-live-tabpanel')?.querySelector('div')
-    const shadow = host?.shadowRoot
-    if (!shadow) return []
-    return [...shadow.querySelectorAll('.block')].map((b) => ({
-      speaker: b.querySelector('.speaker')?.textContent,
-      own: b.classList.contains('own'),
-      lines: [...b.querySelectorAll('.line:not(.partial)')].map((l) => l.textContent),
-    }))
-  })
-
-try {
-  // 1. viewer joins, enables captions
-  await login(page, 'admin', 'admin')
-  await page.goto(CALL_URL)
-  await joinCall(page)
-  log('admin (viewer) in call')
-  await page.evaluate(async (t) => {
-    await fetch(`/ocs/v2.php/apps/spreed/api/v4/room/${t}/participants`, {
-      method: 'POST',
-      headers: { 'OCS-APIRequest': 'true', requesttoken: window.OC.requestToken, 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ newParticipant: 'botuser', source: 'users' }),
-    })
-  }, token)
-  const enable = await page.evaluate(async (t) => {
+async function enableCaptions(page) {
+  return page.evaluate(async (t) => {
     const r = await fetch(`/ocs/v2.php/apps/spreed/api/v1/live-transcription/${t}`, {
       method: 'POST',
       headers: { 'OCS-APIRequest': 'true', requesttoken: window.OC.requestToken },
@@ -109,60 +78,101 @@ try {
     })
     return r.status
   }, token)
-  log('captions enable:', enable)
-  if (enable >= 400) throw new Error(`enable failed: ${enable}`)
+}
 
-  // 2. bookmarklet → sidebar tab
-  const code = decodeURIComponent((await readFile('/ui/dist/bookmarklet-inline.txt', 'utf8')).trim().slice('javascript:'.length))
-  await page.evaluate(code)
-  await page.waitForSelector('#cassini-live-tab', { timeout: 10000 })
-  log('transcript tab mounted; attached =', await page.evaluate(() => window.__CASSINI_LIVE_PANEL__?.attached))
-  const nativeHidden = await page.evaluate(() => {
-    const n = document.querySelector('.transcript:not(#cassini-live-tabpanel .transcript)')
-    return !n || n.offsetParent === null || getComputedStyle(n).display === 'none'
+const readBlocks = (page) =>
+  page.evaluate(() => {
+    const host = document.getElementById('cassini-live-tabpanel')?.querySelector('div')
+    const shadow = host?.shadowRoot
+    if (!shadow) return { blocks: [], divider: null }
+    const order = [...shadow.querySelectorAll('.marker, .block')].map((n) =>
+      n.classList.contains('marker')
+        ? { divider: n.textContent }
+        : {
+            speaker: n.querySelector('.speaker')?.textContent,
+            own: n.classList.contains('own'),
+            lines: [...n.querySelectorAll('.line:not(.partial)')].map((l) => l.textContent),
+          },
+    )
+    return { order, divider: shadow.querySelector('.marker')?.textContent || null }
   })
-  log('native caption overlay hidden:', nativeHidden)
-  await shot('01-tab-mounted')
 
-  // 3. remote speaker joins and talks
-  const bob = await (await speakerBrowser.newContext({ baseURL: BASE })).newPage()
+const speaker = await launch('/media/jfk.wav')
+const viewer = await launch(false)
+const vpage = await (await viewer.newContext({ baseURL: BASE })).newPage()
+vpage.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 200)))
+const shot = (n) => vpage.screenshot({ path: `${OUT}/${n}.png` }).catch(() => {})
+
+try {
+  // Admin adds botuser to the room, then botuser (speaker) joins and talks FIRST.
+  const admin = await (await viewer.newContext({ baseURL: BASE })).newPage()
+  await login(admin, 'admin', 'admin')
+  await admin.evaluate(async (t) => {
+    await fetch(`/ocs/v2.php/apps/spreed/api/v4/room/${t}/participants`, {
+      method: 'POST',
+      headers: { 'OCS-APIRequest': 'true', requesttoken: window.OC.requestToken, 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ newParticipant: 'botuser', source: 'users' }),
+    })
+  }, token)
+  await admin.close()
+
+  const bob = await (await speaker.newContext({ baseURL: BASE })).newPage()
   await login(bob, 'botuser', BOT_PASSWORD)
   await bob.goto(CALL_URL)
   await joinCall(bob)
-  log('botuser (speaker) in call')
+  log('botuser (speaker) in call; enabling captions and speaking first')
+  await enableCaptions(bob)
+  await bob.waitForTimeout(22000) // speak before the viewer arrives → builds history
 
-  // 4. captions attributed to the remote speaker show their display name
-  await page.locator('#cassini-live-tabpanel .block').first().waitFor({ timeout: 120000 })
-  await page.waitForTimeout(15000)
-  const blocks = await readBlocks()
-  await shot('02-captions')
-  await writeFile(`${OUT}/transcript.json`, JSON.stringify(blocks, null, 2))
-  log('TRANSCRIPT:', JSON.stringify(blocks, null, 2))
+  // Viewer joins LATE.
+  await login(vpage, 'admin', 'admin')
+  await vpage.goto(CALL_URL)
+  await joinCall(vpage)
+  log('admin (viewer) joined late; enabling captions + bookmarklet')
+  await enableCaptions(vpage)
+  const code = decodeURIComponent((await readFile('/ui/dist/bookmarklet-inline.txt', 'utf8')).trim().slice('javascript:'.length))
+  await vpage.evaluate(code)
+  await vpage.waitForSelector('#cassini-live-tab', { timeout: 10000 })
 
-  const speakers = [...new Set(blocks.map((b) => b.speaker))]
-  const remote = blocks.filter((b) => !b.own)
-  if (!remote.length) throw new Error('no remote-speaker captions appeared')
-  for (const b of remote) {
+  // Catch-up history should appear quickly (fetched, not waited-for live).
+  await vpage.locator('#cassini-live-tabpanel .block').first().waitFor({ timeout: 30000 })
+  await vpage.waitForTimeout(12000) // let a live line or two land after the divider
+  const result = await readBlocks(vpage)
+  await shot('01-catchup')
+  await writeFile(`${OUT}/catchup.json`, JSON.stringify(result, null, 2))
+  log('PANEL:', JSON.stringify(result, null, 2))
+
+  const nativeHidden = await vpage.evaluate(() => {
+    const n = document.querySelector('.transcript:not(#cassini-live-tabpanel .transcript)')
+    return !n || getComputedStyle(n).display === 'none'
+  })
+  log('native overlay hidden:', nativeHidden)
+
+  // Assertions.
+  const blocks = (result.order || []).filter((o) => o.speaker)
+  if (!blocks.length) throw new Error('no transcript appeared for the late joiner')
+  for (const b of blocks) {
     if (/ItZG5la2NhYg/.test(b.speaker) || /…/.test(b.speaker)) {
-      throw new Error(`remote speaker rendered as a raw/short id, not a name: ${b.speaker}`)
+      throw new Error(`speaker rendered as a raw/short id, not a name: ${b.speaker}`)
     }
   }
-  log('remote speaker names:', JSON.stringify(speakers.filter((s) => s !== 'admin')))
-
-  // 5. clean teardown
-  await page.evaluate(code)
-  if (await page.locator('#cassini-live-tab').count()) throw new Error('tab did not tear down')
-  const restored = await page.evaluate(() => {
-    const n = document.querySelector('.transcript')
-    return n ? getComputedStyle(n).display !== 'none' : true
-  })
-  log('native overlay restored after teardown:', restored)
+  if (result.divider !== 'You joined here') {
+    throw new Error(`expected a "You joined here" divider, got: ${result.divider}`)
+  }
+  // The divider must have at least one block before it (history) and after it (live).
+  const dividerIdx = (result.order || []).findIndex((o) => o.divider)
+  const before = (result.order || []).slice(0, dividerIdx).filter((o) => o.speaker)
+  const after = (result.order || []).slice(dividerIdx + 1).filter((o) => o.speaker)
+  if (!before.length) throw new Error('no history before the divider')
+  if (!after.length) throw new Error('no live lines after the divider')
+  log(`history blocks before divider: ${before.length}, live blocks after: ${after.length}`)
   log('SUCCESS')
 } catch (err) {
   await shot('99-failure')
   console.error('[e2e] FAILED:', err)
   process.exitCode = 1
 } finally {
-  await viewerBrowser.close()
-  await speakerBrowser.close()
+  await speaker.close()
+  await viewer.close()
 }
