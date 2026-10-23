@@ -19,7 +19,7 @@
 import { createStore } from './store.js'
 import { createTap } from './tap.js'
 import { createNames } from './names.js'
-import { createPanel } from './panel.js'
+import { createSidebarPanel } from './sidebar.js'
 
 const GLOBAL = '__CASSINI_LIVE_PANEL__'
 
@@ -48,7 +48,7 @@ function mount() {
     }
   }
 
-  panel = createPanel({ store, names, onClose: destroy })
+  panel = createSidebarPanel({ store, names })
   panel.setStatus(lastStatus)
 
   window[GLOBAL] = {

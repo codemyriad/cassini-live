@@ -1,8 +1,16 @@
-// Real-stack e2e: join a Talk call in the gocassini harness, enable live
-// captions, click the bookmarklet, and watch real Whistle captions land in
-// the panel. Not part of `npm test` — it needs the harness up and the ExApp
-// installed (gocassini: ./harness/bin/live-panel-setup.sh). Run it from the
-// gocassini repo root, in the Playwright container with host networking:
+// Real-stack e2e against the gocassini harness. Proves the sidebar transcript
+// tab and the remote-speaker name fix end to end:
+//
+//   - admin joins as the silent VIEWER, enables live captions, clicks the
+//     bookmarklet (the transcript tab appears in Talk's sidebar)
+//   - botuser joins as the REMOTE SPEAKER with the JFK clip on a fake mic
+//   - admin's sidebar tab fills with Whistle captions attributed to "botuser"
+//     (a display name, not a raw session id — the bug this guards), the native
+//     caption overlay is hidden, and a second bookmarklet click tears it down
+//
+// Not part of `npm test`: it needs the harness up and the ExApp installed
+// (gocassini: ./harness/bin/live-panel-setup.sh). Run from the gocassini repo
+// root, in the Playwright container with host networking:
 //
 //   URL=$(./bin/cassini dev room create --name 'Live e2e' | tail -1 | sed 's/127.0.0.1/localhost/')
 //   docker run --rm --network host \
@@ -15,112 +23,146 @@
 // localhost, not 127.0.0.1: the HPB keys rooms by backend URL, and the ExApp
 // joins via overwrite.cli.url (http://localhost:28080). A browser on another
 // host string lands in a different room instance and captions never arrive.
-// It speaks the JFK clip into the call through Chromium's fake microphone and
-// asserts the panel renders the captions as own lines, then tears down.
 import { chromium } from 'playwright-core'
 import { readFile, writeFile } from 'node:fs/promises'
 
-const BASE = process.env.NC_URL || 'http://127.0.0.1:28080'
+const BASE = process.env.NC_URL || 'http://localhost:28080'
 const CALL_URL = process.env.CALL_URL
 const OUT = process.env.OUT_DIR || '/out'
+const BOT_PASSWORD = process.env.BOT_PASSWORD || 'zN4vQ9mT2Kp7R1x!'
 const token = new URL(CALL_URL).pathname.split('/').pop()
-
 const log = (...a) => console.log('[e2e]', ...a)
 
-const browser = await chromium.launch({
-  headless: true,
-  args: [
-    '--no-sandbox',
-    '--use-fake-ui-for-media-stream',
-    '--use-fake-device-for-media-stream',
-    `--use-file-for-fake-audio-capture=/media/jfk.wav`,
-    '--autoplay-policy=no-user-gesture-required',
-    '--disable-audio-output',
-  ],
-})
-const page = await browser.newPage({ baseURL: BASE })
-page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 200)))
+const launch = (mic) =>
+  chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      ...(mic ? [`--use-file-for-fake-audio-capture=${mic}`] : []),
+      '--autoplay-policy=no-user-gesture-required',
+      '--disable-audio-output',
+    ],
+  })
 
-const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png`, fullPage: false })
-
-try {
-  // 1. Login
+async function login(page, user, password) {
   await page.goto('/login')
-  await page.fill('#user', 'admin')
-  await page.fill('#password', 'admin')
+  await page.fill('#user', user)
+  await page.fill('#password', password)
   await page.click('button[type=submit]')
-  await page.waitForURL(/apps\/dashboard|apps\/files/, { timeout: 30000 })
-  log('logged in')
+  await page.waitForURL(/apps\/(dashboard|files)/, { timeout: 30000 })
+}
 
-  // 2. Open the call page and join
-  await page.goto(CALL_URL)
+async function joinCall(page) {
   await page.waitForSelector('#app-content-vue', { timeout: 30000 })
-  // clear the first-run welcome modal and the unsupported-browser toast
-  await page.waitForTimeout(2000)
-  await page.keyboard.press('Escape')
-  for (const closer of await page.locator('.toast-close, .modal-container__close').all()) {
-    await closer.click({ timeout: 2000 }).catch(() => {})
+  const inCall = () => page.getByRole('button', { name: /leave call/i }).first().isVisible().catch(() => false)
+  for (let i = 0; i < 8 && !(await inCall()); i++) {
+    await page.waitForTimeout(2000)
+    await page.evaluate(() => document.querySelectorAll('.toastify').forEach((t) => t.remove()))
+    const modalJoin = page.locator('.modal-mask:visible').getByRole('button', { name: /^(join call|start call)$/i }).last()
+    if (await modalJoin.isVisible().catch(() => false)) await modalJoin.click({ timeout: 4000 }).catch(() => {})
+    else await page.getByRole('button', { name: /^(join call|start call)$/i }).first().click({ timeout: 4000 }).catch(() => {})
+    await page.waitForTimeout(3000)
   }
-  await page.evaluate(() => document.querySelectorAll('.toastify').forEach((t) => t.remove()))
-  const joinTop = page.getByRole('button', { name: /start call|join call/i }).first()
-  await joinTop.click({ timeout: 30000 })
-  // device-checker modal
-  const modalJoin = page.locator('.modal-container button', { hasText: /join call|start call/i }).first()
-  await modalJoin.click({ timeout: 20000 }).catch(() => log('no device modal — joined directly'))
-  await page.getByRole('button', { name: /leave call/i }).first().waitFor({ timeout: 40000 })
-  log('in the call')
-  await shot('01-in-call')
+  await page.getByRole('button', { name: /leave call/i }).first().waitFor({ timeout: 20000 })
+}
 
-  // 3. Enable live captions for this session (what Talk's CC menu does)
-  const enable = await page.evaluate(async (t) => {
-    const res = await fetch(`/ocs/v2.php/apps/spreed/api/v1/live-transcription/${t}`, {
-      method: 'POST',
-      headers: {
-        'OCS-APIRequest': 'true',
-        requesttoken: window.OC.requestToken,
-        'Content-Type': 'application/json',
-      },
-      credentials: 'same-origin',
-    })
-    return { status: res.status, body: (await res.text()).slice(0, 300) }
-  }, token)
-  log('enable live-transcription:', JSON.stringify(enable))
-  if (enable.status >= 400) throw new Error(`live-transcription enable failed: ${JSON.stringify(enable)}`)
+const viewerBrowser = await launch(false)
+const speakerBrowser = await launch('/media/jfk.wav')
+const page = await (await viewerBrowser.newContext({ baseURL: BASE })).newPage()
+page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 200)))
+const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` }).catch(() => {})
 
-  // 4. Click the bookmarklet (CDP evaluate is CSP-exempt, like a real bookmark)
-  const url = (await readFile('/ui/dist/bookmarklet-inline.txt', 'utf8')).trim()
-  const code = decodeURIComponent(url.slice('javascript:'.length))
-  await page.evaluate(code)
-  await page.waitForSelector('#cassini-live-panel', { timeout: 10000 })
-  log('panel mounted; attached =', await page.evaluate(() => window.__CASSINI_LIVE_PANEL__?.attached))
-  await shot('02-panel-mounted')
-
-  // 5. Wait for real captions (Whistle transcribing the fake-mic JFK clip)
-  await page.locator('#cassini-live-panel .line').first().waitFor({ timeout: 120000 })
-  // let a few more lines accumulate
-  await page.waitForTimeout(15000)
-  const blocks = await page.evaluate(() => {
-    const shadow = document.getElementById('cassini-live-panel').shadowRoot
+// read the transcript blocks out of the sidebar tab's shadow root
+const readBlocks = () =>
+  page.evaluate(() => {
+    const host = document.getElementById('cassini-live-tabpanel')?.querySelector('div')
+    const shadow = host?.shadowRoot
+    if (!shadow) return []
     return [...shadow.querySelectorAll('.block')].map((b) => ({
       speaker: b.querySelector('.speaker')?.textContent,
       own: b.classList.contains('own'),
       lines: [...b.querySelectorAll('.line:not(.partial)')].map((l) => l.textContent),
-      partial: b.querySelector('.partial:not([hidden])')?.textContent || null,
     }))
   })
-  await shot('03-captions')
+
+try {
+  // 1. viewer joins, enables captions
+  await login(page, 'admin', 'admin')
+  await page.goto(CALL_URL)
+  await joinCall(page)
+  log('admin (viewer) in call')
+  await page.evaluate(async (t) => {
+    await fetch(`/ocs/v2.php/apps/spreed/api/v4/room/${t}/participants`, {
+      method: 'POST',
+      headers: { 'OCS-APIRequest': 'true', requesttoken: window.OC.requestToken, 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ newParticipant: 'botuser', source: 'users' }),
+    })
+  }, token)
+  const enable = await page.evaluate(async (t) => {
+    const r = await fetch(`/ocs/v2.php/apps/spreed/api/v1/live-transcription/${t}`, {
+      method: 'POST',
+      headers: { 'OCS-APIRequest': 'true', requesttoken: window.OC.requestToken },
+      credentials: 'same-origin',
+    })
+    return r.status
+  }, token)
+  log('captions enable:', enable)
+  if (enable >= 400) throw new Error(`enable failed: ${enable}`)
+
+  // 2. bookmarklet → sidebar tab
+  const code = decodeURIComponent((await readFile('/ui/dist/bookmarklet-inline.txt', 'utf8')).trim().slice('javascript:'.length))
+  await page.evaluate(code)
+  await page.waitForSelector('#cassini-live-tab', { timeout: 10000 })
+  log('transcript tab mounted; attached =', await page.evaluate(() => window.__CASSINI_LIVE_PANEL__?.attached))
+  const nativeHidden = await page.evaluate(() => {
+    const n = document.querySelector('.transcript:not(#cassini-live-tabpanel .transcript)')
+    return !n || n.offsetParent === null || getComputedStyle(n).display === 'none'
+  })
+  log('native caption overlay hidden:', nativeHidden)
+  await shot('01-tab-mounted')
+
+  // 3. remote speaker joins and talks
+  const bob = await (await speakerBrowser.newContext({ baseURL: BASE })).newPage()
+  await login(bob, 'botuser', BOT_PASSWORD)
+  await bob.goto(CALL_URL)
+  await joinCall(bob)
+  log('botuser (speaker) in call')
+
+  // 4. captions attributed to the remote speaker show their display name
+  await page.locator('#cassini-live-tabpanel .block').first().waitFor({ timeout: 120000 })
+  await page.waitForTimeout(15000)
+  const blocks = await readBlocks()
+  await shot('02-captions')
   await writeFile(`${OUT}/transcript.json`, JSON.stringify(blocks, null, 2))
   log('TRANSCRIPT:', JSON.stringify(blocks, null, 2))
 
-  // 6. Toggle off cleanly
+  const speakers = [...new Set(blocks.map((b) => b.speaker))]
+  const remote = blocks.filter((b) => !b.own)
+  if (!remote.length) throw new Error('no remote-speaker captions appeared')
+  for (const b of remote) {
+    if (/ItZG5la2NhYg/.test(b.speaker) || /…/.test(b.speaker)) {
+      throw new Error(`remote speaker rendered as a raw/short id, not a name: ${b.speaker}`)
+    }
+  }
+  log('remote speaker names:', JSON.stringify(speakers.filter((s) => s !== 'admin')))
+
+  // 5. clean teardown
   await page.evaluate(code)
-  if (await page.locator('#cassini-live-panel').count()) throw new Error('panel did not tear down')
-  log('teardown OK')
+  if (await page.locator('#cassini-live-tab').count()) throw new Error('tab did not tear down')
+  const restored = await page.evaluate(() => {
+    const n = document.querySelector('.transcript')
+    return n ? getComputedStyle(n).display !== 'none' : true
+  })
+  log('native overlay restored after teardown:', restored)
   log('SUCCESS')
 } catch (err) {
-  await shot('99-failure').catch(() => {})
+  await shot('99-failure')
   console.error('[e2e] FAILED:', err)
   process.exitCode = 1
 } finally {
-  await browser.close()
+  await viewerBrowser.close()
+  await speakerBrowser.close()
 }

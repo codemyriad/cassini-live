@@ -4,6 +4,10 @@ A scrollable, speaker-grouped live transcript for Nextcloud Talk calls,
 rendered from the captions Cassini Live already delivers — including the
 viewer's own lines, which Talk's built-in overlay drops.
 
+It mounts as an extra **tab in Talk's right sidebar**, next to Chat /
+Participants / Shared items, rather than a floating window, and hides Talk's
+native caption overlay while it is on (the sidebar replaces it).
+
 ## How it reaches the page
 
 Talk pages ship a strict CSP, so the panel arrives one of two ways:
@@ -28,7 +32,7 @@ People pick both up on the install page the app serves at
                                         (window.OCA.Talk.SimpleWebRTC)   │
    Talk's own overlay ◀── CallParticipantModel (drops own lines)         │
                                                                          ▼
-                                              store (speaker blocks) ─▶ panel
+                                   store (speaker blocks) ─▶ sidebar tab view
 ```
 
 `simplewebrtc.js` emits `'transcript'` for every caption message the HPB
@@ -37,9 +41,14 @@ listens. Captions still have to be enabled in the call (Talk's CC menu): that
 is what makes cassini-live target this session at all.
 
 Speaker names resolve in the browser (the payload only carries the speaker's
-signalling session id): SimpleWebRTC peers → `nick` events → the participant
-card in the DOM → a shortened session id. The viewer's own session id comes
-from `connection.getSessionId()`.
+signalling session id). The authoritative source is `connection.joinedUsers`,
+the signalling roster that maps session id → `{userid, user.displayname}` for
+everyone in the call. One wrinkle makes this non-trivial: the `transcript`
+event carries a **shorter** session id than the roster/peers/cards are keyed
+by (measured on Talk 25 + standalone HPB: a ~30-char prefix of the full
+~43-char id). Exact matching resolved only the viewer's own lines and left
+every remote speaker as a raw id — so resolution is prefix-aware, falling back
+roster → peer `nick` → `nick` events → participant card DOM → shortened id.
 
 ## Code layout
 
@@ -47,9 +56,14 @@ from `connection.getSessionId()`.
   partials render in place and never push committed text around.
 - `src/tap.js` — attaches to `OCA.Talk.SimpleWebRTC`, polls until the global
   exists, follows instance replacement on call rejoin.
-- `src/names.js` — the name resolution chain.
-- `src/panel.js` — the shadow-root panel. CSP discipline throughout: no
-  `innerHTML`, styles via `adoptedStyleSheets`, everything `createElement`.
+- `src/names.js` — prefix-aware name resolution (see above).
+- `src/panel.js` — `createTranscriptView`: renders the store into a shadow root
+  the caller supplies. CSP discipline throughout: no `innerHTML`, styles via
+  `adoptedStyleSheets`, everything `createElement`.
+- `src/sidebar.js` — integrates the view as a sidebar tab: injects the tab
+  button + an overlay panel, survives Talk's Vue re-renders via a reconcile
+  loop, derives Talk's selected/unselected tab styling at runtime (the classes
+  are build-hashed), and suppresses the native `.transcript` overlay.
 - `src/main.js` — mount/toggle entry point; exposes
   `window.__CASSINI_LIVE_PANEL__` (destroy, injectTranscript, attached).
 - `src/loader.js` — the loader bookmarklet source.

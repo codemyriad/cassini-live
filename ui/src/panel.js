@@ -1,30 +1,27 @@
 /**
- * The transcript panel: a draggable, resizable overlay in a shadow root.
+ * The transcript view: renders the caption store into a scrollable,
+ * speaker-grouped list inside a shadow root the caller supplies (the sidebar
+ * tab panel owns the shadow root; see sidebar.js).
  *
  * CSP discipline (same rules that keep the waveforms bookmarklet alive on
  * hardened pages): no innerHTML anywhere, styles through adoptedStyleSheets,
- * everything built with createElement. The panel must keep working when any
- * Talk internals are missing — it then shows session ids and a status hint
- * instead of failing.
+ * everything built with createElement. It keeps working when Talk internals
+ * are missing — it then shows session ids and a status hint instead of failing.
  */
 
-const POSITION_KEY = 'cassini-live-panel-pos'
 const FOLLOW_SLACK_PX = 48
+const RERESOLVE_MS = 2000 // re-check names, so late roster fills replace short ids
 
 const CSS = `
 :host {
-  all: initial;
-  position: fixed;
-  top: var(--clp-top, 72px);
-  right: var(--clp-right, 16px);
-  left: var(--clp-left, auto);
-  z-index: 2147483000;
+  display: block;
+  height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
   color-scheme: light dark;
 }
-.panel {
-  --bg: #ffffff;
-  --fg: #222222;
+.view {
+  --bg: transparent;
+  --fg: inherit;
   --muted: #767676;
   --border: #dadada;
   --accent: #0082c9;
@@ -32,25 +29,13 @@ const CSS = `
   --chip-bg: #f0f0f0;
   display: flex;
   flex-direction: column;
-  width: 340px;
-  height: 420px;
-  min-width: 260px;
-  min-height: 200px;
-  max-width: 90vw;
-  max-height: 85vh;
-  resize: both;
-  overflow: hidden;
-  background: var(--bg);
+  height: 100%;
+  min-height: 0;
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
   font-size: 13px;
   line-height: 1.45;
 }
-.panel.dark {
-  --bg: #1b1b1b;
-  --fg: #e6e6e6;
+.view.dark {
   --muted: #9e9e9e;
   --border: #3c3c3c;
   --accent: #4db1e8;
@@ -58,9 +43,7 @@ const CSS = `
   --chip-bg: #2c2c2c;
 }
 @media (prefers-color-scheme: dark) {
-  .panel.auto {
-    --bg: #1b1b1b;
-    --fg: #e6e6e6;
+  .view.auto {
     --muted: #9e9e9e;
     --border: #3c3c3c;
     --accent: #4db1e8;
@@ -72,117 +55,46 @@ const CSS = `
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 8px 2px;
   border-bottom: 1px solid var(--border);
-  cursor: grab;
-  user-select: none;
   flex: none;
 }
-.header:active { cursor: grabbing; }
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #b0b0b0;
-  flex: none;
-}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #b0b0b0; flex: none; }
 .dot.attached { background: #2d7b41; }
 .title { font-weight: 600; flex: 1 1 auto; min-width: 0; }
-.ai-label {
-  font-size: 11px;
-  color: var(--muted);
-  flex: none;
-}
-.close {
-  all: unset;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 15px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
-.close:hover { background: var(--chip-bg); color: var(--fg); }
-.close:focus-visible { outline: 2px solid var(--accent); }
-.scroll {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 8px 10px;
-  overscroll-behavior: contain;
-}
-.hint {
-  color: var(--muted);
-  padding: 12px 4px;
-  text-align: center;
-}
+.ai-label { font-size: 11px; color: var(--muted); flex: none; }
+.body { position: relative; flex: 1 1 auto; display: flex; min-height: 0; }
+.scroll { flex: 1 1 auto; overflow-y: auto; padding: 8px 2px; overscroll-behavior: contain; }
+.hint { color: var(--muted); padding: 12px 4px; text-align: center; }
 .marker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 11px;
-  margin: 2px 0 8px;
+  display: flex; align-items: center; gap: 8px;
+  color: var(--muted); font-size: 11px; margin: 2px 0 8px;
 }
-.marker::before, .marker::after {
-  content: "";
-  flex: 1;
-  border-top: 1px solid var(--border);
-}
+.marker::before, .marker::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 .block { margin: 0 0 10px; border-radius: 6px; padding: 2px 6px; }
 .block.own { background: var(--accent-soft); }
-.block-header {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 1px;
-}
+.block-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 1px; }
 .speaker { font-weight: 600; font-size: 12px; }
 .block.own .speaker { color: var(--accent); }
 .you-chip {
-  font-size: 10px;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 7px;
-  padding: 0 5px;
+  font-size: 10px; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 7px; padding: 0 5px;
 }
-.time {
-  font-size: 10px;
-  color: var(--muted);
-  margin-left: auto;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
+.time { font-size: 10px; color: var(--muted); margin-left: auto; opacity: 0; transition: opacity 0.15s; }
 .block:hover .time { opacity: 1; }
-@media (prefers-reduced-motion: reduce) {
-  .time { transition: none; }
-}
+@media (prefers-reduced-motion: reduce) { .time { transition: none; } }
 .line { margin: 0; }
 .partial { color: var(--muted); font-style: italic; }
 .partial::after { content: "▏"; opacity: 0.7; }
 .jump {
-  all: unset;
-  position: absolute;
-  bottom: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--accent);
-  color: #ffffff;
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 12px;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  all: unset; position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  background: var(--accent); color: #ffffff; font-size: 12px; padding: 4px 12px;
+  border-radius: 12px; cursor: pointer; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
-.jump:focus-visible { outline: 2px solid var(--fg); }
-.body { position: relative; flex: 1 1 auto; display: flex; min-height: 0; }
-.body .scroll { flex: 1 1 auto; }
+.jump:focus-visible { outline: 2px solid currentColor; }
 .sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
 }
 [hidden] { display: none !important; }
 `
@@ -214,40 +126,32 @@ function detectNextcloudDark() {
   return null
 }
 
-export function createPanel({ store, names, onClose }) {
-  const host = el('div')
-  host.id = 'cassini-live-panel'
-  const shadow = host.attachShadow({ mode: 'open' })
-
+/**
+ * @param {{ store, names, shadow: ShadowRoot }} opts
+ * @returns {{ setStatus(status): void, destroy(): void }}
+ */
+export function createTranscriptView({ store, names, shadow }) {
   try {
     const sheet = new CSSStyleSheet()
     sheet.replaceSync(CSS)
-    shadow.adoptedStyleSheets = [sheet]
+    shadow.adoptedStyleSheets = [...shadow.adoptedStyleSheets, sheet]
   } catch {
     const style = document.createElement('style')
     style.textContent = CSS
     shadow.appendChild(style)
   }
 
-  const panel = el('div', 'panel auto')
+  const view = el('div', 'view auto')
   const dark = detectNextcloudDark()
-  if (dark === true) panel.className = 'panel dark'
-  if (dark === false) panel.className = 'panel'
+  if (dark === true) view.className = 'view dark'
+  if (dark === false) view.className = 'view'
 
-  // Header
   const header = el('div', 'header')
   const dot = el('span', 'dot')
   const title = el('span', 'title', 'Live transcript')
   const aiLabel = el('span', 'ai-label', 'AI-generated')
-  const close = el('button', 'close', '✕')
-  close.setAttribute('aria-label', 'Close transcript panel')
-  close.addEventListener('click', (event) => {
-    event.stopPropagation()
-    onClose()
-  })
-  header.append(dot, title, aiLabel, close)
+  header.append(dot, title, aiLabel)
 
-  // Body
   const body = el('div', 'body')
   const scroll = el('div', 'scroll')
   scroll.setAttribute('role', 'log')
@@ -263,8 +167,8 @@ export function createPanel({ store, names, onClose }) {
   liveRegion.setAttribute('aria-live', 'polite')
   body.append(scroll, jump, liveRegion)
 
-  panel.append(header, body)
-  shadow.appendChild(panel)
+  view.append(header, body)
+  shadow.appendChild(view)
 
   // --- Follow / scroll behaviour -------------------------------------------
   let following = true
@@ -279,21 +183,13 @@ export function createPanel({ store, names, onClose }) {
   function atBottom() {
     return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= FOLLOW_SLACK_PX
   }
-
   function scrollToBottom() {
     scroll.scrollTo({ top: scroll.scrollHeight, behavior: reducedMotion ? 'auto' : 'smooth' })
   }
-
   scroll.addEventListener('scroll', () => {
-    if (atBottom()) {
-      following = true
-      jump.hidden = true
-    } else {
-      following = false
-      jump.hidden = false
-    }
+    following = atBottom()
+    jump.hidden = following
   })
-
   jump.addEventListener('click', () => {
     following = true
     jump.hidden = true
@@ -301,11 +197,12 @@ export function createPanel({ store, names, onClose }) {
   })
 
   // --- Rendering -------------------------------------------------------------
-  const blockEls = new Map() // block.id -> { root, lines, partialEl, speakerEl }
+  const blockEls = new Map() // block.id -> entry
 
   function renderSpeaker(entry, block) {
     const resolved = names.resolve(block.sid)
     entry.speakerEl.textContent = resolved.name
+    entry.resolved = resolved.resolved
     entry.root.classList.toggle('own', resolved.own)
     entry.youChip.hidden = !resolved.own
     return resolved
@@ -325,7 +222,7 @@ export function createPanel({ store, names, onClose }) {
     partialEl.setAttribute('dir', 'auto')
     partialEl.hidden = true
     root.append(blockHeader, linesEl, partialEl)
-    const entry = { root, linesEl, partialEl, speakerEl, youChip, lineCount: 0 }
+    const entry = { root, linesEl, partialEl, speakerEl, youChip, lineCount: 0, block, resolved: false }
     blockEls.set(block.id, entry)
     blocksHostEl.appendChild(root)
     renderSpeaker(entry, block)
@@ -338,7 +235,6 @@ export function createPanel({ store, names, onClose }) {
     let entry = blockEls.get(block.id)
     if (!entry) entry = addBlock(block)
     const resolved = renderSpeaker(entry, block)
-
     while (entry.lineCount < block.lines.length) {
       const line = block.lines[entry.lineCount]
       const lineEl = el('p', 'line', line.text)
@@ -347,7 +243,6 @@ export function createPanel({ store, names, onClose }) {
       entry.linesEl.appendChild(lineEl)
       entry.lineCount++
     }
-
     if (block.partial) {
       entry.partialEl.textContent = block.partial.text
       if (block.partial.lang) entry.partialEl.lang = block.partial.lang
@@ -375,75 +270,34 @@ export function createPanel({ store, names, onClose }) {
     if (following) scrollToBottom()
   })
 
-  // --- Status ----------------------------------------------------------------
+  // A speaker's name may not be in the roster yet when their first caption
+  // lands (it is a prefix-keyed lookup). Re-resolve the still-unresolved blocks
+  // on a timer so a short id is replaced by the real name once it is known.
+  const reresolve = setInterval(() => {
+    for (const entry of blockEls.values()) {
+      if (!entry.resolved) renderSpeaker(entry, entry.block)
+    }
+  }, RERESOLVE_MS)
+
   function setStatus(status) {
     dot.classList.toggle('attached', status.state === 'attached')
-    if (store.blocks.length) return
+    if (store.blocks.length) {
+      hint.hidden = true
+      return
+    }
+    hint.hidden = false
     hint.textContent =
       status.state === 'attached'
         ? 'Connected. Turn on captions in the call (⋯ → closed captions) to see the transcript. Lines appear here for everyone once Cassini Live starts listening.'
         : 'Waiting for a Talk call on this page — join the call, then turn on captions.'
   }
 
-  // --- Dragging + persistence ------------------------------------------------
-  function loadPosition() {
-    try {
-      const raw = localStorage.getItem(POSITION_KEY)
-      if (!raw) return
-      const pos = JSON.parse(raw)
-      if (typeof pos.left === 'number' && typeof pos.top === 'number') {
-        applyPosition(pos.left, pos.top)
-      }
-    } catch {
-      /* per-viewer convenience only */
-    }
-  }
-
-  function applyPosition(left, top) {
-    const clampedLeft = Math.min(Math.max(left, 0), Math.max(window.innerWidth - 80, 0))
-    const clampedTop = Math.min(Math.max(top, 0), Math.max(window.innerHeight - 40, 0))
-    host.style.setProperty('--clp-left', `${clampedLeft}px`)
-    host.style.setProperty('--clp-right', 'auto')
-    host.style.setProperty('--clp-top', `${clampedTop}px`)
-  }
-
-  function savePosition(left, top) {
-    try {
-      localStorage.setItem(POSITION_KEY, JSON.stringify({ left, top }))
-    } catch {
-      /* ignore */
-    }
-  }
-
-  let drag = null
-  header.addEventListener('pointerdown', (event) => {
-    if (event.target === close) return
-    const rect = host.getBoundingClientRect()
-    drag = { dx: event.clientX - rect.left, dy: event.clientY - rect.top }
-    try {
-      header.setPointerCapture(event.pointerId)
-    } catch {
-      /* optional */
-    }
-  })
-  header.addEventListener('pointermove', (event) => {
-    if (!drag) return
-    applyPosition(event.clientX - drag.dx, event.clientY - drag.dy)
-  })
-  header.addEventListener('pointerup', (event) => {
-    if (!drag) return
-    savePosition(event.clientX - drag.dx, event.clientY - drag.dy)
-    drag = null
-  })
-
-  loadPosition()
-  ;(document.body || document.documentElement).appendChild(host)
-
   function destroy() {
+    clearInterval(reresolve)
     unsubscribe()
-    host.remove()
     blockEls.clear()
+    view.remove()
   }
 
-  return { destroy, setStatus, host, shadow }
+  return { setStatus, destroy }
 }

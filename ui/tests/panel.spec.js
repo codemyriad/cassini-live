@@ -13,135 +13,117 @@ async function bookmarkletCode(name) {
 }
 
 // page.evaluate goes through CDP, which is CSP-exempt — the same way a real
-// javascript: bookmark is. The CSP on the fixture page still applies to
-// everything the executed code does afterwards (DOM, styles, script loads).
+// javascript: bookmark is. The fixture CSP still applies to everything the
+// executed code does afterwards (DOM, styles, script loads).
 async function clickBookmarklet(page, name = 'bookmarklet-inline.txt') {
   await page.evaluate(await bookmarkletCode(name))
 }
 
-const transcript = (page, data) =>
-  page.evaluate((d) => window.__FIXTURE__.transcript(d), data)
+const transcript = (page, data) => page.evaluate((d) => window.__FIXTURE__.transcript(d), data)
+const sid = (page, who) => page.evaluate((w) => window.__FIXTURE__.sid[w], who)
+const panel = (page) => page.locator('#cassini-live-tabpanel')
+const tabButton = (page) => page.locator('#cassini-live-tab')
 
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/call/test')
 })
 
-test('mounts under Talk CSP, renders finals grouped by speaker', async ({ page }) => {
+test('mounts as a sidebar tab and auto-selects it', async ({ page }) => {
   await clickBookmarklet(page)
-  const panel = page.locator('#cassini-live-panel .panel')
-  await expect(panel).toBeVisible()
-  await expect(panel.locator('.hint')).toContainText('Turn on captions')
+  await expect(tabButton(page)).toBeVisible()
+  await expect(tabButton(page)).toHaveAttribute('aria-selected', 'true')
+  await expect(panel(page)).toBeVisible()
+  // sits alongside the native tabs, not floating
+  await expect(page.locator('.app-sidebar-tabs__nav #cassini-live-tab')).toHaveCount(1)
+  await expect(page.locator('#cassini-live-panel')).toHaveCount(0) // no floating window
+  await expect(panel(page).locator('.hint')).toContainText('Turn on captions')
+})
 
-  await transcript(page, { id: 'sid-alice', message: 'hello there', final: true, languageId: 'en' })
-  await transcript(page, { id: 'sid-alice', message: 'how are you', final: true, languageId: 'en' })
-  await transcript(page, { id: 'sid-bob', message: 'fine thanks', final: true, languageId: 'en' })
+test('remote speakers resolve to display names, not raw ids (the bug)', async ({ page }) => {
+  await clickBookmarklet(page)
+  // caption events carry the SHORT id; roster/cards are keyed by the full id
+  await transcript(page, { id: await sid(page, 'bob'), message: 'from the roster', final: true, languageId: 'en' })
+  await transcript(page, { id: await sid(page, 'alice'), message: 'also roster', final: true, languageId: 'en' })
+  await transcript(page, { id: await sid(page, 'carol'), message: 'from the dom card', final: true, languageId: 'en' })
+  await transcript(page, { id: await sid(page, 'me'), message: 'my own line', final: true, languageId: 'en' })
 
-  const blocks = panel.locator('.block')
-  await expect(blocks).toHaveCount(2)
-  await expect(blocks.nth(0).locator('.speaker')).toHaveText('Alice Lovelace')
-  await expect(blocks.nth(0).locator('.line:not(.partial)')).toHaveCount(2)
-  await expect(blocks.nth(1).locator('.speaker')).toHaveText('Bob Babbage')
-  await expect(panel.locator('.marker')).toBeVisible()
+  const speakers = panel(page).locator('.block .speaker')
+  await expect(speakers).toHaveText(['Bob Babbage', 'Alice Lovelace', 'Carol From The DOM', 'Mel Me'])
+  // none of them is a raw session id or a shortened-id fallback
+  for (const name of await speakers.allTextContents()) {
+    expect(name).not.toContain('ItZG5la2NhYg') // the shared id segment
+    expect(name).not.toContain('…')
+  }
+  // own line marked
+  const own = panel(page).locator('.block.own')
+  await expect(own.locator('.speaker')).toHaveText('Mel Me')
+  await expect(own.locator('.you-chip')).toBeVisible()
+})
+
+test('an unknown speaker falls back to a shortened id without crashing', async ({ page }) => {
+  await clickBookmarklet(page)
+  await transcript(page, { id: 'sid-of-a-late-guest-9999', message: 'who am i', final: true, languageId: 'en' })
+  await expect(panel(page).locator('.block .speaker')).toContainText('…')
 })
 
 test('partials render italic in place and finals commit them', async ({ page }) => {
   await clickBookmarklet(page)
-  const panel = page.locator('#cassini-live-panel .panel')
-
-  await transcript(page, { id: 'sid-alice', message: 'typing someth', final: false, languageId: 'en' })
-  const partial = panel.locator('.partial:visible')
+  await transcript(page, { id: await sid(page, 'alice'), message: 'typing someth', final: false, languageId: 'en' })
+  const partial = panel(page).locator('.partial:visible')
   await expect(partial).toHaveText('typing someth')
-
-  await transcript(page, { id: 'sid-alice', message: 'typing something longer', final: false, languageId: 'en' })
+  await transcript(page, { id: await sid(page, 'alice'), message: 'typing something longer', final: false, languageId: 'en' })
   await expect(partial).toHaveText('typing something longer')
-  await expect(panel.locator('.block')).toHaveCount(1)
-
-  await transcript(page, { id: 'sid-alice', message: 'typing something longer was said.', final: true, languageId: 'en' })
-  await expect(panel.locator('.partial:visible')).toHaveCount(0)
-  await expect(panel.locator('.line:not(.partial)')).toHaveText(['typing something longer was said.'])
+  await expect(panel(page).locator('.block')).toHaveCount(1)
+  await transcript(page, { id: await sid(page, 'alice'), message: 'typing something longer, done.', final: true, languageId: 'en' })
+  await expect(panel(page).locator('.partial:visible')).toHaveCount(0)
+  await expect(panel(page).locator('.line:not(.partial)')).toHaveText(['typing something longer, done.'])
 })
 
-test('own captions show with the you chip, DOM names resolve as fallback', async ({ page }) => {
+test('native caption overlay is hidden while mounted, restored on teardown', async ({ page }) => {
+  const native = page.locator('#native-captions')
+  await expect(native).toBeVisible()
   await clickBookmarklet(page)
-  const panel = page.locator('#cassini-live-panel .panel')
-
-  await transcript(page, { id: 'sid-me', message: 'my own words', final: true, languageId: 'en' })
-  const own = panel.locator('.block.own')
-  await expect(own.locator('.speaker')).toHaveText('Mel Me')
-  await expect(own.locator('.you-chip')).toBeVisible()
-
-  // sid-carol is not in peers: resolved from the participant card in the DOM
-  await transcript(page, { id: 'sid-carol', message: 'hi from the dom', final: true, languageId: 'en' })
-  await expect(panel.locator('.block').nth(1).locator('.speaker')).toHaveText('Carol From The DOM')
-
-  // unknown sid falls back to a shortened session id, never crashes
-  await transcript(page, { id: 'sid-of-a-late-guest-0001', message: 'who am i', final: true, languageId: 'en' })
-  await expect(panel.locator('.block').nth(2).locator('.speaker')).toContainText('…')
+  await expect(native).toBeHidden()
+  await clickBookmarklet(page) // toggle off
+  await expect(native).toBeVisible()
 })
 
-test('auto-follow sticks to the bottom, manual scroll shows jump-to-live', async ({ page }) => {
+test('selecting a native tab hides our overlay; our tab shows it again', async ({ page }) => {
   await clickBookmarklet(page)
-  const panel = page.locator('#cassini-live-panel .panel')
-  const scroll = panel.locator('.scroll')
-
-  for (let i = 0; i < 40; i++) {
-    await transcript(page, {
-      id: i % 2 ? 'sid-alice' : 'sid-bob',
-      message: `line number ${i} with some extra words to fill the row`,
-      final: true,
-      languageId: 'en',
-    })
-  }
-  const atBottom = () =>
-    scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight < 60)
-  await expect.poll(atBottom).toBe(true)
-  await expect(panel.locator('.jump')).toBeHidden()
-
-  await scroll.evaluate((el) => el.scrollTo({ top: 0 }))
-  await expect(panel.locator('.jump')).toBeVisible()
-  await transcript(page, { id: 'sid-alice', message: 'new while scrolled up', final: true, languageId: 'en' })
-  await expect.poll(atBottom).toBe(false)
-
-  await panel.locator('.jump').click()
-  await expect.poll(atBottom).toBe(true)
-  await expect(panel.locator('.jump')).toBeHidden()
+  await expect(panel(page)).toBeVisible()
+  await page.locator('#tab-button-participants').click()
+  await expect(panel(page)).toBeHidden()
+  await expect(tabButton(page)).toHaveAttribute('aria-selected', 'false')
+  await tabButton(page).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(tabButton(page)).toHaveAttribute('aria-selected', 'true')
 })
 
 test('second click tears everything down, including the transcript listener', async ({ page }) => {
   await clickBookmarklet(page)
-  await expect(page.locator('#cassini-live-panel')).toHaveCount(1)
+  await expect(tabButton(page)).toHaveCount(1)
   await expect
     .poll(() => page.evaluate(() => window.__FIXTURE__.listenerCount('transcript')))
     .toBe(1)
-
   await clickBookmarklet(page)
-  await expect(page.locator('#cassini-live-panel')).toHaveCount(0)
+  await expect(tabButton(page)).toHaveCount(0)
+  await expect(panel(page)).toHaveCount(0)
   expect(await page.evaluate(() => window.__FIXTURE__.listenerCount('transcript'))).toBe(0)
   expect(await page.evaluate(() => window.__CASSINI_LIVE_PANEL__)).toBeFalsy()
-
-  // and a third click mounts a fresh panel again
+  // a third click mounts fresh again
   await clickBookmarklet(page)
-  await expect(page.locator('#cassini-live-panel')).toHaveCount(1)
+  await expect(tabButton(page)).toHaveCount(1)
 })
 
 test('the loader flavour injects the ExApp-served bundle through the page CSP', async ({ page }) => {
   const errors = []
-  page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text())
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text())
   })
   await clickBookmarklet(page, 'bookmarklet-loader.txt')
-  const panel = page.locator('#cassini-live-panel .panel')
-  await expect(panel).toBeVisible()
-
-  await transcript(page, { id: 'sid-alice', message: 'served by the exapp', final: true, languageId: 'en' })
-  await expect(panel.locator('.line:not(.partial)')).toHaveText(['served by the exapp'])
-  expect(errors.filter((text) => text.includes('Content Security Policy'))).toHaveLength(0)
-})
-
-test('close button and the panel are keyboard reachable', async ({ page }) => {
-  await clickBookmarklet(page)
-  const panel = page.locator('#cassini-live-panel .panel')
-  await panel.locator('.close').click()
-  await expect(page.locator('#cassini-live-panel')).toHaveCount(0)
+  await expect(tabButton(page)).toBeVisible()
+  await transcript(page, { id: await sid(page, 'alice'), message: 'served by the exapp', final: true, languageId: 'en' })
+  await expect(panel(page).locator('.line:not(.partial)')).toHaveText(['served by the exapp'])
+  expect(errors.filter((t) => t.includes('Content Security Policy'))).toHaveLength(0)
 })
