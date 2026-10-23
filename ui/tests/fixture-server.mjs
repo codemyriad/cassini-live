@@ -60,31 +60,43 @@ const pageScript = `
     if (!listeners.has(name)) listeners.set(name, new Set())
     return listeners.get(name)
   }
+  const connection = {
+    getSessionId: () => ${JSON.stringify(FULL.me)},
+    currentRoomToken: 'room-1',
+    currentCallToken: 'room-1',
+    // the authoritative roster: full session id -> {userid, user.displayname}
+    joinedUsers: {
+      ${JSON.stringify(FULL.me)}: { sessionid: ${JSON.stringify(FULL.me)}, userid: 'me', user: { displayname: 'Mel Me' } },
+      ${JSON.stringify(FULL.alice)}: { sessionid: ${JSON.stringify(FULL.alice)}, userid: 'alice', user: { displayname: 'Alice Lovelace' } },
+      ${JSON.stringify(FULL.bob)}: { sessionid: ${JSON.stringify(FULL.bob)}, userid: 'bob', user: { displayname: 'Bob Babbage' } },
+    },
+  }
   window.OCA = {
     Talk: {
       SimpleWebRTC: {
         on(name, cb) { bucket(name).add(cb) },
         off(name, cb) { bucket(name).delete(cb) },
-        connection: {
-          getSessionId: () => ${JSON.stringify(FULL.me)},
-          // the authoritative roster: full session id -> {userid, user.displayname}
-          joinedUsers: {
-            ${JSON.stringify(FULL.me)}: { sessionid: ${JSON.stringify(FULL.me)}, userid: 'me', user: { displayname: 'Mel Me' } },
-            ${JSON.stringify(FULL.alice)}: { sessionid: ${JSON.stringify(FULL.alice)}, userid: 'alice', user: { displayname: 'Alice Lovelace' } },
-            ${JSON.stringify(FULL.bob)}: { sessionid: ${JSON.stringify(FULL.bob)}, userid: 'bob', user: { displayname: 'Bob Babbage' } },
-          },
-        },
+        connection,
         // peers carry no nick in this Talk build (as measured)
         webrtc: { peers: [ { id: ${JSON.stringify(FULL.alice)}, type: 'video' }, { id: ${JSON.stringify(FULL.bob)}, type: 'video' } ] },
       },
     },
   }
-  window.OC = { getCurrentUser: () => ({ uid: 'me', displayName: 'Mel Me' }) }
+  window.OC = {
+    getCurrentUser: () => ({ uid: 'me', displayName: 'Mel Me' }),
+    generateUrl: (p) => '/index.php' + p,
+  }
   window.__FIXTURE__ = {
     // the SHORT (event) ids, exposed so tests speak in the same terms as Talk
     sid: ${JSON.stringify(SID)},
     transcript(data) { for (const cb of bucket('transcript')) cb(data) },
     listenerCount(name) { return bucket(name).size },
+    // call/room controls, driving the session scoping
+    setCall(room, call) { connection.currentRoomToken = room; connection.currentCallToken = call || null },
+    endCall() { connection.currentCallToken = null },
+    // sidebar presence, for the reactive show/hide
+    removeSidebar() { document.getElementById('app-sidebar-vue')?.remove() },
+    addSidebar() { if (!document.getElementById('app-sidebar-vue')) document.body.appendChild(window.__SIDEBAR__.cloneNode(true)) },
     selectTab(id) {
       document.querySelectorAll('.app-sidebar-tabs__nav button[role=tab]').forEach((b) => {
         const on = b.id === 'tab-button-' + id
@@ -138,17 +150,27 @@ const page = `<!doctype html>
     </div>
   </aside>
   <script nonce="${NONCE}">
+    // keep a pristine copy of the sidebar so addSidebar() can restore it
+    window.__SIDEBAR__ = document.getElementById('app-sidebar-vue').cloneNode(true)
     // wire native tab clicks like Talk: clicking a native tab selects it
-    document.querySelectorAll('.app-sidebar-tabs__nav button[role=tab]').forEach((b) => {
-      b.addEventListener('click', () => {
-        if (b.id.startsWith('tab-button-') && document.getElementById('tab-' + b.id.slice('tab-button-'.length))) {
-          window.__FIXTURE__.selectTab(b.id.slice('tab-button-'.length))
-        }
-      })
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('.app-sidebar-tabs__nav button[role=tab]')
+      if (b && b.id.startsWith('tab-button-') && document.getElementById('tab-' + b.id.slice('tab-button-'.length))) {
+        window.__FIXTURE__.selectTab(b.id.slice('tab-button-'.length))
+      }
     })
   </script>
 </body>
 </html>`
+
+// Canned catch-up history, keyed loosely by token: a token containing "hist"
+// returns two earlier finals (full ids, so names resolve); anything else empty.
+const HISTORY = {
+  hist: [
+    { speakerSessionId: FULL.alice, message: 'before you joined one', langId: 'en', t: 1000 },
+    { speakerSessionId: FULL.alice, message: 'before you joined two', langId: 'en', t: 2000 },
+  ],
+}
 
 export function startFixtureServer(port = PORT) {
   const server = createServer(async (req, res) => {
@@ -156,6 +178,13 @@ export function startFixtureServer(port = PORT) {
     if (url.pathname.startsWith('/call/')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': CSP })
       res.end(page)
+      return
+    }
+    if (url.pathname.endsWith('/live_transcription/history')) {
+      const token = url.searchParams.get('token') || ''
+      const entries = /hist/.test(token) ? HISTORY.hist : []
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ entries }))
       return
     }
     if (url.pathname.endsWith('/panel/panel.js')) {

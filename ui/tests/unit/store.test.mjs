@@ -99,3 +99,54 @@ test('subscribers hear adds, partials, finals and removals', () => {
   store.apply(partial('b', ''))
   assert.deepEqual(seen, ['add', 'partial', 'final', 'add', 'partial', 'update', 'remove'])
 })
+
+test('seedHistory groups consecutive same-speaker finals into historical blocks', () => {
+  const store = createStore()
+  store.seedHistory([
+    { speakerSessionId: 'a', message: 'hello', langId: 'en', t: 100 },
+    { speakerSessionId: 'a', message: 'there', langId: 'en', t: 200 },
+    { speakerSessionId: 'b', message: 'hi', langId: 'en', t: 300 },
+  ])
+  assert.equal(store.hasHistory, true)
+  assert.deepEqual(
+    store.blocks.map((b) => [b.sid, b.historical, b.lines.map((l) => l.text)]),
+    [
+      ['a', true, ['hello', 'there']],
+      ['b', true, ['hi']],
+    ],
+  )
+  // timestamps come from the entries
+  assert.equal(store.blocks[0].lines[0].at, 100)
+})
+
+test('a live final after history opens a fresh block, never merging into history', () => {
+  const store = createStore()
+  store.seedHistory([{ speakerSessionId: 'a', message: 'before you joined', langId: 'en', t: 1 }])
+  store.apply(final('a', 'after you joined'))
+  assert.equal(store.blocks.length, 2)
+  assert.equal(store.blocks[0].historical, true)
+  assert.equal(store.blocks[1].historical, false)
+  assert.deepEqual(store.blocks[1].lines.map((l) => l.text), ['after you joined'])
+})
+
+test('reset clears everything and emits a reset change', () => {
+  const store = createStore()
+  const seen = []
+  store.subscribe((c) => seen.push(c.type))
+  store.seedHistory([{ speakerSessionId: 'a', message: 'x', langId: 'en', t: 1 }])
+  store.apply(final('b', 'y'))
+  store.reset()
+  assert.equal(store.blocks.length, 0)
+  assert.equal(store.hasHistory, false)
+  assert.equal(seen.at(-1), 'reset')
+  // usable again after reset
+  store.apply(final('c', 'z'))
+  assert.equal(store.blocks.length, 1)
+  assert.equal(store.blocks[0].sid, 'c')
+})
+
+test('no history means no divider boundary (hasHistory false)', () => {
+  const store = createStore()
+  store.apply(final('a', 'only live'))
+  assert.equal(store.hasHistory, false)
+})

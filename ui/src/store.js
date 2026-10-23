@@ -13,25 +13,35 @@
  *   has started a newer block, the partial moves to a fresh block at the end,
  *   so committed text never gets pushed around by in-progress speech.
  * - An empty partial clears the preview (the backend sends one to do that).
+ * - `seedHistory` prepends blocks marked `historical` — what was said before
+ *   the viewer joined (fetched from the backend). Historical blocks are closed:
+ *   live finals never merge into them, so the "You joined here" divider (drawn
+ *   before the first live block) stays put. `reset` clears everything when the
+ *   call or conversation changes.
  */
 
 let nextBlockId = 1
 
 export function createStore({ now = Date.now } = {}) {
-  const blocks = []
+  let blocks = []
   const listeners = new Set()
 
   function emit(change) {
     for (const listener of listeners) listener(change, blocks)
   }
 
-  function lastBlock() {
-    return blocks.length ? blocks[blocks.length - 1] : null
+  // Only non-historical (live) blocks are "open" for appends; a historical
+  // block is a frozen record of what was said before the viewer joined.
+  function lastLiveBlock() {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (!blocks[i].historical) return blocks[i]
+    }
+    return null
   }
 
   function findOpenBlockFor(sid) {
-    const last = lastBlock()
-    if (last && last.sid === sid) return last
+    const last = lastLiveBlock()
+    if (last && last.sid === sid && last === blocks[blocks.length - 1]) return last
     return null
   }
 
@@ -40,7 +50,7 @@ export function createStore({ now = Date.now } = {}) {
   // speaker to the end of the list. This keeps blocks stable while several
   // people talk over each other.
   function findPartialBlockFor(sid) {
-    return blocks.find((block) => block.sid === sid && block.partial) || null
+    return blocks.find((block) => !block.historical && block.sid === sid && block.partial) || null
   }
 
   function dropIfEmpty(block) {
@@ -62,7 +72,7 @@ export function createStore({ now = Date.now } = {}) {
     }
   }
 
-  function openBlock(sid, at) {
+  function openBlock(sid, at, historical = false) {
     const block = {
       id: nextBlockId++,
       sid,
@@ -70,6 +80,7 @@ export function createStore({ now = Date.now } = {}) {
       lastActivityAt: at,
       lines: [],
       partial: null,
+      historical,
     }
     blocks.push(block)
     emit({ type: 'add', block })
@@ -108,10 +119,43 @@ export function createStore({ now = Date.now } = {}) {
     emit({ type: 'partial', block })
   }
 
+  // Seed what was said before the viewer joined. Entries are the backend's
+  // history shape ({ speakerSessionId, message, langId, t }), oldest first;
+  // consecutive same-speaker finals group into one historical block.
+  function seedHistory(entries) {
+    if (!Array.isArray(entries)) return
+    for (const entry of entries) {
+      const sid = entry && entry.speakerSessionId
+      const text = entry && entry.message
+      if (typeof sid !== 'string' || sid === '' || typeof text !== 'string' || text === '') continue
+      const at = typeof entry.t === 'number' ? entry.t : now()
+      const lang = typeof entry.langId === 'string' ? entry.langId : null
+      let block = blocks.length ? blocks[blocks.length - 1] : null
+      if (!block || !block.historical || block.sid !== sid) {
+        block = openBlock(sid, at, true)
+      }
+      block.lines.push({ text, lang, at })
+      block.lastActivityAt = at
+      emit({ type: 'final', block, line: block.lines[block.lines.length - 1] })
+    }
+  }
+
+  function reset() {
+    blocks = []
+    emit({ type: 'reset' })
+  }
+
   return {
     apply,
+    seedHistory,
+    reset,
     get blocks() {
       return blocks
+    },
+    // true once there is any historical block, so the view can place the
+    // "You joined here" divider before the first live block.
+    get hasHistory() {
+      return blocks.some((b) => b.historical)
     },
     subscribe(listener) {
       listeners.add(listener)

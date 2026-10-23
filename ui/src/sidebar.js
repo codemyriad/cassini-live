@@ -2,13 +2,17 @@
  * Integrates the transcript view into Talk's right sidebar as an extra tab,
  * next to Chat / Participants / Shared items, instead of a floating window.
  *
- * Talk's sidebar is Vue-owned and re-renders, and its tab classes are
- * build-hashed (e.g. `_sidebarTabsButton_selected_3SBK3`), so nothing here is
- * hardcoded to a class name: we clone a live native tab button's className for
- * the selected / unselected look, and a reconcile loop re-injects our nodes
- * whenever Vue wipes them. Our content is shown as an overlay filling the tab
- * content area, which sidesteps Talk's tabpanel visibility state machine — we
- * only have to show/hide our own overlay.
+ * Reactive to Talk: we inject only while Talk itself renders the sidebar on a
+ * call page, and remove our tab the moment it is gone (sidebar closed, or the
+ * user navigated away from the call) — the pane follows Talk's own rendering.
+ *
+ * Talk's sidebar is Vue-owned and re-renders, and its tab markup is build-hashed
+ * (e.g. `_sidebarTabsButton__name_ZY51V`), so nothing here is hardcoded to a
+ * class name: we CLONE a live native tab button for pixel-matched styling, swap
+ * its glyph for a captions icon and its label for "Live transcription", and a
+ * reconcile loop re-injects whenever Vue wipes our nodes. Content shows as an
+ * overlay filling the tab content area, sidestepping Talk's tabpanel visibility
+ * state machine — we only show/hide our own overlay.
  *
  * While mounted we also hide Talk's native caption overlay (`.transcript`):
  * the sidebar replaces it. CSP-safe throughout (direct `.style`/`createElement`,
@@ -20,6 +24,10 @@ import { createTranscriptView } from './panel.js'
 const TAB_ID = 'cassini-live-tab'
 const PANEL_ID = 'cassini-live-tabpanel'
 const RECONCILE_MS = 500
+// mdiSubtitlesOutline — a captions glyph for the tab.
+const CAPTIONS_ICON =
+  'M20,4A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4H20M20,' +
+  '18V6H4V18H20M6,10H8V12H6V10M6,14H14V16H6V14M16,14H18V16H16V14M10,10H18V12H10V10Z'
 
 function el(tag, className, text) {
   const node = document.createElement(tag)
@@ -79,7 +87,22 @@ export function createSidebarPanel({ store, names }) {
   }
 
   function buildTabButton() {
-    const btn = el('button')
+    const native = nativeTabButtons()[0]
+    let btn
+    if (native) {
+      // Clone a real tab for exact styling, then make it ours: captions glyph,
+      // "Live transcription" label. cloneNode copies no event listeners.
+      btn = native.cloneNode(true)
+      btn.removeAttribute('id')
+      btn.removeAttribute('tabindex')
+      for (const path of btn.querySelectorAll('svg path')) path.setAttribute('d', CAPTIONS_ICON)
+      const label = btn.querySelector('[class*="__name" i]')
+      if (label) label.textContent = 'Live transcription'
+      else btn.textContent = 'Live transcription'
+    } else {
+      // Fallback when there is no native tab to clone.
+      btn = el('button', undefined, 'Live transcription')
+    }
     btn.id = TAB_ID
     btn.type = 'button'
     btn.setAttribute('role', 'tab')
@@ -87,10 +110,6 @@ export function createSidebarPanel({ store, names }) {
     btn.setAttribute('aria-label', 'Live transcription')
     btn.title = 'Live transcription'
     btn.dataset.cassiniLiveTab = '1'
-    const icon = el('span', undefined, '📝')
-    icon.style.fontSize = '18px'
-    icon.style.lineHeight = '1'
-    btn.appendChild(icon)
     btn.addEventListener('click', (e) => {
       e.preventDefault()
       e.stopPropagation()
@@ -197,47 +216,52 @@ export function createSidebarPanel({ store, names }) {
     suppressed.clear()
   }
 
-  function tryOpenSidebar() {
-    if (sidebar()) return
-    const openers = [
-      'button[aria-label*="conversation information" i]',
-      'button[aria-label*="open sidebar" i]',
-      'button[aria-label*="show details" i]',
-    ]
-    for (const sel of openers) {
-      const btn = document.querySelector(sel)
-      if (btn) {
-        btn.click()
-        return
-      }
+  // On a Talk call page? Our pane exists only where Talk renders the sidebar for
+  // a call, and vanishes when the user navigates away.
+  function onCallPage() {
+    try {
+      return /\/call\/[^/]+/.test(location.pathname) && Boolean(document.querySelector('#app-content-vue'))
+    } catch {
+      return false
     }
+  }
+
+  // Take our tab and overlay back out and restore Talk's native captions, e.g.
+  // when the sidebar is closed or the user leaves the call. The view and store
+  // live on, so returning to a call re-renders from the current transcript.
+  function removeInjected() {
+    restoreNativeCaptions()
+    if (view) {
+      view.destroy()
+      view = null
+    }
+    if (tabButton) tabButton.remove()
+    if (overlay) overlay.remove()
+    tabButton = overlay = null
+    autoSelected = false
   }
 
   // --- reconcile loop --------------------------------------------------------
-  const timer = setInterval(() => {
+  const timer = setInterval(reconcile, RECONCILE_MS)
+
+  function reconcile() {
     if (destroyed) return
-    suppressNativeCaptions()
-    if (!sidebar()) {
-      tryOpenSidebar()
+    // Only present while Talk shows the sidebar on a call page.
+    if (!onCallPage() || !nav() || !content()) {
+      if (tabButton || overlay) removeInjected()
       return
     }
+    suppressNativeCaptions()
     const injected = ensureInjected()
     if (injected && !autoSelected) {
       autoSelected = true
-      select() // land on our tab the first time, so captions are visible at once
+      select() // land on our tab the first time, so the transcript is visible at once
     }
     if (active) paintNativeTabs()
-  }, RECONCILE_MS)
+  }
 
   document.addEventListener('click', onDocClick, true)
-
-  // kick off immediately as well as on the interval
-  tryOpenSidebar()
-  ensureInjected()
-  if (sidebar() && !autoSelected) {
-    autoSelected = true
-    select()
-  }
+  reconcile() // also run immediately, not only on the interval
 
   function setStatus(status) {
     lastStatus = status
@@ -248,11 +272,7 @@ export function createSidebarPanel({ store, names }) {
     destroyed = true
     clearInterval(timer)
     document.removeEventListener('click', onDocClick, true)
-    restoreNativeCaptions()
-    if (view) view.destroy()
-    if (tabButton) tabButton.remove()
-    if (overlay) overlay.remove()
-    tabButton = overlay = view = null
+    removeInjected()
   }
 
   return { setStatus, destroy }

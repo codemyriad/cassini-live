@@ -19,6 +19,8 @@
 import { createStore } from './store.js'
 import { createTap } from './tap.js'
 import { createNames } from './names.js'
+import { createSession } from './session.js'
+import { fetchHistory } from './history.js'
 import { createSidebarPanel } from './sidebar.js'
 
 const GLOBAL = '__CASSINI_LIVE_PANEL__'
@@ -36,8 +38,11 @@ function mount() {
     },
   })
   const names = createNames({ tap })
+  // Scope the transcript per conversation/call and seed catch-up history.
+  const session = createSession({ tap, store, fetchHistory })
 
   function destroy() {
+    session.destroy()
     tap.destroy()
     names.destroy()
     if (panel) panel.destroy()

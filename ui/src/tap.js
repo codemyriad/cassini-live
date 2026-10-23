@@ -89,9 +89,39 @@ export function createTap({ onEvent, onStatus }) {
 
   attach()
 
+  // The conversation (room) token, from the signalling connection with a URL
+  // fallback, and the call token (non-null only while in a call). Used to scope
+  // the transcript per conversation and detect a call starting (D-830).
+  function roomToken() {
+    try {
+      const t = webrtc?.connection?.currentRoomToken
+      if (typeof t === 'string' && t) return t
+    } catch {
+      /* fall through */
+    }
+    try {
+      const m = location.pathname.match(/\/call\/([^/?#]+)/)
+      if (m) return m[1]
+    } catch {
+      /* fall through */
+    }
+    return null
+  }
+
+  function callToken() {
+    try {
+      const t = webrtc?.connection?.currentCallToken
+      return typeof t === 'string' && t ? t : null
+    } catch {
+      return null
+    }
+  }
+
   return {
     destroy,
     ownSessionId,
+    roomToken,
+    callToken,
     get attached() {
       return webrtc !== null
     },

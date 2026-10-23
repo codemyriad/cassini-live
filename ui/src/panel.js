@@ -157,10 +157,12 @@ export function createTranscriptView({ store, names, shadow }) {
   scroll.setAttribute('role', 'log')
   scroll.setAttribute('aria-label', 'Live transcript')
   const hint = el('div', 'hint', 'Waiting for a Talk call on this page…')
-  const marker = el('div', 'marker', 'Transcript started here')
-  marker.hidden = true
+  // "You joined here" divider, inserted into the block flow before the first
+  // live block when the store holds any history (see addBlock).
+  const dividerEl = el('div', 'marker', 'You joined here')
+  let dividerPlaced = false
   const blocksHostEl = el('div')
-  scroll.append(hint, marker, blocksHostEl)
+  scroll.append(hint, blocksHostEl)
   const jump = el('button', 'jump', '↓ Jump to live')
   jump.hidden = true
   const liveRegion = el('div', 'sr-only')
@@ -224,10 +226,15 @@ export function createTranscriptView({ store, names, shadow }) {
     root.append(blockHeader, linesEl, partialEl)
     const entry = { root, linesEl, partialEl, speakerEl, youChip, lineCount: 0, block, resolved: false }
     blockEls.set(block.id, entry)
+    // Place the "You joined here" divider before the first live block, but only
+    // when there is history above it to divide from.
+    if (!dividerPlaced && !block.historical && store.hasHistory) {
+      blocksHostEl.appendChild(dividerEl)
+      dividerPlaced = true
+    }
     blocksHostEl.appendChild(root)
     renderSpeaker(entry, block)
     hint.hidden = true
-    marker.hidden = false
     return entry
   }
 
@@ -254,7 +261,26 @@ export function createTranscriptView({ store, names, shadow }) {
     return resolved
   }
 
+  function clearRendered() {
+    for (const entry of blockEls.values()) entry.root.remove()
+    blockEls.clear()
+    dividerEl.remove()
+    dividerPlaced = false
+    blocksHostEl.replaceChildren()
+  }
+
+  // Render whatever the store already holds, so a tab (re)created mid-call — by
+  // the first mount, or after Talk re-rendered the sidebar — shows the current
+  // transcript, not only events from here on. The store is the source of truth.
+  for (const block of store.blocks) syncBlock(block)
+
   const unsubscribe = store.subscribe((change) => {
+    if (change.type === 'reset') {
+      // Room/call changed: wipe the pane and show the waiting hint again.
+      clearRendered()
+      hint.hidden = false
+      return
+    }
     if (change.type === 'remove') {
       const entry = blockEls.get(change.block.id)
       if (entry) {
