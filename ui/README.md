@@ -27,26 +27,31 @@ People pick both up on the install page the app serves at
 
 ## How it gets the words
 
+The **server timeline is the single source of truth**. cassini-live transcribes
+every speaker in the call — not only those who enabled captions — and records
+who joined when, each entry tagged with a monotonic `seq`. The panel polls it:
+
 ```
- cassini-live ──HPB signalling──▶ Talk's SimpleWebRTC ──'transcript'──▶ tap
-                                        (window.OCA.Talk.SimpleWebRTC)   │
-   Talk's own overlay ◀── CallParticipantModel (drops own lines)         │
-                                                                         ▼
-                                   store (speaker blocks) ─▶ sidebar tab view
+ cassini-live ─ buffers finals (all speakers) + joins, each with a seq
+       │  GET /history?token=<room>&since=<lastSeq>  →  {entries, head}
+       ▼
+ session.js (poll ~1.2s) ─▶ store.applyTimeline (idempotent by seq)
+                               ├─ finals → speaker blocks
+                               └─ joins  → "<name> joined" dividers   ─▶ sidebar tab view
+ Talk's SimpleWebRTC 'transcript' (live) ─▶ tap ─▶ store partials (transient only)
 ```
 
-`simplewebrtc.js` emits `'transcript'` for every caption message the HPB
-delivers to this session, before any filtering — that is where the panel
-listens. Captions still have to be enabled in the call (Talk's CC menu): that
-is what makes cassini-live target this session at all.
+Why poll instead of relying on live `'transcript'` events: a live event only
+reaches a session from the moment it enables captions, so anything said before —
+including the viewer's *own* words spoken before clicking the captions button —
+would be dropped. Polling the server buffer (which holds everything, regardless
+of who subscribed) closes that gap. The live hook is kept only for in-progress
+**partials** (shown transient, cleared when the final lands via the poll).
 
-Live events only reach a session from the moment it enables captions, so a late
-joiner would miss everything said before. The panel therefore also fetches
-`GET /history?token=<roomToken>` (`history.js`) when a call starts; the store
-seeds those earlier finals as *historical* blocks and the view draws a "You
-joined here" divider before the first live block. Everything is scoped per
-conversation by `session.js`, which watches the room and call tokens and resets
-the store on a new call or a switch to another conversation.
+`session.js` scopes everything per conversation: it watches the room and call
+tokens and resets on a new call or a switch to another conversation; an ended
+call's transcript stays until the viewer navigates away. Join events render as a
+divider per participant — the viewer's own reads "You joined here".
 
 Speaker names resolve in the browser (the payload only carries the speaker's
 signalling session id). The authoritative source is `connection.joinedUsers`,
@@ -60,20 +65,18 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
 
 ## Code layout
 
-- `src/store.js` — caption semantics: blocks of consecutive finals per speaker,
-  partials render in place and never push committed text around.
-- `src/tap.js` — attaches to `OCA.Talk.SimpleWebRTC`, polls until the global
-  exists, follows instance replacement on call rejoin.
+- `src/store.js` — the timeline: ordered items (`block` | `join`) applied
+  idempotently by `seq`, plus a transient partials channel; `reset()`.
+- `src/tap.js` — attaches to `OCA.Talk.SimpleWebRTC` for the connection (room /
+  call tokens, own session id) and feeds in-progress partials to the store.
 - `src/names.js` — prefix-aware name resolution (see above).
-- `src/history.js` — fetches `/history` for catch-up, tolerant of errors.
-- `src/session.js` — conversation/call scoping: resets + re-seeds the store on a
-  new call or a change of conversation; an ended call stays until navigation.
-- `src/store.js` also has `seedHistory` / `reset` and a `historical` flag per
-  block; the view draws the "You joined here" divider from it.
-- `src/panel.js` — `createTranscriptView`: renders the store (replaying current
-  state on mount) into a shadow root the caller supplies. CSP discipline
-  throughout: no `innerHTML`, styles via `adoptedStyleSheets`, everything
-  `createElement`.
+- `src/history.js` — `fetchHistory(token, since)` for the timeline poll.
+- `src/session.js` — conversation/call scoping and the ~1.2s poll loop; resets on
+  a new call or a change of conversation; an ended call stays until navigation.
+- `src/panel.js` — `createTranscriptView`: renders the timeline (speaker blocks,
+  "<name> joined" dividers, transient partials), replaying current state on
+  mount, into a shadow root the caller supplies. CSP discipline throughout: no
+  `innerHTML`, styles via `adoptedStyleSheets`, everything `createElement`.
 - `src/sidebar.js` — integrates the view as a sidebar tab, reactively: injects
   only while Talk renders the sidebar on a call page and removes it when gone.
   The tab is cloned from a live native tab (exact styling despite build-hashed
