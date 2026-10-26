@@ -128,8 +128,11 @@ class SpreedClient:
 		self._nc_sid_wait_stash: dict[str, None] = {}
 		self.transcript_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
 		self._transcript_sender: asyncio.Task | None = None
-		# Finals of the current call, for late-joiner catch-up (D-830).
+		# Timeline of the current call, for late-joiner catch-up (D-830): finals
+		# (every speaker, regardless of who subscribed) and participant joins,
+		# each tagged with a monotonic seq so a client can poll incrementally.
 		self.history: deque = deque(maxlen=HISTORY_MAX)
+		self._history_seq = 0
 		self.transcribers: dict[str, WhistleTranscriber] = {}
 		self.transcriber_lock = asyncio.Lock()
 		self.defunct = asyncio.Event()
@@ -594,15 +597,35 @@ class SpreedClient:
 			"bye": {}
 		})
 
-	def history_snapshot(self) -> list[dict]:
-		"""Finals said so far in this call, oldest first, for catch-up."""
-		return list(self.history)
+	def _record(self, entry: dict) -> None:
+		self._history_seq += 1
+		self.history.append({"seq": self._history_seq, **entry})
+
+	def history_snapshot(self, since: int = 0) -> list[dict]:
+		"""Timeline entries newer than `since`, oldest first, for catch-up."""
+		return [e for e in self.history if e["seq"] > since]
+
+	def history_head(self) -> int:
+		"""The latest seq, so a poller can tell it is up to date on an empty delta."""
+		return self._history_seq
+
+	def record_join(self, user_desc: dict) -> None:
+		"""Note a participant joining the call, for the timeline's join markers."""
+		user = user_desc.get("user") or {}
+		self._record({
+			"type": "join",
+			"speakerSessionId": user_desc.get("sessionId", ""),
+			"displayName": user.get("displayname") or user.get("displayName") or None,
+			"userId": user_desc.get("userid") or user_desc.get("userId") or None,
+			"t": int(time.time() * 1000),
+		})
 
 	async def send_transcript(self, transcript: Transcript):
 		# Buffer finals for late-joiner catch-up before the targets check, so the
 		# record is complete even in the brief window with no caption receivers.
 		if transcript.final and transcript.message:
-			self.history.append({
+			self._record({
+				"type": "final",
 				"speakerSessionId": transcript.speaker_session_id,
 				"message": transcript.message,
 				"langId": transcript.lang_id,
@@ -1141,6 +1164,10 @@ class SpreedClient:
 					# user connected, keep a map of Nextcloud session IDs to HPB session IDs
 					if user_desc.get("nextcloudSessionId") not in self.speaker_names:
 						self.refresh_names()
+					# A participant not yet mapped is a fresh join — note it on the
+					# timeline (computed before the assignment below).
+					nc_sid = user_desc.get("nextcloudSessionId")
+					newly_joined = bool(nc_sid) and nc_sid not in self.nc_sid_map
 					async with self.target_lock:
 						# not sure why a KeyError is hit when the monitor task is cancelled,
 						# adding a guard to prevent error logs
@@ -1148,6 +1175,8 @@ class SpreedClient:
 							# todo: get the userid for the session ids and maintain a map in "sid_translation_lang_map"
 							# todo: use the ownerId of the room for the OCP translations, using talk api, or something.
 							self.nc_sid_map[user_desc["nextcloudSessionId"]] = user_desc["sessionId"]
+					if newly_joined:
+						self.record_join(user_desc)
 
 					# if this is one of the deferred targets, add it to the targets
 					if (user_desc.get("nextcloudSessionId") in self._nc_sid_wait_stash):

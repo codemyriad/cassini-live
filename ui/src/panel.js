@@ -1,7 +1,7 @@
 /**
- * The transcript view: renders the caption store into a scrollable,
- * speaker-grouped list inside a shadow root the caller supplies (the sidebar
- * tab panel owns the shadow root; see sidebar.js).
+ * The transcript view: renders the store's timeline (speaker blocks and "…
+ * joined" dividers) plus a transient partials area, into a shadow root the
+ * caller supplies (the sidebar tab owns it; see sidebar.js).
  *
  * CSP discipline (same rules that keep the waveforms bookmarklet alive on
  * hardened pages): no innerHTML anywhere, styles through adoptedStyleSheets,
@@ -68,9 +68,10 @@ const CSS = `
 .hint { color: var(--muted); padding: 12px 4px; text-align: center; }
 .marker {
   display: flex; align-items: center; gap: 8px;
-  color: var(--muted); font-size: 11px; margin: 2px 0 8px;
+  color: var(--muted); font-size: 11px; margin: 6px 0 8px;
 }
 .marker::before, .marker::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.marker.you { color: var(--accent); }
 .block { margin: 0 0 10px; border-radius: 6px; padding: 2px 6px; }
 .block.own { background: var(--accent-soft); }
 .block-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 1px; }
@@ -84,8 +85,10 @@ const CSS = `
 .block:hover .time { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { .time { transition: none; } }
 .line { margin: 0; }
-.partial { color: var(--muted); font-style: italic; }
-.partial::after { content: "▏"; opacity: 0.7; }
+.partials { flex: none; padding: 0 6px 6px; }
+.partial-line { margin: 0 0 4px; color: var(--muted); font-style: italic; }
+.partial-speaker { font-weight: 600; font-style: normal; margin-right: 4px; }
+.partial-line::after { content: "▏"; opacity: 0.7; }
 .jump {
   all: unset; position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
   background: var(--accent); color: #ffffff; font-size: 12px; padding: 4px 12px;
@@ -126,10 +129,14 @@ function detectNextcloudDark() {
   return null
 }
 
-/**
- * @param {{ store, names, shadow: ShadowRoot }} opts
- * @returns {{ setStatus(status): void, destroy(): void }}
- */
+function currentUid() {
+  try {
+    return window.OC?.getCurrentUser?.()?.uid || null
+  } catch {
+    return null
+  }
+}
+
 export function createTranscriptView({ store, names, shadow }) {
   try {
     const sheet = new CSSStyleSheet()
@@ -157,12 +164,9 @@ export function createTranscriptView({ store, names, shadow }) {
   scroll.setAttribute('role', 'log')
   scroll.setAttribute('aria-label', 'Live transcript')
   const hint = el('div', 'hint', 'Waiting for a Talk call on this page…')
-  // "You joined here" divider, inserted into the block flow before the first
-  // live block when the store holds any history (see addBlock).
-  const dividerEl = el('div', 'marker', 'You joined here')
-  let dividerPlaced = false
-  const blocksHostEl = el('div')
-  scroll.append(hint, blocksHostEl)
+  const itemsHostEl = el('div')
+  const partialsEl = el('div', 'partials')
+  scroll.append(hint, itemsHostEl, partialsEl)
   const jump = el('button', 'jump', '↓ Jump to live')
   jump.hidden = true
   const liveRegion = el('div', 'sr-only')
@@ -181,7 +185,6 @@ export function createTranscriptView({ store, names, shadow }) {
       return false
     }
   })()
-
   function atBottom() {
     return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= FOLLOW_SLACK_PX
   }
@@ -199,10 +202,11 @@ export function createTranscriptView({ store, names, shadow }) {
   })
 
   // --- Rendering -------------------------------------------------------------
-  const blockEls = new Map() // block.id -> entry
+  const itemEls = new Map() // item.id -> entry
+  const uid = currentUid()
 
-  function renderSpeaker(entry, block) {
-    const resolved = names.resolve(block.sid)
+  function renderSpeaker(entry, item) {
+    const resolved = names.resolve(item.sid)
     entry.speakerEl.textContent = resolved.name
     entry.resolved = resolved.resolved
     entry.root.classList.toggle('own', resolved.own)
@@ -210,104 +214,135 @@ export function createTranscriptView({ store, names, shadow }) {
     return resolved
   }
 
-  function addBlock(block) {
+  function addBlock(item) {
     const root = el('div', 'block')
     const blockHeader = el('div', 'block-header')
     const speakerEl = el('span', 'speaker')
     const youChip = el('span', 'you-chip', 'you')
     youChip.hidden = true
-    const time = el('span', 'time', formatTime(block.startedAt))
-    time.title = new Date(block.startedAt).toLocaleString()
+    const time = el('span', 'time', formatTime(item.startedAt))
+    time.title = new Date(item.startedAt).toLocaleString()
     blockHeader.append(speakerEl, youChip, time)
     const linesEl = el('div')
-    const partialEl = el('p', 'line partial')
-    partialEl.setAttribute('dir', 'auto')
-    partialEl.hidden = true
-    root.append(blockHeader, linesEl, partialEl)
-    const entry = { root, linesEl, partialEl, speakerEl, youChip, lineCount: 0, block, resolved: false }
-    blockEls.set(block.id, entry)
-    // Place the "You joined here" divider before the first live block, but only
-    // when there is history above it to divide from.
-    if (!dividerPlaced && !block.historical && store.hasHistory) {
-      blocksHostEl.appendChild(dividerEl)
-      dividerPlaced = true
-    }
-    blocksHostEl.appendChild(root)
-    renderSpeaker(entry, block)
+    root.append(blockHeader, linesEl)
+    const entry = { kind: 'block', root, linesEl, speakerEl, youChip, lineCount: 0, item, resolved: false }
+    itemEls.set(item.id, entry)
+    itemsHostEl.appendChild(root)
+    renderSpeaker(entry, item)
     hint.hidden = true
     return entry
   }
 
-  function syncBlock(block) {
-    let entry = blockEls.get(block.id)
-    if (!entry) entry = addBlock(block)
-    const resolved = renderSpeaker(entry, block)
-    while (entry.lineCount < block.lines.length) {
-      const line = block.lines[entry.lineCount]
+  function joinOwn(item) {
+    const resolved = names.resolve(item.sid)
+    if (resolved.own) return true
+    return Boolean(uid && item.userId && item.userId === uid)
+  }
+
+  function joinLabel(item) {
+    if (joinOwn(item)) return 'You joined here'
+    const name = item.displayName || names.resolve(item.sid).name
+    return `${name} joined`
+  }
+
+  function addJoin(item) {
+    const root = el('div', 'marker')
+    root.textContent = joinLabel(item)
+    if (joinOwn(item)) root.classList.add('you')
+    const entry = { kind: 'join', root, item, resolved: Boolean(item.displayName) }
+    itemEls.set(item.id, entry)
+    itemsHostEl.appendChild(root)
+    hint.hidden = true
+    return entry
+  }
+
+  function addItem(item) {
+    return item.kind === 'join' ? addJoin(item) : addBlock(item)
+  }
+
+  function syncBlock(item) {
+    let entry = itemEls.get(item.id)
+    if (!entry) entry = addItem(item)
+    const resolved = renderSpeaker(entry, item)
+    while (entry.lineCount < item.lines.length) {
+      const line = item.lines[entry.lineCount]
       const lineEl = el('p', 'line', line.text)
       lineEl.setAttribute('dir', 'auto')
       if (line.lang) lineEl.lang = line.lang
       entry.linesEl.appendChild(lineEl)
       entry.lineCount++
     }
-    if (block.partial) {
-      entry.partialEl.textContent = block.partial.text
-      if (block.partial.lang) entry.partialEl.lang = block.partial.lang
-      entry.partialEl.hidden = false
-    } else {
-      entry.partialEl.hidden = true
-      entry.partialEl.textContent = ''
-    }
     return resolved
   }
 
-  function clearRendered() {
-    for (const entry of blockEls.values()) entry.root.remove()
-    blockEls.clear()
-    dividerEl.remove()
-    dividerPlaced = false
-    blocksHostEl.replaceChildren()
+  function renderPartials() {
+    partialsEl.replaceChildren()
+    for (const partial of store.activePartials) {
+      const resolved = names.resolve(partial.sid)
+      const line = el('p', 'partial-line')
+      line.setAttribute('dir', 'auto')
+      if (partial.lang) line.lang = partial.lang
+      line.append(el('span', 'partial-speaker', `${resolved.name}:`), document.createTextNode(partial.text))
+      partialsEl.appendChild(line)
+    }
   }
 
-  // Render whatever the store already holds, so a tab (re)created mid-call — by
-  // the first mount, or after Talk re-rendered the sidebar — shows the current
-  // transcript, not only events from here on. The store is the source of truth.
-  for (const block of store.blocks) syncBlock(block)
+  function renderItem(item) {
+    if (item.kind === 'join') {
+      if (!itemEls.has(item.id)) addJoin(item)
+      return
+    }
+    syncBlock(item)
+  }
+
+  function clearRendered() {
+    itemsHostEl.replaceChildren()
+    partialsEl.replaceChildren()
+    itemEls.clear()
+  }
+
+  // Render whatever the store already holds, so a tab (re)created mid-call shows
+  // the current transcript, not only future entries.
+  for (const item of store.items) renderItem(item)
+  renderPartials()
 
   const unsubscribe = store.subscribe((change) => {
     if (change.type === 'reset') {
-      // Room/call changed: wipe the pane and show the waiting hint again.
       clearRendered()
       hint.hidden = false
       return
     }
-    if (change.type === 'remove') {
-      const entry = blockEls.get(change.block.id)
-      if (entry) {
-        entry.root.remove()
-        blockEls.delete(change.block.id)
-      }
+    if (change.type === 'partial') {
+      renderPartials()
+      if (following) scrollToBottom()
       return
     }
-    const resolved = syncBlock(change.block)
+    renderItem(change.item)
     if (change.type === 'final' && change.line) {
+      const resolved = names.resolve(change.item.sid)
       liveRegion.textContent = `${resolved.name}: ${change.line.text}`
     }
     if (following) scrollToBottom()
   })
 
-  // A speaker's name may not be in the roster yet when their first caption
-  // lands (it is a prefix-keyed lookup). Re-resolve the still-unresolved blocks
-  // on a timer so a short id is replaced by the real name once it is known.
+  // A name may not be in the roster yet when a block or join first renders
+  // (prefix-keyed lookup); re-resolve the unresolved ones so a short id is
+  // replaced by the real name once it is known.
   const reresolve = setInterval(() => {
-    for (const entry of blockEls.values()) {
-      if (!entry.resolved) renderSpeaker(entry, entry.block)
+    for (const entry of itemEls.values()) {
+      if (entry.resolved) continue
+      if (entry.kind === 'block') renderSpeaker(entry, entry.item)
+      else {
+        entry.root.textContent = joinLabel(entry.item)
+        entry.resolved = names.resolve(entry.item.sid).resolved
+      }
     }
+    renderPartials()
   }, RERESOLVE_MS)
 
   function setStatus(status) {
     dot.classList.toggle('attached', status.state === 'attached')
-    if (store.blocks.length) {
+    if (store.items.length) {
       hint.hidden = true
       return
     }
@@ -321,7 +356,7 @@ export function createTranscriptView({ store, names, shadow }) {
   function destroy() {
     clearInterval(reresolve)
     unsubscribe()
-    blockEls.clear()
+    itemEls.clear()
     view.remove()
   }
 

@@ -1,52 +1,85 @@
 /**
- * Conversation/call scoping for the transcript (D-830).
+ * Conversation/call scoping and transcript polling (D-830).
  *
- * Watches the room token and call token (via the tap). On a *new call* — a call
- * starting (call token appearing) or a switch to a different conversation while
- * in a call — it resets the store and seeds it with that conversation's
- * catch-up history, so:
- *  - two conversations never mix in one pane;
- *  - a late joiner sees what was said before they arrived, then a "You joined
- *    here" divider, then the live continuation;
- *  - a new call in the same conversation starts fresh, while an ended call stays
- *    on screen (no reset when the call token merely disappears) until the viewer
- *    navigates away.
+ * The server is the source of truth: it transcribes every speaker in the call
+ * and records joins. This watches the room/call tokens (via the tap) and, while
+ * in a call, polls `/history?since=<lastSeq>` and feeds the delta to the store.
+ * Polling (not a one-shot fetch) is what closes the gap between joining a call
+ * and enabling captions: everything said is on the server and arrives on the
+ * next poll, whether or not the viewer ever subscribed to live captions.
+ *
+ * Scoping:
+ *  - a new call (call token appears) or a switch to another conversation resets
+ *    the store and restarts polling for that conversation — two conversations
+ *    never mix, a new call in the same room starts fresh;
+ *  - when a call ends the poll stops but the transcript stays on screen until
+ *    the viewer navigates away (which resets via a room change).
  */
 
-const POLL_MS = 1000
+const POLL_MS = 1200
 
 export function createSession({ tap, store, fetchHistory, onChange = () => {} }) {
   let prevRoom = null
   let prevCall = null
-  let seedToken = 0 // guards against a slow history fetch landing after a newer reset
-  let timer = null
+  let activeRoom = null
+  let generation = 0
+  let watchTimer = null
+  let pollTimer = null
   let stopped = false
 
-  async function newCall(roomToken) {
-    const mine = ++seedToken
-    store.reset()
-    onChange({ roomToken, inCall: true })
-    const entries = await fetchHistory(roomToken)
-    if (stopped || mine !== seedToken) return // a newer call superseded this fetch
-    store.seedHistory(entries)
+  function stopPolling() {
+    if (pollTimer) {
+      clearTimeout(pollTimer)
+      pollTimer = null
+    }
   }
 
-  function poll() {
+  async function pollOnce(room, mine) {
+    if (stopped || mine !== generation) return
+    const { entries } = await fetchHistory(room, store.lastSeq)
+    if (stopped || mine !== generation) return
+    store.applyTimeline(entries)
+    pollTimer = setTimeout(() => pollOnce(room, mine), POLL_MS)
+  }
+
+  function startCall(room) {
+    generation++
+    activeRoom = room
+    stopPolling()
+    store.reset()
+    onChange({ roomToken: room, inCall: true })
+    pollOnce(room, generation)
+  }
+
+  function endPolling() {
+    generation++ // invalidate any in-flight poll
+    stopPolling()
+    activeRoom = null
+  }
+
+  function watch() {
     if (stopped) return
     const roomToken = tap.roomToken()
     const callToken = tap.callToken()
     const inCall = Boolean(callToken)
-    const callStarted = inCall && !prevCall // call token appeared
+    const callStarted = inCall && !prevCall
     const roomChanged = roomToken !== prevRoom
-    if (callStarted || (inCall && roomChanged)) {
-      newCall(roomToken)
+    if (callStarted || (inCall && roomChanged && roomToken !== activeRoom)) {
+      startCall(roomToken)
+    } else if (!inCall && prevCall) {
+      // Call ended: stop polling but keep the transcript on screen.
+      endPolling()
+    } else if (roomChanged && !inCall) {
+      // Navigated to another conversation with no active call: drop the stale one.
+      if (store.items.length) store.reset()
+      endPolling()
     }
     prevRoom = roomToken
     prevCall = callToken
   }
 
-  timer = setInterval(poll, POLL_MS)
-  poll()
+  watchTimer = setInterval(watch, POLL_MS)
+  watch()
 
   return {
     get inCall() {
@@ -55,7 +88,8 @@ export function createSession({ tap, store, fetchHistory, onChange = () => {} })
     roomToken: () => tap.roomToken(),
     destroy() {
       stopped = true
-      if (timer) clearInterval(timer)
+      if (watchTimer) clearInterval(watchTimer)
+      stopPolling()
     },
   }
 }

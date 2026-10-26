@@ -31,14 +31,18 @@ function mount() {
   let panel = null
   let lastStatus = { state: 'waiting' }
   const tap = createTap({
-    onEvent: (event) => store.apply(event),
+    // Finals come from the polled server timeline (session.js); the live hook
+    // only drives in-progress partials, when the viewer has captions on.
+    onEvent: (event) => {
+      if (!event.final) store.setPartial(event.sid, event.text, event.lang)
+    },
     onStatus: (status) => {
       lastStatus = status
       if (panel) panel.setStatus(status)
     },
   })
   const names = createNames({ tap })
-  // Scope the transcript per conversation/call and seed catch-up history.
+  // Scope the transcript per conversation/call and poll the server timeline.
   const session = createSession({ tap, store, fetchHistory })
 
   function destroy() {
@@ -58,13 +62,13 @@ function mount() {
 
   window[GLOBAL] = {
     destroy,
-    injectTranscript(data) {
-      store.apply({
-        sid: typeof data.id === 'string' ? data.id : '',
-        text: typeof data.message === 'string' ? data.message : '',
-        final: data.final !== false,
-        lang: typeof data.languageId === 'string' ? data.languageId : null,
-      })
+    // Feed one live partial (final text comes from the polled server timeline).
+    injectPartial(data) {
+      store.setPartial(
+        typeof data.id === 'string' ? data.id : '',
+        typeof data.message === 'string' ? data.message : '',
+        typeof data.languageId === 'string' ? data.languageId : null,
+      )
     },
     get attached() {
       return tap.attached

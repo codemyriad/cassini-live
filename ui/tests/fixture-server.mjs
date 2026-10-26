@@ -87,13 +87,32 @@ const pageScript = `
     generateUrl: (p) => '/index.php' + p,
   }
   window.__FIXTURE__ = {
-    // the SHORT (event) ids, exposed so tests speak in the same terms as Talk
+    // the SHORT (event) ids and the FULL ids (as the roster/timeline use)
     sid: ${JSON.stringify(SID)},
+    full: ${JSON.stringify(FULL)},
     transcript(data) { for (const cb of bucket('transcript')) cb(data) },
     listenerCount(name) { return bucket(name).size },
     // call/room controls, driving the session scoping
     setCall(room, call) { connection.currentRoomToken = room; connection.currentCallToken = call || null },
     endCall() { connection.currentCallToken = null },
+    // append finals/joins to a conversation's server-side timeline; the panel
+    // picks them up on its next /history poll (this is how a final reaches the
+    // viewer without ever being a live caption event)
+    appendTimeline(token, entries) {
+      return fetch('/index.php/apps/app_api/proxy/live_transcription/fixture-append', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token, entries }),
+      }).then((r) => r.json())
+    },
+    // simulate a new call's empty buffer for a conversation
+    clearTimeline(token) {
+      return fetch('/index.php/apps/app_api/proxy/live_transcription/fixture-append', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token, clear: true }),
+      }).then((r) => r.json())
+    },
     // sidebar presence, for the reactive show/hide
     removeSidebar() { document.getElementById('app-sidebar-vue')?.remove() },
     addSidebar() { if (!document.getElementById('app-sidebar-vue')) document.body.appendChild(window.__SIDEBAR__.cloneNode(true)) },
@@ -163,13 +182,13 @@ const page = `<!doctype html>
 </body>
 </html>`
 
-// Canned catch-up history, keyed loosely by token: a token containing "hist"
-// returns two earlier finals (full ids, so names resolve); anything else empty.
-const HISTORY = {
-  hist: [
-    { speakerSessionId: FULL.alice, message: 'before you joined one', langId: 'en', t: 1000 },
-    { speakerSessionId: FULL.alice, message: 'before you joined two', langId: 'en', t: 2000 },
-  ],
+// Per-conversation server-side timelines, mirroring cassini-live's buffer:
+// entries gain a monotonic seq, and /history returns those newer than `since`.
+const timelines = new Map() // token -> { entries: [], seq: 0 }
+
+function timeline(token) {
+  if (!timelines.has(token)) timelines.set(token, { entries: [], seq: 0 })
+  return timelines.get(token)
 }
 
 export function startFixtureServer(port = PORT) {
@@ -180,11 +199,28 @@ export function startFixtureServer(port = PORT) {
       res.end(page)
       return
     }
+    if (url.pathname.endsWith('/live_transcription/fixture-append')) {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        const { token, entries, clear } = JSON.parse(raw || '{}')
+        const tl = timeline(token)
+        if (clear) {
+          tl.entries = []
+          tl.seq = 0
+        }
+        for (const e of entries || []) tl.entries.push({ ...e, seq: ++tl.seq })
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ head: tl.seq }))
+      })
+      return
+    }
     if (url.pathname.endsWith('/live_transcription/history')) {
       const token = url.searchParams.get('token') || ''
-      const entries = /hist/.test(token) ? HISTORY.hist : []
+      const since = Number(url.searchParams.get('since') || 0)
+      const tl = timeline(token)
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ entries }))
+      res.end(JSON.stringify({ entries: tl.entries.filter((e) => e.seq > since), head: tl.seq }))
       return
     }
     if (url.pathname.endsWith('/panel/panel.js')) {

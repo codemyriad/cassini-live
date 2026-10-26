@@ -305,6 +305,11 @@ def create_app(
     async def status():
         return status_body()
 
+    # Membership is stable during a call, and the panel polls /history, so cache
+    # the OCS check briefly per (user, room) to spare Talk a round-trip per poll.
+    history_authz_cache: dict[tuple[str, str], float] = {}
+    HISTORY_AUTHZ_TTL = 30.0
+
     async def _user_in_room(username: str, room_token: str) -> bool:
         # Authorize catch-up by acting as the requesting user and asking Talk for
         # the room's participants: Talk returns them only to members, so a 200 is
@@ -313,28 +318,37 @@ def create_app(
         # username) cannot be acted-as and are refused.
         if not username or not room_token:
             return False
+        now = asyncio.get_event_loop().time()
+        key = (username, room_token)
+        cached = history_authz_cache.get(key)
+        if cached is not None and cached > now:
+            return True
         try:
             nc = nc_factory()
             await nc.set_user(username)
             await nc.ocs("GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants")
-            return True
         except Exception:
+            history_authz_cache.pop(key, None)
             return False
+        history_authz_cache[key] = now + HISTORY_AUTHZ_TTL
+        return True
 
     @app.get("/history")
-    async def history(request: Request, token: str = ""):
-        # Late-joiner catch-up (D-830): the finals of the current call in `token`,
-        # for a participant. USER-level at the proxy; membership re-checked here
-        # because any logged-in user can reach the route.
+    async def history(request: Request, token: str = "", since: int = 0):
+        # Late-joiner catch-up (D-830): the current call's timeline in `token`
+        # (finals from every speaker, plus participant joins) newer than `since`,
+        # for a participant. The panel polls this with its last seq. USER-level at
+        # the proxy; membership re-checked here because any logged-in user can
+        # reach the route.
         if not token:
             raise HTTPException(400, "A room token is required")
         client = getattr(service, "clients", {}).get(token)
         if client is None:
             # No active caption client — nothing has been transcribed to catch up on.
-            return {"entries": []}
+            return {"entries": [], "head": 0}
         if not await _user_in_room(request.scope.get("username") or "", token):
             raise HTTPException(403, "Not a participant of this call")
-        return {"entries": client.history_snapshot()}
+        return {"entries": client.history_snapshot(since), "head": client.history_head()}
 
     @app.post("/capacity/check")
     async def check_capacity(request: Request):
