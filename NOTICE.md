@@ -31,12 +31,13 @@ extension links it dynamically, so it is loaded with the engine; Cassini Live do
 not modify it and never opens an audio device.
 
 The Nemotron model weights are **not** in the image. They are downloaded only when
-an administrator chooses a Nemotron engine, from the `asr-models` release of
-k2-fsa/sherpa-onnx, into the app's persistent storage. Each extracted file is checked
-against the SHA-256 below, and the license text (and notice) is stored next to it.
+an administrator chooses a Nemotron engine, from Cassini's mirror at https://dist.gocassini.com
+(Zstandard-compressed copies of the files in the k2-fsa/sherpa-onnx `asr-models` release
+archives named below), into the app's persistent storage. Each decompressed file is
+checked against the SHA-256 below, and the license text (and notice) is stored next to it.
 
 * **Nemotron English**: [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b),
-  sherpa-onnx export `sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2`.
+  files of the sherpa-onnx export `sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2`.
   NVIDIA Open Model License (version of 2025-10-24,
   `LICENSES/NVIDIA-Open-Model-License.txt`), shown with its full text on the
   settings page. Notice: "Licensed by NVIDIA Corporation under the NVIDIA Open Model
@@ -46,7 +47,7 @@ against the SHA-256 below, and the license text (and notice) is stored next to i
   * `joiner.int8.onnx` `a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23`
   * `tokens.txt` `dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff`
 * **Nemotron Multilingual**: [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b),
-  sherpa-onnx export `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2`.
+  files of the sherpa-onnx export `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2`.
   OpenMDW-1.1 (`LICENSES/OpenMDW-1.1.txt`). Origin notice: "nvidia/nemotron-3.5-asr-streaming-0.6b
   by NVIDIA Corporation, exported to ONNX by the k2-fsa/sherpa-onnx project. Licensed
   under OpenMDW-1.1."

@@ -261,6 +261,7 @@ def test_network_probe_heads_the_asset_and_caches():
     assert probe.status("nemotron-en") == "reachable"
     assert probe.status("nemotron-multilingual") == "unreachable"
     assert calls[0] == ("HEAD", catalog.get("nemotron-en").asset.url, 5.0)
+    assert calls[0][1].startswith("https://dist.gocassini.com/models/files/")
     assert len(calls) == 2
     asyncio.run(probe.refresh(["nemotron-en"]))
     assert len(calls) == 2
