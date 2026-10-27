@@ -267,13 +267,23 @@ def default_weights() -> str | None:
     return None
 
 
+# Reference copies in local/stt-eval/models keep the sherpa-onnx release names; the catalog
+# no longer records them, since the app downloads single files from dist.gocassini.com.
+REFERENCE_DIRS = {
+    "nemotron-en": "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25",
+    "nemotron-multilingual": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
+}
+
+
 def default_model_dir(engine_id: str) -> Path | None:
-    engine = catalog.get(engine_id)
-    if engine.asset is None:
+    """The app's own install (ModelStore: <storage>/models/<engine id>), else a reference copy."""
+    if catalog.get(engine_id).asset is None:
         return None
     here = Path(__file__).resolve().parents[1]
-    for root in (Path("/nc_app_live_transcription_data/models"), here / "local/stt-eval/models"):
-        candidate = root / engine.asset.directory
+    candidates = [Path("/nc_app_live_transcription_data/models") / engine_id]
+    if engine_id in REFERENCE_DIRS:
+        candidates.append(here / "local/stt-eval/models" / REFERENCE_DIRS[engine_id])
+    for candidate in candidates:
         if candidate.is_dir():
             return candidate
     return None

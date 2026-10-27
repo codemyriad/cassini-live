@@ -173,3 +173,13 @@ def test_cli_lists_tracks(recording, capsys):
 def test_cli_rejects_unknown_participant(recording):
     with pytest.raises(SystemExit):
         replay.main([str(recording), "--only", "nobody"])
+
+
+def test_every_downloadable_engine_has_a_reference_directory():
+    """Replay must not depend on how the catalog fetches a model, only on the engine id."""
+    downloadable = {id for id, engine in catalog.ENGINES.items() if engine.asset is not None}
+    assert downloadable == set(replay.REFERENCE_DIRS)
+    assert replay.default_model_dir("whistle") is None
+    for engine_id in downloadable:
+        found = replay.default_model_dir(engine_id)
+        assert found is None or found.name in (engine_id, replay.REFERENCE_DIRS[engine_id])
