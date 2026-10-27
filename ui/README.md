@@ -6,7 +6,9 @@ viewer's own lines, which Talk's built-in overlay drops.
 
 It mounts as an extra **tab in Talk's right sidebar**, next to Chat /
 Participants / Shared items, rather than a floating window, and hides Talk's
-native caption overlay while it is on (the sidebar replaces it).
+native caption overlay while it is on (the sidebar replaces it). Activating it
+also turns Talk's live captions on for you, so you are on the feed immediately
+without clicking the CC button.
 
 ## How it reaches the page
 
@@ -27,31 +29,39 @@ People pick both up on the install page the app serves at
 
 ## How it gets the words
 
-The **server timeline is the single source of truth**. cassini-live transcribes
-every speaker in the call — not only those who enabled captions — and records
-who joined when, each entry tagged with a monotonic `seq`. The panel polls it:
+Two sources share **one seq space**, so they merge exactly:
 
 ```
- cassini-live ─ buffers finals (all speakers) + joins, each with a seq
-       │  GET /history?token=<room>&since=<lastSeq>  →  {entries, head}
-       ▼
- session.js (poll ~1.2s) ─▶ store.applyTimeline (idempotent by seq)
-                               ├─ finals → speaker blocks
-                               └─ joins  → "<name> joined" dividers   ─▶ sidebar tab view
- Talk's SimpleWebRTC 'transcript' (live) ─▶ tap ─▶ store partials (transient only)
+ cassini-live buffers every final (all speakers) + joins, each with a seq, and
+ sends each final over the HPB tagged with that same seq.
+
+   HPB ─ connection.on('message') {type:transcript, seq, final, message, sid} ─▶ live feed (instant)
+   HTTP ─ GET /history?token=<room>&since=<contiguousSeq>  (every ~3s) ─────────▶ gap-fill + joins + catch-up
+                         │
+            store: reorder buffer over the shared seq
+              seq == applied+1 → render, advance, flush held
+              seq >  applied+1 → hold (out of order / a gap the poll will fill)
+              seq <= applied   → already have it, skip     ─▶ sidebar tab view
+   live partials (no seq) ─────────────────────────────────▶ transient italic line
 ```
 
-Why poll instead of relying on live `'transcript'` events: a live event only
-reaches a session from the moment it enables captions, so anything said before —
-including the viewer's *own* words spoken before clicking the captions button —
-would be dropped. Polling the server buffer (which holds everything, regardless
-of who subscribed) closes that gap. The live hook is kept only for in-progress
-**partials** (shown transient, cleared when the final lands via the poll).
+The live feed gives near-instant finals; the poll is a backstop that fills any
+gap the live feed missed and delivers joins and the initial catch-up. Because
+both carry the server's `seq`, the merge is exact — no duplicates, no drops, no
+content-matching.
+
+Why read the live feed from `connection.on('message')` and not
+`SimpleWebRTC.on('transcript')`: the filtered `transcript` event keeps only
+`{id, message, languageId, final}` and **drops** the `seq`, but the raw
+`message` event (what Talk's own SimpleWebRTC listens to) carries the full
+payload. `window.signalingSocket` is a raw fallback. It also still sees the
+viewer's own lines (no `CallParticipantModel` filtering).
 
 `session.js` scopes everything per conversation: it watches the room and call
-tokens and resets on a new call or a switch to another conversation; an ended
-call's transcript stays until the viewer navigates away. Join events render as a
-divider per participant — the viewer's own reads "You joined here".
+tokens, resets on a new call or a switch to another conversation (and enables
+captions for the session so it is on the feed), and polls `/history` for gaps.
+An ended call's transcript stays until the viewer navigates away. Join events
+render as a divider per participant — the viewer's own reads "You joined here".
 
 Speaker names resolve in the browser (the payload only carries the speaker's
 signalling session id). The authoritative source is `connection.joinedUsers`,
@@ -65,14 +75,18 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
 
 ## Code layout
 
-- `src/store.js` — the timeline: ordered items (`block` | `join`) applied
-  idempotently by `seq`, plus a transient partials channel; `reset()`.
-- `src/tap.js` — attaches to `OCA.Talk.SimpleWebRTC` for the connection (room /
-  call tokens, own session id) and feeds in-progress partials to the store.
+- `src/store.js` — the timeline: a reorder buffer over the shared `seq` (live +
+  poll merge), ordered items (`block` | `join`), a transient partials channel,
+  `reset()`.
+- `src/tap.js` — the live feed: subscribes to `connection.on('message')` for the
+  raw payload (incl. `seq`), emits finals and partials, exposes the connection
+  (room / call tokens, own session id), re-attaches on rejoin.
 - `src/names.js` — prefix-aware name resolution (see above).
-- `src/history.js` — `fetchHistory(token, since)` for the timeline poll.
-- `src/session.js` — conversation/call scoping and the ~1.2s poll loop; resets on
-  a new call or a change of conversation; an ended call stays until navigation.
+- `src/history.js` — `fetchHistory(token, since)` for the gap-fill poll.
+- `src/session.js` — conversation/call scoping and the ~3s gap-fill poll;
+  resets + enables captions on a new call or a change of conversation; an ended
+  call stays until navigation.
+- `src/captions.js` — turns Talk's live captions on for the session (best-effort).
 - `src/panel.js` — `createTranscriptView`: renders the timeline (speaker blocks,
   "<name> joined" dividers, transient partials), replaying current state on
   mount, into a shadow root the caller supplies. CSP discipline throughout: no

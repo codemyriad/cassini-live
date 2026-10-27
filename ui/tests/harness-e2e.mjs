@@ -1,14 +1,14 @@
 // Real-stack e2e against the gocassini harness. Proves, end to end:
-//   - the pre-captions GAP is closed: the viewer sees their own speech from
-//     before they enabled captions (it reaches them only via the server
-//     timeline poll, since they were not a live subscriber then);
+//   - activating the panel AUTO-ENABLES Talk captions: the viewer never clicks
+//     the CC button, yet the transcript appears (the HPB live feed flows);
+//   - the viewer sees another speaker's earlier speech (catch-up via poll) and
+//     their own speech, by name not session id;
 //   - per-participant JOIN markers, the viewer's own reading "You joined here";
-//   - catch-up of another speaker's earlier speech; names, not session ids;
 //   - the sidebar tab and the hidden native caption overlay.
 //
-// Scenario: botuser (speaker) joins first, enables captions, and talks.
-// admin (viewer) joins, talks for a while WITHOUT captions, THEN enables
-// captions and opens the panel — and must see their own earlier words.
+// Scenario: botuser (speaker) joins first, enables captions, and talks. admin
+// (viewer) joins and talks, then just CLICKS THE BOOKMARKLET — no manual CC —
+// and must see the conversation, proving auto-enable + the HPB feed.
 //
 // Not part of `npm test`: needs the harness up and the ExApp installed
 // (gocassini: ./harness/bin/live-panel-setup.sh). Run from the gocassini repo
@@ -124,19 +124,18 @@ try {
   log('botuser speaking with captions on')
   await bob.waitForTimeout(16000)
 
-  // admin (viewer) joins and talks for a while WITHOUT captions — this is the gap
+  // admin (viewer) joins and talks — but does NOT click Talk's CC button
   await vpage.goto(CALL_URL)
   await joinCall(vpage)
-  log('admin joined and is talking WITHOUT captions (the gap window)')
-  await vpage.waitForTimeout(16000)
+  log('admin joined and is talking; NOT clicking CC — only the bookmarklet')
+  await vpage.waitForTimeout(8000)
 
-  // now admin enables captions and opens the panel
-  await enableCaptions(vpage)
+  // admin only clicks the bookmarklet; it must auto-enable captions itself
   const code = decodeURIComponent((await readFile('/ui/dist/bookmarklet-inline.txt', 'utf8')).trim().slice('javascript:'.length))
   await vpage.evaluate(code)
   await vpage.waitForSelector('#cassini-live-tab', { timeout: 10000 })
   await vpage.locator('#cassini-live-tabpanel .block').first().waitFor({ timeout: 30000 })
-  await vpage.waitForTimeout(6000) // let a couple of polls land
+  await vpage.waitForTimeout(10000) // let the auto-enabled HPB feed + a poll land
   const view = await readView(vpage)
   await shot('01-gap')
   await writeFile(`${OUT}/gap.json`, JSON.stringify(view, null, 2))
@@ -157,11 +156,12 @@ try {
       throw new Error(`speaker rendered as a raw/short id: ${b.speaker}`)
     }
   }
-  // THE GAP: the viewer's own speech (produced before they enabled captions)
-  // must be present — it could only arrive via the server timeline poll.
+  // AUTO-ENABLE: the viewer never clicked Talk's CC button; the transcript
+  // appearing at all proves the bookmarklet enabled captions (only a caption
+  // target receives the HPB feed and would be transcribed/caught up).
   const ownBlocks = blocks.filter((b) => b.own && b.lines.length)
-  if (!ownBlocks.length) throw new Error('the viewer does not see their own pre-captions speech (gap not closed)')
-  // another speaker is present too (catch-up)
+  if (!ownBlocks.length) throw new Error('the viewer does not see their own speech')
+  // another speaker is present too (catch-up of botuser's earlier speech)
   const speakers = new Set(blocks.map((b) => b.speaker))
   if (speakers.size < 2) throw new Error(`expected at least two speakers, got ${[...speakers]}`)
   // JOIN markers: at least one, and the viewer's own reads "You joined here"
