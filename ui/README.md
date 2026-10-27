@@ -95,6 +95,7 @@ npm ci
 npm run build        # dist/ + ../cassini_live/static/panel/
 npm run test:unit    # store semantics (node:test)
 npm run test:e2e     # Playwright against a CSP-faithful fake Talk page
+npm run replay -- meeting.replay.json   # scrub a replayed meeting (see ../docs/replay.md)
 ```
 
 On hosts where Playwright's Chromium can't run (e.g. NixOS), use the official
