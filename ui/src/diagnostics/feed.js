@@ -20,7 +20,11 @@ export function backoffMs(failures) {
   return Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** Math.max(0, failures - 1))
 }
 
-/** The server's monotonic clock went back: Cassini Live restarted and its columns start over. */
+/**
+ * The server's monotonic clock went back: Cassini Live came back on a rebooted or another
+ * host, and its columns start over. A restarted container keeps the host's clock (measured),
+ * so most restarts show only as an answer with head 0 (historyStart).
+ */
 export function restarted(lastNow, now) {
   return typeof lastNow === 'number' && typeof now === 'number' && now < lastNow
 }

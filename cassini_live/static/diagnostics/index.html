@@ -58,8 +58,38 @@
         </div>
       </div>
 
-      <div id="lanes" class="lanes">
-        <p class="placeholder">Speaker lanes</p>
+      <div id="lanes" class="lanes" data-density="roomy">
+        <div class="lanes-head">
+          <h3 id="lanes-title" class="lanes-title">Speakers, last two minutes</h3>
+          <p id="left-out" class="left-out" hidden></p>
+          <ul id="legend" class="legend" aria-label="Lane colours"></ul>
+        </div>
+        <div class="lanes-grid">
+          <div class="band">
+            <svg id="band" class="band-svg" role="img" aria-label="No microphones open" viewBox="0 0 120 144" height="144" preserveAspectRatio="none" focusable="false"></svg>
+            <ol id="lane-names" class="lane-names" aria-hidden="true"></ol>
+            <p id="lanes-empty" class="lanes-empty" aria-hidden="true">No microphones open</p>
+          </div>
+          <ol id="lane-tags" class="lane-tags" aria-label="Speakers now" hidden></ol>
+          <span class="now-line" aria-hidden="true"></span>
+          <div class="graph">
+            <svg id="graph" class="graph-svg" role="img" aria-label="Caption lag over the last two minutes" viewBox="0 0 120 58" height="58" preserveAspectRatio="none" focusable="false">
+              <rect id="graph-bg" class="graph-bg" x="0" y="0" width="120" height="58"/>
+              <line id="graph-admit" class="threshold admit" x1="0" x2="120" y1="32" y2="32"/>
+              <line id="graph-shed" class="threshold shed" x1="0" x2="120" y1="14" y2="14"/>
+              <g id="graph-sheds" class="shed-marks"></g>
+              <g id="graph-sent" class="sent-ticks"></g>
+              <g id="graph-lines" class="lag-line"></g>
+            </svg>
+            <span class="graph-label" aria-hidden="true">lag</span>
+          </div>
+          <ul class="graph-legend">
+            <li id="shed-label" class="shed">shed 2.0 s</li>
+            <li id="admit-label" class="admit">admit 1.0 s</li>
+            <li class="sent"><span class="key" aria-hidden="true">▮</span> caption sent</li>
+          </ul>
+          <p class="axis" aria-hidden="true"><span>−2 min</span><span>−1 min</span><span>now</span></p>
+        </div>
       </div>
 
       <p id="decision" class="decision" data-tone="idle"><span id="decision-time" class="time"></span> <span id="decision-verb" class="verb"></span> <span id="decision-text" class="text">No admission decision yet</span></p>

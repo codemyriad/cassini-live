@@ -45,12 +45,12 @@ function has(object, key) {
 }
 
 // Python's dict.get: the fallback only when the key is absent.
-function get(object, key, fallback) {
+export function get(object, key, fallback) {
   return has(object, key) ? object[key] : fallback
 }
 
 // Python's int(x or 0).
-function int(value) {
+export function int(value) {
   const number = Math.trunc(Number(value))
   return Number.isFinite(number) ? number : 0
 }
@@ -59,7 +59,7 @@ function clamp(fraction) {
   return Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0
 }
 
-function known(value) {
+export function known(value) {
   return value !== null && value !== undefined
 }
 
@@ -125,7 +125,8 @@ function heldText(admission, observing) {
   return (observing ? 'would hold: ' : 'holding: ') + reasonOf(admission)
 }
 
-function thresholds(admission) {
+/** The governor's lag and CPU thresholds, or the video's defaults while it reports none. */
+export function thresholds(admission) {
   return {
     lagAdmit: Number(admission.lagAdmit || 1.0),
     lagShed: Number(admission.lagShed || 2.0),
