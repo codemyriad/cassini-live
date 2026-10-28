@@ -53,6 +53,18 @@ async def test_an_expired_answer_is_asked_again_and_a_refusal_evicts_it():
     assert await membership.check("alice", "room1") and len(asked) == 3
 
 
+async def test_an_expired_answer_leaves_the_cache_at_the_next_check_of_anyone():
+    asked = []
+    membership = RoomMembership(talk({"alice", "bob"}, asked))
+    assert await membership.check("alice", "room1")
+    membership.ttl = 0.0
+    assert await membership.check("alice", "room2")
+    assert await membership.check("bob", "room3")
+    # The live answer stays; the spent one leaves no record that alice was in room2.
+    assert set(membership._until) == {("alice", "room1"), ("bob", "room3")}
+    assert await membership.check("alice", "room1") and len(asked) == 3
+
+
 async def test_polls_keep_a_refusal_for_the_ttl_per_user_and_room():
     asked = []
     polled = PolledMembership(RoomMembership(talk({"alice"}, asked)))
@@ -71,6 +83,14 @@ async def test_a_polled_refusal_is_asked_again_once_it_expires():
     # Bob joins the call.
     members.add("bob")
     assert await polled.check("bob", "room1") and len(asked) == 2
+
+
+async def test_an_expired_refusal_leaves_the_cache_at_the_next_poll_of_anyone():
+    asked = []
+    polled = PolledMembership(RoomMembership(talk({"alice"}, asked)), ttl=0.0)
+    assert not await polled.check("bob", "room1")
+    assert await polled.check("alice", "room1")
+    assert polled._refused == {}
 
 
 async def test_concurrent_polls_share_one_check():

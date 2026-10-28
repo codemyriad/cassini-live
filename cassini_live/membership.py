@@ -11,7 +11,8 @@ class RoomMembership:
     state. Guests (empty username) cannot be acted-as and are refused.
 
     Membership is stable during a call, and pages poll, so a positive answer is cached per
-    (user, room) for `ttl` seconds to spare Talk a round-trip per poll."""
+    (user, room) for `ttl` seconds to spare Talk a round-trip per poll. The first check
+    after it expires drops it, user id and all, as docs/privacy.md states."""
 
     def __init__(self, nc_factory, ttl=30.0):
         self.nc_factory = nc_factory
@@ -22,9 +23,9 @@ class RoomMembership:
         if not username or not room_token:
             return False
         now = asyncio.get_event_loop().time()
+        self._until = {k: until for k, until in self._until.items() if until > now}
         key = (username, room_token)
-        cached = self._until.get(key)
-        if cached is not None and cached > now:
+        if key in self._until:
             return True
         try:
             nc = self.nc_factory()
@@ -51,7 +52,9 @@ class PolledMembership:
 
     async def check(self, username: str, room_token: str) -> bool:
         key = (username, room_token)
-        if self._refused.get(key, 0.0) > time.monotonic():
+        now = time.monotonic()
+        self._refused = {k: until for k, until in self._refused.items() if until > now}
+        if key in self._refused:
             return False
         asking = self._asking.get(key)
         if asking is None:
@@ -63,7 +66,5 @@ class PolledMembership:
     async def _ask(self, key):
         member = await self.membership.check(*key)
         if not member:
-            now = time.monotonic()
-            self._refused = {k: until for k, until in self._refused.items() if until > now}
-            self._refused[key] = now + self.ttl
+            self._refused[key] = time.monotonic() + self.ttl
         return member

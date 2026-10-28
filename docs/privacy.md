@@ -81,10 +81,10 @@ polls the app every 2 to 10 seconds.
 The diagnostics page is served the same way. The app uses the administrator's
 user id to reject requests without a user and to ask Talk whether they are a
 participant of the sampled conversation. It keeps the id only in memory, as
-the key of those cached answers, and neither writes nor logs the id or the
-cookies. While open in a visible browser tab, the page polls the app once a
-second, and the app samples only while the page was polled in the last 30
-seconds.
+the key of those cached answers, drops it with the answer at the first check
+after the answer expires, and neither writes nor logs the id or the cookies.
+While open in a visible browser tab, the page polls the app once a second, and
+the app samples only while the page was polled in the last 30 seconds.
 
 The Silero speech detector is bundled and runs locally. ONNX Runtime telemetry is
 disabled with `ORT_DISABLE_TELEMETRY=1` before its import and in the image, plus

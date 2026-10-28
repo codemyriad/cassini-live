@@ -229,14 +229,15 @@ const newInstance = () => randomBytes(8).toString('hex')
 
 function diagnosticsFeed(id) {
   if (!diagnosticsFeeds.has(id)) {
-    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, from: 1, instance: newInstance(), status: null, overrides: {} })
+    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, from: 1, instance: newInstance(), status: null, html: false, overrides: {} })
   }
   return diagnosticsFeeds.get(id)
 }
 
 /**
  * Steer a feed: {status: 403|503|null} answers every poll with that status (null:
- * normally again), {restart: true} restarts its clock lower and keeps its instance, so
+ * normally again) and the app's JSON error, {status: 404, html: true} with Nextcloud's
+ * HTML 404 page instead, as AppAPI's proxy refuses a request, {restart: true} restarts its clock lower and keeps its instance, so
  * only the page's clock check can see it (a rebooted host, as an answer without an
  * instance would show it), {relaunch: true} drops its columns, keeps its clock and gets a
  * new instance (a restarted ExApp container: lane ids start over, and the first column
@@ -246,8 +247,8 @@ function diagnosticsFeed(id) {
  * {history: s} moves its start s seconds back, so its first answer already holds that
  * much history.
  */
-function diagnosticsControl(feed, { status, restart, relaunch, idle, sample: overrides, history }) {
-  if (status !== undefined) feed.status = status
+function diagnosticsControl(feed, { status, html, restart, relaunch, idle, sample: overrides, history }) {
+  if (status !== undefined) Object.assign(feed, { status, html: Boolean(html) })
   if (restart) Object.assign(feed, { start: Date.now(), base: 100, from: 1 })
   if (relaunch || idle) feed.from = Math.floor((Date.now() - feed.start) / 1000) + 3
   if (relaunch) feed.instance = newInstance()
@@ -367,6 +368,11 @@ export function startFixtureServer(port = PORT) {
     if (diagnostics && diagnostics[2] === 'api/feed') {
       const feed = diagnosticsFeed(diagnostics[1] || 'default')
       const headers = { 'content-type': 'application/json', 'content-security-policy': PAGE_CSP, 'cache-control': 'no-store' }
+      if (feed.status && feed.html) {
+        res.writeHead(feed.status, { 'content-type': 'text/html; charset=UTF-8', 'cache-control': 'no-store' })
+        res.end('<!DOCTYPE html><html><body><h2>Page not found</h2></body></html>')
+        return
+      }
       if (feed.status) {
         res.writeHead(feed.status, headers)
         res.end(JSON.stringify({ error: { code: feed.status === 403 ? 'forbidden' : 'unavailable', message: 'refused by the fixture', reasons: [] } }))

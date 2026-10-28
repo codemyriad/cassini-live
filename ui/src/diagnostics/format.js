@@ -230,8 +230,9 @@ export function decisionLine(sample) {
   if (admissionOf(sample).observing && verb) verb = 'would ' + verb
   const at = new Date(Number(get(decision, 'at', 0)) * 1000)
   return {
-    // The governor stamps decisions with wall-clock seconds; the video draws them in UTC.
-    time: Number.isNaN(at.getTime()) ? DASH : at.toISOString().slice(11, 19),
+    // The governor stamps decisions with wall-clock seconds; the video draws them in UTC
+    // under a UTC header clock. The page has no clock, so the time carries the zone.
+    time: Number.isNaN(at.getTime()) ? DASH : `${at.toISOString().slice(11, 19)} UTC`,
     verb: `${verb} ${decision.who ?? ''}`.trim(),
     text: String(decision.text ?? ''),
     tone: decision.verb === 'admit' ? 'live' : 'warn',
@@ -416,10 +417,25 @@ export function freshness(lastOkAtMs, nowMs) {
   return { stale: true, text: `Stale · last update ${ago(age)}`, tone: 'warn' }
 }
 
+function lastUpdate(lastOkAtMs, nowMs) {
+  return known(lastOkAtMs) ? ` · last update ${ago(Math.max(0, nowMs - lastOkAtMs))}` : ''
+}
+
 /** The connection line while the feed cannot be reached. */
 export function unreachable(lastOkAtMs, nowMs) {
-  const last = known(lastOkAtMs) ? ` · last update ${ago(Math.max(0, nowMs - lastOkAtMs))}` : ''
-  return { stale: true, text: `Cassini Live unreachable${last} · retrying`, tone: 'bad' }
+  return { stale: true, text: `Cassini Live unreachable${lastUpdate(lastOkAtMs, nowMs)} · retrying`, tone: 'bad' }
+}
+
+/**
+ * The connection line while Nextcloud answers the feed with its own 404 page: AppAPI's
+ * refusal, which cannot tell these causes apart.
+ */
+export function notServed(lastOkAtMs, nowMs) {
+  return {
+    stale: true,
+    text: `Nextcloud refused the feed (signed out, not an administrator, or Cassini Live disabled)${lastUpdate(lastOkAtMs, nowMs)} · retrying`,
+    tone: 'bad',
+  }
 }
 
 /** The feed's sampling error: the exception type only, the last good sample stays. */

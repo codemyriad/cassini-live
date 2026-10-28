@@ -152,6 +152,32 @@ test('backs off on server errors, 2 s then 4 s, and recovers', async ({ page, re
   expect(recovered.at - failed[1].at).toBeGreaterThan(3800)
 })
 
+test("Nextcloud's own 404 page names the likely causes, keeps retrying, and recovers", async ({ page, request }, info) => {
+  test.setTimeout(45_000)
+  const seen = await open(page, info)
+  await expect(page.locator('#freshness')).toHaveText(LIVE)
+  // How AppAPI's proxy refuses a signed-out user, a non-administrator or a disabled ExApp.
+  await control(request, seen.id, { status: 404, html: true })
+  await expect(page.locator('#freshness')).toHaveText(
+    /^Nextcloud refused the feed \(signed out, not an administrator, or Cassini Live disabled\) · last update \d+ s ago · retrying$/,
+  )
+  await expect(page.locator('#freshness')).toHaveAttribute('data-tone', 'bad')
+  await expect(page.locator('#pill-label')).not.toHaveText('No access')
+  await expect.poll(() => seen.answers.filter((a) => a.status === 404).length, { timeout: 5000 }).toBe(2)
+  const refused = seen.answers.filter((a) => a.status === 404)
+  expect(refused[1].at - refused[0].at).toBeGreaterThan(1800)
+  // Signing in again in another tab brings the feed back without a reload.
+  await control(request, seen.id, { status: null })
+  await expect(page.locator('#freshness')).toHaveText(LIVE, { timeout: 8000 })
+})
+
+test("the app's own JSON 404 reads as Cassini Live unreachable", async ({ page, request }, info) => {
+  const seen = await open(page, info)
+  await expect(page.locator('#freshness')).toHaveText(LIVE)
+  await control(request, seen.id, { status: 404 })
+  await expect(page.locator('#freshness')).toHaveText(/^Cassini Live unreachable · last update \d+ s ago · retrying$/)
+})
+
 test('pauses while the tab is hidden and resumes at once', async ({ page }, info) => {
   const seen = await open(page, info)
   await expect(page.locator('#freshness')).toHaveText(LIVE)
@@ -186,7 +212,7 @@ test('speaker names render as text, never as markup', async ({ page }, info) => 
   await expect(page.locator('#decision-verb')).toHaveText(`admit ${HOSTILE_NAME}`)
   await expect(page.locator('#lane-names .lane-name').first()).toHaveText(HOSTILE_NAME)
   await expect(page.locator('#lane-tags li').first()).toContainText(HOSTILE_NAME)
-  await expect(page.locator('#decision-time')).toHaveText('18:34:56')
+  await expect(page.locator('#decision-time')).toHaveText('18:34:56 UTC')
   await expect(page.locator('img')).toHaveCount(0)
   await page.waitForTimeout(500)
   await expectClean(page, seen)

@@ -41,9 +41,9 @@ Below them is one lane per recent speaker, covering two minutes:
 Lanes follow the video's rules: at most ten, recent speakers only, in a stable
 order (see [Diagnostic video](diagnostic-video.md#what-it-shows)). Under the
 lanes are the lag graph, with dashed admit and shed lines, pause marks and a
-tick per caption line, then the governor's last decision, and a footer with
-memory against its limit, CPU stall, engine busy share, reply p95 and the
-page's own sampling cost.
+tick per caption line, then the governor's last decision with its time in UTC
+(as the video draws it), and a footer with memory against its limit, CPU
+stall, engine busy share, reply p95 and the page's own sampling cost.
 
 **How a caption is made.** The five pipeline steps with live numbers, and the
 three panels of rules: what protects the call, the lag rules, and what counts
@@ -126,8 +126,15 @@ on the first poll, then about one per second. The largest answer we could
 construct (ten lanes in every column, every name 20 emoji, every number at its
 widest) measured 46,552 bytes. When the app cannot be reached the page retries
 after 2, 4, 8 and 16 seconds, then every 30, and keeps the last numbers on
-screen marked stale. A refusal (logged out, or not an administrator) stops
-polling.
+screen marked stale.
+
+If you lose access while the page is open (you sign out, are no longer an
+administrator, or Cassini Live is disabled), AppAPI answers the page's requests
+with Nextcloud's "Page not found" page. It cannot tell those causes apart, so
+the page names all three ("Nextcloud refused the feed …") and keeps retrying on
+the same schedule; it resumes once access is back, for instance after you sign
+in again in another tab. Only a redirect, or a 401 or 403 answer (as from the
+app's own administrator check), stops polling until you reload.
 
 Lane numbers count from 1 in each Cassini Live process, and a restarted
 container keeps the host's monotonic clock. Each answer therefore carries a
