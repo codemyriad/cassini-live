@@ -1,4 +1,4 @@
-"""The diagnostics page's feed endpoint: administrators only, names for room members only."""
+"""The diagnostics page and its feed: administrators only, names for room members only."""
 
 import base64
 import copy
@@ -13,9 +13,10 @@ from cassini_live.diagnostic_history import COLUMNS
 from cassini_live.load import LoadGovernor
 from tests.test_diagnostic_feed import Room, quiet
 from tests.test_diagnostics import widest
-from tests.test_settings_page import assert_secure, error
+from tests.test_settings_page import CACHED, Hygiene, assert_secure, error
 
 FEED = "/diagnostics/api/feed"
+PAGE = "/diagnostics/"
 # Distinctive identifiers that must never reach the page.
 TOKEN, OTHER_TOKEN = "ROOMTOKEN-q9x7", "ROOMTOKEN-other-m4v2"
 SESSION, ATTENDEE = "SESSIONID-k3z5", "ATTENDEE-p2w8"
@@ -282,6 +283,120 @@ def test_the_feed_needs_the_appapi_gateway_and_a_user(monkeypatch, headers):
     assert client.get(FEED).status_code == 401
     headers["AUTHORIZATION-APP-API"] = base64.b64encode(b":test-exapp-secret").decode()
     error(client.get(FEED, headers=headers), 403, "forbidden")
+
+
+@pytest.mark.parametrize(
+    ("path", "name", "content_type", "cache"),
+    [
+        ("", "index.html", "text/html; charset=utf-8", "no-store"),
+        ("index.html", "index.html", "text/html; charset=utf-8", "no-store"),
+        ("app.js", "app.js", "text/javascript; charset=utf-8", CACHED),
+        ("app.css", "app.css", "text/css; charset=utf-8", CACHED),
+    ],
+)
+def test_the_page_is_served_with_security_headers(
+    monkeypatch, headers, path, name, content_type, cache
+):
+    app, service, asked = build_app(monkeypatch, member=True, rooms={})
+    response = TestClient(app).get(PAGE + path, headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == content_type
+    assert_secure(response, cache)
+    built = (diagnostics_page.STATIC / name).read_bytes()
+    assert response.content == built.replace(b"{{VERSION}}", __version__.encode())
+    # Only the feed's polls keep it sampling or ask Talk.
+    assert service.diagnostic_feed.task is None and asked == []
+
+
+def test_the_page_is_versioned(monkeypatch, headers):
+    app, _, _ = build_app(monkeypatch, member=True, rooms={})
+    html = TestClient(app).get(PAGE, headers=headers).text
+    assert f"app.js?v={__version__}" in html and f"app.css?v={__version__}" in html
+    assert f'<span id="version">{__version__}</span>' in html
+    assert "{{VERSION}}" not in html
+
+
+class PageMarkup(Hygiene):
+    def __init__(self):
+        super().__init__()
+        self.live, self.roles, self.links, self.noscript = {}, [], [], False
+
+    def handle_starttag(self, tag, attrs):
+        super().handle_starttag(tag, attrs)
+        a = dict(attrs)
+        if "aria-live" in a:
+            self.live[a.get("id")] = a["aria-live"]
+        if "role" in a:
+            self.roles.append(a["role"])
+        if tag in ("a", "link", "script") and (a.get("href") or a.get("src")):
+            self.links.append(a.get("href") or a.get("src"))
+        self.noscript = self.noscript or tag == "noscript"
+
+
+def test_the_page_markup_suits_its_csp_and_the_proxy(monkeypatch, headers):
+    app, _, _ = build_app(monkeypatch, member=True, rooms={})
+    parser = PageMarkup()
+    parser.feed(TestClient(app).get(PAGE, headers=headers).text)
+    assert parser.scripts and all(parser.scripts) and parser.content == []
+    assert parser.styles == 0 and parser.inline == [] and parser.handlers == []
+    assert parser.lang and parser.viewport and parser.noscript
+    # Two polite announcements: the status pill and the connection line, nothing louder.
+    assert parser.live == {"pill": "polite", "freshness": "polite"} and parser.roles == []
+    for required in ("pill", "engine", "observe", "freshness", "lanes", "decision", "stages"):
+        assert required in parser.ids, required
+    # Relative to the page, so they resolve under the AppAPI proxy prefix.
+    assert "../settings/index.html" in parser.links
+    for link in parser.links:
+        assert not link.startswith("/"), link
+        assert link.startswith(("https://", "data:")) or "//" not in link, link
+
+
+@pytest.mark.parametrize("path", ["", "index.html", "app.js", "app.css"])
+def test_the_page_needs_the_appapi_gateway_and_a_user(monkeypatch, headers, path):
+    app, _, _ = build_app(monkeypatch, member=True, rooms={})
+    client = TestClient(app)
+    assert client.get(PAGE + path).status_code == 401
+    headers["AUTHORIZATION-APP-API"] = base64.b64encode(b":test-exapp-secret").decode()
+    error(client.get(PAGE + path, headers=headers), 403, "forbidden")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "other.js",
+        "index.htm",
+        "api",
+        "app.js/",
+        "static/app.js",
+        "%2e%2e%2fapp.py",
+        "..%2f..%2fapp.py",
+    ],
+)
+def test_unknown_page_files_are_not_found(monkeypatch, headers, path):
+    app, _, _ = build_app(monkeypatch, member=True, rooms={})
+    error(TestClient(app).get(PAGE + path, headers=headers), 404, "not_found")
+
+
+def test_missing_page_files_are_not_found(monkeypatch, headers, tmp_path):
+    monkeypatch.setattr(diagnostics_page, "STATIC", tmp_path)
+    app, _, _ = build_app(monkeypatch, member=True, rooms={})
+    client = TestClient(app)
+    for path in ("", "index.html", "app.js", "app.css"):
+        error(client.get(PAGE + path, headers=headers), 404, "not_found")
+
+
+@pytest.mark.parametrize("path", ["", "index.html", "app.js", "app.css"])
+def test_the_page_answers_get_only(monkeypatch, headers, path):
+    app, _, _ = build_app(monkeypatch, member=True, rooms={})
+    client = TestClient(app)
+    for method in ("POST", "PUT", "DELETE"):
+        error(client.request(method, PAGE + path, headers=headers), 405, "method_not_allowed")
+    head = client.head(PAGE + path, headers=headers)
+    assert head.status_code == 405 and head.content == b""
+    assert_secure(head)
+    unknown = client.head(PAGE + "other.js/x", headers=headers)
+    assert unknown.status_code == 404
+    assert_secure(unknown)
 
 
 def test_other_methods_and_paths_are_refused_with_security_headers(monkeypatch, headers):

@@ -74,11 +74,16 @@ def main():
         "settings/api/capacity": "POST",
         "settings/api/models/nemotron-en": "DELETE",
         "settings/licenses/NVIDIA-OML.txt": "GET",
+        "diagnostics/": "GET",
+        "diagnostics/index.html": "GET",
+        "diagnostics/app.js": "GET",
+        "diagnostics/app.css": "GET",
         "diagnostics/api/feed": "GET",
     }
     for path, verb in public.items():
         assert matches(path, verb), f"{verb} {path} is not routed"
     assert not matches("diagnostics/api/feed", "POST"), "POST diagnostics/api/feed is routed"
+    assert not matches("diagnostics/other.js"), "diagnostics/other.js is routed"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 
 

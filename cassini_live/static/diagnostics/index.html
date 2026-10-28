@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Cassini Live diagnostics</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css?v={{VERSION}}">
+  <script src="app.js?v={{VERSION}}" defer></script>
+</head>
+<body>
+  <header class="page-header">
+    <div class="wrap header">
+      <div class="title">
+        <svg class="logo" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false">
+          <circle class="planet" cx="16" cy="16" r="8"/>
+          <ellipse class="ring" cx="16" cy="16" rx="15" ry="5" transform="rotate(-20 16 16)"/>
+        </svg>
+        <h1>Cassini Live diagnostics</h1>
+        <p id="pill" class="pill" data-tone="idle" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="pill-label">Starting</span></p>
+      </div>
+      <div class="meta">
+        <span id="observe" class="badge" hidden>observe only</span>
+        <p id="engine" class="engine"></p>
+        <p id="freshness" class="freshness" data-tone="idle" aria-live="polite">Waiting for the first update</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <noscript>
+      <p class="notice">This page needs JavaScript. It reads the caption service's live numbers once a second.</p>
+    </noscript>
+    <p id="pill-note" class="note" hidden></p>
+    <p id="sample-error" class="note" data-tone="warn" hidden></p>
+
+    <section id="speakers" class="pane" aria-labelledby="speakers-title">
+      <h2 id="speakers-title">Speakers</h2>
+      <div class="hero">
+        <div class="figure" data-tone="live">
+          <p class="big"><span id="voices" class="number">–</span></p>
+          <p class="caption"><span id="voices-label">voices</span><br>heard now</p>
+        </div>
+        <div class="figure">
+          <p class="big"><span id="seats" class="number">–</span><span id="ceiling" class="of">/–</span></p>
+          <p id="seats-caption" class="caption" data-tone="soft"><span id="seats-label">seats</span><br><span id="seats-detail">taken</span></p>
+          <div id="chips" class="chips" aria-hidden="true"></div>
+        </div>
+        <div id="lag-figure" class="figure" data-tone="gold">
+          <p class="big"><span id="lag" class="number">–</span><span id="lag-unit" class="unit"></span></p>
+          <p class="caption">captions trail<br>speech by</p>
+          <div class="scale" aria-hidden="true">
+            <span id="lag-fill" class="fill"></span>
+            <span id="lag-admit" class="mark admit"></span>
+            <span id="lag-shed" class="mark shed"></span>
+          </div>
+        </div>
+      </div>
+
+      <div id="lanes" class="lanes">
+        <p class="placeholder">Speaker lanes</p>
+      </div>
+
+      <p id="decision" class="decision" data-tone="idle"><span id="decision-time" class="time"></span> <span id="decision-verb" class="verb"></span> <span id="decision-text" class="text">No admission decision yet</span></p>
+
+      <dl class="budgets">
+        <div class="budget memory">
+          <dt>Memory</dt>
+          <dd>
+            <span class="bar" aria-hidden="true"><span id="memory-fill" class="fill"></span><span id="memory-mark" class="mark"></span></span>
+            <span id="memory" class="value">–</span>
+          </dd>
+        </div>
+        <div class="budget"><dt>CPU stall</dt><dd id="stall" class="value">–</dd></div>
+        <div class="budget"><dt>Engine busy</dt><dd id="duty" class="value">–</dd></div>
+        <div class="budget"><dt>Reply p95</dt><dd id="p95" class="value">–</dd></div>
+        <div class="budget"><dt>Sampling</dt><dd id="sampler" class="value">–</dd></div>
+      </dl>
+    </section>
+
+    <section id="pipeline" class="pane" aria-labelledby="pipeline-title">
+      <h2 id="pipeline-title">How a caption is made</h2>
+      <ol id="stages" class="stages"></ol>
+      <p class="admission-note"><span class="diamond" aria-hidden="true">◆</span> Admission decides per speaker, the moment they start talking. A seat, once given, is kept.</p>
+      <div id="panels" class="panels"></div>
+      <p id="observe-note" class="note" hidden></p>
+    </section>
+
+    <p id="video" class="video" data-tone="idle"></p>
+  </main>
+
+  <footer class="page-footer">
+    <p class="wrap">Cassini Live <span id="version">{{VERSION}}</span> ·
+      <a href="../settings/index.html">Settings</a> ·
+      <a href="https://github.com/codemyriad/cassini-live/blob/main/docs/diagnostics-page.md" target="_blank" rel="noopener noreferrer">Documentation<span class="visually-hidden"> (opens in a new tab)</span></a></p>
+  </footer>
+</body>
+</html>

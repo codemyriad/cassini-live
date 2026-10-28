@@ -1,24 +1,44 @@
-"""The admin-only live diagnostics page's feed, served through the AppAPI proxy.
+"""The admin-only live diagnostics page and its feed, served through the AppAPI proxy.
 
 AppAPI and HaRP enforce the ADMIN access level of the routes in appinfo/info.xml; every
-route here is a read-only GET. Polls keep the feed sampling (diagnostic_feed). Names of the
-owner room's speakers go only to an administrator who is a participant of that room, checked
-with Talk as them on each poll (answers cached briefly); everyone else reads generic labels. Lanes
-carry the sampler's anonymous numbers, never a room token, session or participant id.
+route here is a read-only GET. The page is a static bundle built from ui/ into
+cassini_live/static/diagnostics/, served with the settings page's CSP and headers. Polls
+keep the feed sampling (diagnostic_feed). Names of the owner room's speakers go only to an
+administrator who is a participant of that room, checked with Talk as them on each poll
+(answers cached briefly); everyone else reads generic labels. Lanes carry the sampler's
+anonymous numbers, never a room token, session or participant id.
 """
 
 import copy
 import math
 from collections.abc import Callable
+from pathlib import Path
 
 from fastapi import APIRouter, Request
+from fastapi.responses import Response
 
 from . import __version__
 from .diagnostic_feed import PRESENCE_S, DiagnosticFeed
 from .diagnostic_history import COLUMNS
 from .diagnostics import OTHER_CALL_SPEAKER, SOME_SPEAKER, UNNAMED
 from .membership import PolledMembership, RoomMembership
-from .settings_page import Refused, error_response, guard, json_response
+from .settings_page import (
+    CACHED,
+    NO_STORE,
+    Refused,
+    error_response,
+    guard,
+    json_response,
+    load_assets,
+    secure,
+)
+
+STATIC = Path(__file__).parent / "static" / "diagnostics"
+ASSETS = {
+    "index.html": "text/html; charset=utf-8",
+    "app.js": "text/javascript; charset=utf-8",
+    "app.css": "text/css; charset=utf-8",
+}
 
 
 def _since(value: str | None) -> float:
@@ -50,8 +70,15 @@ def create_router(
     feed: DiagnosticFeed, membership: RoomMembership, video_status: Callable[[], dict]
 ) -> APIRouter:
     router = APIRouter()
+    assets = load_assets(STATIC, ASSETS)
     # The usual viewer is an administrator outside the call, polling once a second.
     polled = PolledMembership(membership)
+
+    def page_file(name: str) -> Response:
+        if name not in assets:
+            raise Refused(404, "not_found", "Not found")
+        response = Response(assets[name], media_type=ASSETS[name])
+        return secure(response, NO_STORE if name == "index.html" else CACHED)
 
     @router.get("/diagnostics/api/feed")
     @guard
@@ -72,6 +99,16 @@ def create_router(
             **(body if member else redact(body)),
             "video": video_status(),
         })
+
+    @router.get("/diagnostics/")
+    @guard
+    async def page(request: Request):
+        return page_file("index.html")
+
+    @router.get("/diagnostics/{name}")
+    @guard
+    async def page_asset(request: Request, name: str):
+        return page_file(name)
 
     known = list(router.routes)
 
