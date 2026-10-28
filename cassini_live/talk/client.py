@@ -698,7 +698,8 @@ class SpreedClient:
 			self.refresh_names()
 
 	def show_names(self, shown: bool):
-		"""Names are read and kept only while this room's diagnostic video runs."""
+		"""Names are read and kept only while this room's diagnostic video runs or a member
+		watches the diagnostics page (diagnostics.NameHolds)."""
 		self.names_shown = shown
 		if shown:
 			self.refresh_names()
