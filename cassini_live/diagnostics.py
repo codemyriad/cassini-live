@@ -33,9 +33,9 @@ SKIPS = {
 NAME_CHARS, NAME_BYTES = 40, 240
 # Lanes show who spoke recently, not the first open microphones: a 20-person call has
 # 20 open tracks and only a few speakers. A track qualifies for LANE_WINDOW_S after its
-# last voice, the two minutes of history the video draws (diagnostic_video.COLUMNS one-
-# second columns), so a lane never shows an empty history. At most MAX_LANES lanes: ten
-# stay 13 px tall in the video's lane band, enough for their name and tag text.
+# last voice, the two minutes of history the video draws (diagnostic_history.COLUMNS
+# one-second columns), so a lane never shows an empty history. At most MAX_LANES lanes:
+# ten stay 13 px tall in the video's lane band, enough for their name and tag text.
 LANE_WINDOW_S, MAX_LANES = 120, 10
 
 
@@ -58,18 +58,12 @@ def process_usage(pid):
     return cpu, rss
 
 
-class DiagnosticVideo:
-    """One publisher per installation; fail closed, without restart loops."""
+class DiagnosticSampler:
+    """One-second samples of the caption service's state. Each instance keeps its own
+    continuity: lane numbers, recent voices and the CPU counters its deltas start from."""
 
     def __init__(self, service):
         self.service = service
-        self.enabled = os.environ.get("CASSINI_LIVE_DEBUG_VIDEO", "").lower() in ("1", "true")
-        self.task = None
-        self.owner = None
-        self.state = "idle" if self.enabled else "disabled"
-        self.metrics = {}
-        self._stop_task = None
-        self._stop_reason = "stopped"
         # Anonymous, process-local lane numbers; never session or participant ids.
         self._lanes = weakref.WeakKeyDictionary()
         self._next_lane = 0
@@ -77,6 +71,9 @@ class DiagnosticVideo:
         # Per transcriber: [first voice in the current window, last voice, the gate's
         # emitted-chunk count at the previous sample]. Monotonic seconds; parent only.
         self._voices = weakref.WeakKeyDictionary()
+        # Host and caption CPU counters at the previous sample (or prime) and its time.
+        self._previous_time = self._previous_host = self._previous_caption = None
+        self._weight = None
 
     def _lane(self, transcriber):
         if transcriber not in self._lanes:
@@ -250,6 +247,135 @@ class DiagnosticVideo:
         except (OSError, ValueError):
             return None
 
+    def prime(self, now=None):
+        """The CPU counters the next sample's deltas start from, and the cgroup's CPU
+        weight. Call at the start of every run of samples."""
+        self._previous_time = time.monotonic() if now is None else now
+        self._previous_host = self._host_cpu()
+        self._previous_caption = self._caption_cpu()
+        self._weight = self._cpu_weight()
+
+    def sample(self, owner, data, now, started=None):
+        """One sample, without the video child's own figures; speaker names only for
+        `owner`'s room. `data` is the caller's resources snapshot for this tick, `now` its
+        monotonic time and `started` the thread time the tick began, so samplerMs also
+        covers the caller's own reads. CPU figures are deltas since the previous sample or
+        prime()."""
+        started = time.thread_time() if started is None else started
+        elapsed = max(0.01, now - self._previous_time)
+        previous_host, previous_caption = self._previous_host, self._previous_caption
+        host = self._host_cpu()
+        host_pct = 100 * (1 - (host[1] - previous_host[1]) / max(1, host[0] - previous_host[0]))
+        caption = self._caption_cpu()
+        caption_pct = 100 * max(0, caption - previous_caption) / elapsed
+        safety = self.service.admission
+        pool = safety.pool
+        busy = pool.busy
+        remaining = max(0, pool.admission_limit - busy)
+        clients = list(self.service.clients.values())
+        speakers, labels = self._speakers(owner, clients)
+        transcribers = [t for _, _, t in speakers]
+        lanes, silent, hidden = self._lane_samples(pool, owner, speakers, labels, now)
+        governor = getattr(safety, "governor", None)
+        admission = governor.status() if governor is not None else {}
+        if governor is not None:
+            thresholds = governor.thresholds
+            admission.update(
+                lagAdmit=thresholds.lag_admit,
+                lagShed=thresholds.lag_shed,
+                cpuStallAdmit=thresholds.cpu_stall_admit,
+                holdOff=thresholds.hold_off,
+            )
+        lag_meter = getattr(pool, "lag", None)
+        ends = getattr(pool, "stream_ends", {})
+        sample = {
+            "engine": getattr(pool, "engine_id", "whistle"),
+            "state": safety.state,
+            "rooms": len(clients),
+            "tracks": len(safety.tracks),
+            "maxTracks": safety.max_tracks,
+            "busy": busy,
+            "capacity": pool.admission_limit,
+            "spare": remaining,
+            "vadActive": sum(1 for t in transcribers if getattr(t.gate, "active", False)),
+            "vadPeak": round(
+                max(
+                    (getattr(t.gate, "last_probability", 0.0) for t in transcribers),
+                    default=0.0,
+                ),
+                2,
+            ),
+            "vadChunks": sum(getattr(t.gate, "chunks_emitted", 0) for t in transcribers),
+            "queuedChunks": sum(t.queue.qsize() for t in transcribers if hasattr(t, "queue")),
+            "sttChunks": getattr(pool, "chunks_processed", 0),
+            "sttAudioSec": round(getattr(pool, "audio_seconds", 0.0), 1),
+            "leasedSec": round(
+                sum(getattr(t, "lease_samples", 0) for t in transcribers) / 16000, 1
+            ),
+            "yields": getattr(pool, "scheduling_yields", 0),
+            "endSilence": ends.get("silence", 0),
+            "endDuration": ends.get("durationPause", 0) + ends.get("durationLimit", 0),
+            "endSched": ends.get("schedulingPause", 0) + ends.get("schedulingLimit", 0),
+            "endFlush": ends.get("flush", 0),
+            "targets": sum(len(getattr(c, "targets", {})) for c in clients),
+            "previewing": sum(1 for t in transcribers if getattr(t, "pending", "")),
+            "finals": getattr(pool, "finals_emitted", 0),
+            "partials": getattr(pool, "partials_emitted", 0),
+            "hostCpu": round(max(0, min(100, host_pct)), 1),
+            "hostAvailableGiB": round(data["hostAvailableBytes"] / 1024**3, 1),
+            "hostGiB": round(data["hostMemoryBytes"] / 1024**3, 1),
+            "captionCpu": round(caption_pct, 1),
+            "quota": data["cpuQuotaCpus"],
+            "captionMiB": round(data["memoryFraction"] * data["memoryLimitBytes"] / 1024**2),
+            "limitMiB": round(data["memoryLimitBytes"] / 1024**2),
+            "drops": pool.dropped_chunks,
+            "waiting": pool.waiting,
+            "lanes": lanes,
+            "silentMics": silent,
+            "hiddenSpeakers": hidden,
+            "admission": admission,
+            "decision": self._decision(governor, owner, labels) if governor is not None else None,
+            "p95": lag_meter.p95() if lag_meter is not None else None,
+            "threads": getattr(pool, "threads", 1),
+            # 0 when no microphone is open: the view then names no maximum.
+            "segmentSeconds": max(
+                (getattr(t, "SEGMENT_SECONDS", 0) for t in transcribers), default=0
+            ),
+            "cpuWeight": self._weight,
+            "oomKills": data.get("oomKills", 0),
+            "engineRestarts": getattr(pool, "restarts", getattr(pool, "failures", 0)),
+            "samplerMs": round((time.thread_time() - started) * 1000, 2),
+        }
+        self._previous_time, self._previous_host, self._previous_caption = now, host, caption
+        return sample
+
+    @staticmethod
+    def _host_cpu():
+        values = [int(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:9]]
+        return sum(values), values[3] + values[4]
+
+    @staticmethod
+    def _caption_cpu():
+        data = dict(
+            line.split() for line in Path("/sys/fs/cgroup/cpu.stat").read_text().splitlines()
+        )
+        return int(data["usage_usec"]) / 1e6
+
+
+class DiagnosticVideo:
+    """One publisher per installation; fail closed, without restart loops."""
+
+    def __init__(self, service):
+        self.service = service
+        self.enabled = os.environ.get("CASSINI_LIVE_DEBUG_VIDEO", "").lower() in ("1", "true")
+        self.task = None
+        self.owner = None
+        self.state = "idle" if self.enabled else "disabled"
+        self.metrics = {}
+        self._stop_task = None
+        self._stop_reason = "stopped"
+        self.sampler = DiagnosticSampler(service)
+
     def start(self, token):
         if not self.enabled or self.task is not None:
             return
@@ -321,11 +447,9 @@ class DiagnosticVideo:
             booted = time.monotonic()
             previous_cpu, _ = process_usage(process.pid)
             previous_time = time.monotonic()
-            previous_host = self._host_cpu()
-            previous_caption = self._caption_cpu()
+            self.sampler.prime(previous_time)
             high = 0
             skipped = set()
-            weight = self._cpu_weight()
             # The owning room reads its participants' names only while this video runs.
             if hasattr(owner, "show_names"):
                 owner.show_names(True)
@@ -343,103 +467,16 @@ class DiagnosticVideo:
                 elapsed = max(0.01, now - previous_time)
                 cpu, rss = process_usage(process.pid)
                 used = max(0, (cpu - previous_cpu) / elapsed)
-                host = self._host_cpu()
-                host_pct = 100 * (
-                    1 - (host[1] - previous_host[1]) / max(1, host[0] - previous_host[0])
-                )
-                caption = self._caption_cpu()
-                caption_pct = 100 * max(0, caption - previous_caption) / elapsed
                 # Give module imports a short startup allowance. Thereafter the
                 # entire child (rendering, codec, WebRTC) must fit 0.15 CPU.
                 high = high + 1 if used > 0.15 and now - booted > 10 else 0
                 if rss > 128 * 1024**2 or (high >= HIGH_SAMPLES and now - booted > 10):
                     self.state = "paused: diagnostic budget exceeded"
                     return
-                pool = safety.pool
-                busy = pool.busy
-                remaining = max(0, pool.admission_limit - busy)
-                clients = list(self.service.clients.values())
-                speakers, labels = self._speakers(owner, clients)
-                transcribers = [t for _, _, t in speakers]
-                lanes, silent, hidden = self._lane_samples(pool, owner, speakers, labels, now)
-                governor = getattr(safety, "governor", None)
-                admission = governor.status() if governor is not None else {}
-                if governor is not None:
-                    thresholds = governor.thresholds
-                    admission.update(
-                        lagAdmit=thresholds.lag_admit,
-                        lagShed=thresholds.lag_shed,
-                        cpuStallAdmit=thresholds.cpu_stall_admit,
-                        holdOff=thresholds.hold_off,
-                    )
-                lag_meter = getattr(pool, "lag", None)
-                ends = getattr(pool, "stream_ends", {})
-                sample = {
-                    "engine": getattr(pool, "engine_id", "whistle"),
-                    "state": safety.state,
-                    "rooms": len(clients),
-                    "tracks": len(safety.tracks),
-                    "maxTracks": safety.max_tracks,
-                    "busy": busy,
-                    "capacity": pool.admission_limit,
-                    "spare": remaining,
-                    "vadActive": sum(1 for t in transcribers if getattr(t.gate, "active", False)),
-                    "vadPeak": round(
-                        max(
-                            (getattr(t.gate, "last_probability", 0.0) for t in transcribers),
-                            default=0.0,
-                        ),
-                        2,
-                    ),
-                    "vadChunks": sum(getattr(t.gate, "chunks_emitted", 0) for t in transcribers),
-                    "queuedChunks": sum(
-                        t.queue.qsize() for t in transcribers if hasattr(t, "queue")
-                    ),
-                    "sttChunks": getattr(pool, "chunks_processed", 0),
-                    "sttAudioSec": round(getattr(pool, "audio_seconds", 0.0), 1),
-                    "leasedSec": round(
-                        sum(getattr(t, "lease_samples", 0) for t in transcribers) / 16000, 1
-                    ),
-                    "yields": getattr(pool, "scheduling_yields", 0),
-                    "endSilence": ends.get("silence", 0),
-                    "endDuration": ends.get("durationPause", 0) + ends.get("durationLimit", 0),
-                    "endSched": ends.get("schedulingPause", 0) + ends.get("schedulingLimit", 0),
-                    "endFlush": ends.get("flush", 0),
-                    "targets": sum(len(getattr(c, "targets", {})) for c in clients),
-                    "previewing": sum(1 for t in transcribers if getattr(t, "pending", "")),
-                    "finals": getattr(pool, "finals_emitted", 0),
-                    "partials": getattr(pool, "partials_emitted", 0),
-                    "hostCpu": round(max(0, min(100, host_pct)), 1),
-                    "hostAvailableGiB": round(data["hostAvailableBytes"] / 1024**3, 1),
-                    "hostGiB": round(data["hostMemoryBytes"] / 1024**3, 1),
-                    "captionCpu": round(caption_pct, 1),
-                    "quota": data["cpuQuotaCpus"],
-                    "captionMiB": round(
-                        data["memoryFraction"] * data["memoryLimitBytes"] / 1024**2
-                    ),
-                    "limitMiB": round(data["memoryLimitBytes"] / 1024**2),
-                    "drops": pool.dropped_chunks,
-                    "waiting": pool.waiting,
-                    "diagnosticCpu": round(used * 100, 2),
-                    "diagnosticMiB": round(rss / 1024**2, 1),
-                    "lanes": lanes,
-                    "silentMics": silent,
-                    "hiddenSpeakers": hidden,
-                    "admission": admission,
-                    "decision": (
-                        self._decision(governor, owner, labels) if governor is not None else None
-                    ),
-                    "p95": lag_meter.p95() if lag_meter is not None else None,
-                    "threads": getattr(pool, "threads", 1),
-                    # 0 when no microphone is open: the view then names no maximum.
-                    "segmentSeconds": max(
-                        (getattr(t, "SEGMENT_SECONDS", 0) for t in transcribers), default=0
-                    ),
-                    "cpuWeight": weight,
-                    "oomKills": data.get("oomKills", 0),
-                    "engineRestarts": getattr(pool, "restarts", getattr(pool, "failures", 0)),
-                    "samplerMs": round((time.thread_time() - started) * 1000, 2),
-                }
+                sample = self.sampler.sample(owner, data, now, started=started)
+                sample.update(
+                    diagnosticCpu=round(used * 100, 2), diagnosticMiB=round(rss / 1024**2, 1)
+                )
                 process.stdin.write((json.dumps(sample) + "\n").encode())
                 async with asyncio.timeout(8):
                     await process.stdin.drain()
@@ -463,7 +500,6 @@ class DiagnosticVideo:
                 ):
                     return
                 previous_cpu, previous_time = cpu, now
-                previous_host, previous_caption = host, caption
                 await asyncio.sleep(SAMPLE_S)
         except asyncio.CancelledError:
             self.state = self._stop_reason
@@ -486,15 +522,3 @@ class DiagnosticVideo:
                     with suppress(ProcessLookupError):
                         process.kill()
                     await process.wait()
-
-    @staticmethod
-    def _host_cpu():
-        values = [int(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:9]]
-        return sum(values), values[3] + values[4]
-
-    @staticmethod
-    def _caption_cpu():
-        data = dict(
-            line.split() for line in Path("/sys/fs/cgroup/cpu.stat").read_text().splitlines()
-        )
-        return int(data["usage_usec"]) / 1e6
