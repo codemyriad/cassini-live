@@ -43,7 +43,10 @@ def main():
             if pattern.startswith("^/?panel/"):
                 assert verb == "GET", "the panel serves read-only static content"
         else:
-            assert level == "ADMIN" and pattern.startswith("^/?settings/"), pattern
+            assert level == "ADMIN", pattern
+            assert pattern.startswith(("^/?settings/", "^/?diagnostics/")), pattern
+            if pattern.startswith("^/?diagnostics/"):
+                assert verb == "GET", "the diagnostics page and its feed are read-only"
     assert [p for p, _, level in table if level == "USER"] == user_patterns
 
     # AppAPI matches "/" + path (and the bare path, deprecated); HaRP matches "/" + path.
@@ -71,9 +74,11 @@ def main():
         "settings/api/capacity": "POST",
         "settings/api/models/nemotron-en": "DELETE",
         "settings/licenses/NVIDIA-OML.txt": "GET",
+        "diagnostics/api/feed": "GET",
     }
     for path, verb in public.items():
         assert matches(path, verb), f"{verb} {path} is not routed"
+    assert not matches("diagnostics/api/feed", "POST"), "POST diagnostics/api/feed is routed"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 
 

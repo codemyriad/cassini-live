@@ -9,6 +9,7 @@ import time
 import weakref
 from contextlib import suppress
 from pathlib import Path
+from types import SimpleNamespace
 
 from .resources import snapshot
 
@@ -37,6 +38,12 @@ NAME_CHARS, NAME_BYTES = 40, 240
 # one-second columns), so a lane never shows an empty history. At most MAX_LANES lanes:
 # ten stay 13 px tall in the video's lane band, enough for their name and tag text.
 LANE_WINDOW_S, MAX_LANES = 120, 10
+# The labels that stand in for a name: an owning-room speaker whose name is unknown, a
+# decision about a speaker who has gone, and one about a speaker in another room.
+UNNAMED, SOME_SPEAKER, OTHER_CALL_SPEAKER = "Participant", "a speaker", "someone in another call"
+# Before the caption service is wired to its supervisor and engine: nothing admitted.
+IDLE_POOL = SimpleNamespace(busy=0, admission_limit=0, waiting=0, workers=(), dropped_chunks=0)
+NO_ADMISSION = SimpleNamespace(state="blocked", pool=None, governor=None, tracks=(), max_tracks=0)
 
 
 def clip_name(name):
@@ -56,6 +63,38 @@ def process_usage(pid):
     cpu = (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
     rss = int(fields[21]) * os.sysconf("SC_PAGE_SIZE")
     return cpu, rss
+
+
+def _per(value, unit, digits=None):
+    # Readings the container does not expose (no memory limit, no /proc/meminfo) stay None.
+    return None if value is None else round(value / unit, digits)
+
+
+class NameHolds:
+    """Who wants each Talk client's participant names. The client reads them while anyone
+    holds them: show_names(True) on the first hold, show_names(False) on the last release."""
+
+    def __init__(self):
+        # id(client) -> (client, ids of its holders). Keeping the client keeps its id unique.
+        self._held = {}
+
+    def hold(self, client, who):
+        if not hasattr(client, "show_names"):
+            return
+        _, holders = self._held.setdefault(id(client), (client, set()))
+        first = not holders
+        holders.add(id(who))
+        if first:
+            client.show_names(True)
+
+    def release(self, client, who):
+        entry = self._held.get(id(client))
+        if entry is None or id(who) not in entry[1]:
+            return
+        entry[1].discard(id(who))
+        if not entry[1]:
+            del self._held[id(client)]
+            client.show_names(False)
 
 
 class DiagnosticSampler:
@@ -132,10 +171,10 @@ class DiagnosticSampler:
     def _who(self, ref, owner, labels):
         transcriber = ref() if ref is not None else None
         if transcriber is None:
-            return "a speaker"
+            return SOME_SPEAKER
         if transcriber in labels:
             return labels[transcriber]
-        return "someone in another call"
+        return OTHER_CALL_SPEAKER
 
     def _decision(self, governor, owner, labels):
         """The governor's latest decision or shed, in words, naming only this room."""
@@ -188,7 +227,7 @@ class DiagnosticSampler:
             (c, sid, t) for c in clients for sid, t in list(getattr(c, "transcribers", {}).items())
         ]
         name = getattr(owner, "speaker_name", lambda _sid: None)
-        labels = {t: clip_name(name(sid) or "Participant") for c, sid, t in speakers if c is owner}
+        labels = {t: clip_name(name(sid) or UNNAMED) for c, sid, t in speakers if c is owner}
         return speakers, labels
 
     @staticmethod
@@ -255,6 +294,11 @@ class DiagnosticSampler:
         self._previous_caption = self._caption_cpu()
         self._weight = self._cpu_weight()
 
+    def forget_voices(self):
+        """Forget who spoke, for a caller that pauses sampling: each microphone's next
+        sample is a first sighting again, a baseline only. Lane numbers stay."""
+        self._voices.clear()
+
     def sample(self, owner, data, now, started=None):
         """One sample, without the video child's own figures; speaker names only for
         `owner`'s room. `data` is the caller's resources snapshot for this tick, `now` its
@@ -268,8 +312,8 @@ class DiagnosticSampler:
         host_pct = 100 * (1 - (host[1] - previous_host[1]) / max(1, host[0] - previous_host[0]))
         caption = self._caption_cpu()
         caption_pct = 100 * max(0, caption - previous_caption) / elapsed
-        safety = self.service.admission
-        pool = safety.pool
+        safety = getattr(self.service, "admission", None) or NO_ADMISSION
+        pool = getattr(safety, "pool", None) or IDLE_POOL
         busy = pool.busy
         remaining = max(0, pool.admission_limit - busy)
         clients = list(self.service.clients.values())
@@ -288,6 +332,7 @@ class DiagnosticSampler:
             )
         lag_meter = getattr(pool, "lag", None)
         ends = getattr(pool, "stream_ends", {})
+        limit = data["memoryLimitBytes"]
         sample = {
             "engine": getattr(pool, "engine_id", "whistle"),
             "state": safety.state,
@@ -322,12 +367,12 @@ class DiagnosticSampler:
             "finals": getattr(pool, "finals_emitted", 0),
             "partials": getattr(pool, "partials_emitted", 0),
             "hostCpu": round(max(0, min(100, host_pct)), 1),
-            "hostAvailableGiB": round(data["hostAvailableBytes"] / 1024**3, 1),
-            "hostGiB": round(data["hostMemoryBytes"] / 1024**3, 1),
+            "hostAvailableGiB": _per(data["hostAvailableBytes"], 1024**3, 1),
+            "hostGiB": _per(data["hostMemoryBytes"], 1024**3, 1),
             "captionCpu": round(caption_pct, 1),
             "quota": data["cpuQuotaCpus"],
-            "captionMiB": round(data["memoryFraction"] * data["memoryLimitBytes"] / 1024**2),
-            "limitMiB": round(data["memoryLimitBytes"] / 1024**2),
+            "captionMiB": _per(None if limit is None else data["memoryFraction"] * limit, 1024**2),
+            "limitMiB": _per(limit, 1024**2),
             "drops": pool.dropped_chunks,
             "waiting": pool.waiting,
             "lanes": lanes,
@@ -365,8 +410,9 @@ class DiagnosticSampler:
 class DiagnosticVideo:
     """One publisher per installation; fail closed, without restart loops."""
 
-    def __init__(self, service):
+    def __init__(self, service, names=None):
         self.service = service
+        self.names = names or NameHolds()
         self.enabled = os.environ.get("CASSINI_LIVE_DEBUG_VIDEO", "").lower() in ("1", "true")
         self.task = None
         self.owner = None
@@ -450,9 +496,9 @@ class DiagnosticVideo:
             self.sampler.prime(previous_time)
             high = 0
             skipped = set()
-            # The owning room reads its participants' names only while this video runs.
-            if hasattr(owner, "show_names"):
-                owner.show_names(True)
+            # The owning room reads its participants' names while this video (or a member
+            # watching the diagnostics page) holds them.
+            self.names.hold(owner, self)
             while True:
                 if self.service.clients.get(token) is not owner or owner.defunct.is_set():
                     self.state = "stopped: caption room closed"
@@ -508,8 +554,8 @@ class DiagnosticVideo:
             self.state = "unavailable: " + type(error).__name__
         finally:
             LOGGER.info("Diagnostic video ended (%s)", self.state)
-            if owner is not None and hasattr(owner, "show_names"):
-                owner.show_names(False)
+            if owner is not None:
+                self.names.release(owner, self)
             if process and process.returncode is None:
                 if process.stdin and hasattr(process.stdin, "close"):
                     with suppress(Exception):
