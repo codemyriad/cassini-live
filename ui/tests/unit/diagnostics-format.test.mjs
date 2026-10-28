@@ -9,6 +9,7 @@ import {
   freshness,
   g,
   hero,
+  notServed,
   observeOnly,
   percent,
   pipelineStages,
@@ -110,7 +111,8 @@ function lanesView(name, { sample: data, columns: history }) {
     model.lag.value,
     ...(model.lag.unit ? [model.lag.unit] : []),
     ...model.lag.label,
-    ...(decision ? [decision.time, decision.verb, decision.text] : ['No admission decision yet']),
+    // The video's header clock says UTC; the page has no clock and puts it on the time.
+    ...(decision ? [decision.time.replace(/ UTC$/, ''), decision.verb, decision.text] : ['No admission decision yet']),
     'Memory',
     budgets.memory.text,
     'CPU stall',
@@ -341,7 +343,7 @@ test('engine busy warns from 90 %; the other budgets read as numbers or dashes',
 
 test('the decision line reads the time in UTC, the verb and who; null without one', () => {
   assert.deepEqual(decisionLine(CASES.busy.sample), {
-    time: '18:34:56',
+    time: '18:34:56 UTC',
     verb: 'hold Ana Ferreira',
     text: 'lag 1.3 s ≥ admit 1.0 · reopens under 0.5 s for 5 s',
     tone: 'warn',
@@ -386,6 +388,15 @@ test('the page is stale five seconds after its last answer', () => {
   assert.equal(freshness(1000, 181000).text, 'Stale · last update 3 min ago')
   assert.deepEqual(unreachable(1000, 13000), { stale: true, text: 'Cassini Live unreachable · last update 10 s ago · retrying', tone: 'bad' })
   assert.equal(unreachable(null, 13000).text, 'Cassini Live unreachable · retrying')
+})
+
+test("Nextcloud's own 404 names the causes it cannot tell apart, and the page keeps retrying", () => {
+  assert.deepEqual(notServed(1000, 73000), {
+    stale: true,
+    text: 'Nextcloud refused the feed (signed out, not an administrator, or Cassini Live disabled) · last update 1 min ago · retrying',
+    tone: 'bad',
+  })
+  assert.equal(notServed(null, 13000).text, 'Nextcloud refused the feed (signed out, not an administrator, or Cassini Live disabled) · retrying')
 })
 
 test('a failed sample names its exception type only', () => {

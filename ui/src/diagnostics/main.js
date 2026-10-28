@@ -14,6 +14,7 @@ import {
   footer,
   freshness,
   hero,
+  notServed,
   observeOnly,
   pipelineStages,
   protectionPanels,
@@ -41,6 +42,8 @@ const state = {
   instance: null,
   lastOkAt: null,
   failures: 0,
+  // The last failure was Nextcloud's own 404 page (request), not the app's answer.
+  notServed: false,
   refused: false,
   inFlight: false,
   nextPollAt: 0,
@@ -75,13 +78,19 @@ async function request(since) {
   }
   if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) options.signal = AbortSignal.timeout(TIMEOUT_MS)
   const response = await fetch(new URL(feedPath(since), document.baseURI), options)
-  // Nextcloud sends a logged-out visitor to its login page; AppAPI refuses non-administrators.
+  const json = (response.headers.get('content-type') || '').includes('application/json')
+  // A redirect to a login page, or a 401 or 403 (the app's own administrator check):
+  // polling stops.
   if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403) {
     return { refused: true }
   }
+  // AppAPI's proxy answers a signed-out user and a non-administrator (measured) and a
+  // disabled ExApp (ExAppProxyController) with Nextcloud's HTML 404 page, never 401 or 403;
+  // the app's own 404 is JSON. Access can come back without a reload, so polling goes on.
+  if (response.status === 404 && !json) return { failed: true, notServed: true }
   if (!response.ok) return { failed: true }
   // A 2xx answer that is not the feed's JSON is Nextcloud's login or error page.
-  if (!(response.headers.get('content-type') || '').includes('application/json')) return { refused: true }
+  if (!json) return { refused: true }
   const body = await response.json()
   return body && typeof body === 'object' && typeof body.now === 'number' ? { body } : { failed: true }
 }
@@ -93,7 +102,7 @@ function poll() {
     .then(
       (result) => {
         if (result.refused) refuse()
-        else if (result.failed) fail()
+        else if (result.failed) fail(Boolean(result.notServed))
         else accept(result.body)
       },
       () => fail(),
@@ -126,8 +135,9 @@ function accept(body) {
   render()
 }
 
-function fail() {
+function fail(byProxy = false) {
   state.failures += 1
+  state.notServed = byProxy
   state.nextPollAt = Date.now() + backoffMs(state.failures)
   renderConnection()
 }
@@ -182,7 +192,7 @@ function renderConnection() {
   const now = Date.now()
   let line
   if (state.refused) line = { stale: true, text: REFUSED, tone: 'bad' }
-  else if (state.failures) line = unreachable(state.lastOkAt, now)
+  else if (state.failures) line = (state.notServed ? notServed : unreachable)(state.lastOkAt, now)
   else line = freshness(state.lastOkAt, now)
   setText($('freshness'), line.text)
   setTone($('freshness'), line.tone)
