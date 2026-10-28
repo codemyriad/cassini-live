@@ -19,7 +19,13 @@ from cassini_live.diagnostic_video import (
     history_column,
     render,
 )
-from cassini_live.diagnostics import NAME_BYTES, DiagnosticVideo, clip_name, process_usage
+from cassini_live.diagnostics import (
+    NAME_BYTES,
+    DiagnosticSampler,
+    DiagnosticVideo,
+    clip_name,
+    process_usage,
+)
 
 
 async def test_sparse_frames_decode_and_have_bounded_cost():
@@ -165,8 +171,8 @@ async def test_pressure_stops_and_reaps_only_optional_child(monkeypatch, pressur
     monkeypatch.setattr(
         module, "snapshot", lambda: {"memoryFraction": pressure, "memoryLimitBytes": 2 * 1024**3}
     )
-    monkeypatch.setattr(manager, "_host_cpu", lambda: (100, 90))
-    monkeypatch.setattr(manager, "_caption_cpu", lambda: 0)
+    monkeypatch.setattr(manager.sampler, "_host_cpu", lambda: (100, 90))
+    monkeypatch.setattr(manager.sampler, "_caption_cpu", lambda: 0)
     await manager._run("room")
     if pressure >= 0.7:
         assert manager.state == "paused: insufficient diagnostic headroom"
@@ -336,19 +342,43 @@ def test_history_columns_carry_lag_sheds_and_pauses():
     assert history_column(data, data, 6.0)["shed"] is False
 
 
+def test_history_columns_load_nothing_heavy():
+    """The caption service can derive columns without loading Pillow or the video renderer,
+    and the budgeted child without the service's web and Nextcloud stack."""
+    import subprocess
+    import sys
+
+    heavy = {
+        "av",
+        "aiortc",
+        "PIL",
+        "fastapi",
+        "nc_py_api",
+        "cassini_live.diagnostics",
+        "cassini_live.diagnostic_video",
+    }
+    code = (
+        f"import sys, cassini_live.diagnostic_history; print(sorted({heavy!r} & set(sys.modules)))"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+
+
 def test_one_frame_and_one_sample_per_second_over_two_minutes():
-    from cassini_live import diagnostic_video, diagnostics
+    from cassini_live import diagnostic_history, diagnostic_video, diagnostics
 
     assert diagnostic_video.FRAME_S == diagnostics.SAMPLE_S == 1.0
     assert diagnostic_video.COLUMNS * diagnostic_video.FRAME_S == 120
     assert diagnostic_video.COLUMNS * diagnostic_video.COLUMN_W == diagnostic_video.LANES_W
+    # A lane lasts as long as the history it is drawn against.
+    assert diagnostic_history.COLUMNS * diagnostics.SAMPLE_S == diagnostics.LANE_WINDOW_S
     # The CPU stop rule still means six seconds above 15 % of one CPU.
     assert diagnostics.HIGH_SAMPLES * diagnostics.SAMPLE_S == 6
 
 
-def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
-    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
-    video = DiagnosticVideo(SimpleNamespace())
+def test_lane_samples_are_anonymous_and_reuse_scribe_numbers():
+    sampler = DiagnosticSampler(SimpleNamespace())
     workers = [object(), object()]
     pool = SimpleNamespace(workers=set(workers), waiting=1)
 
@@ -362,7 +392,7 @@ def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
 
     transcriber = Transcriber
     first, second, waiter = transcriber(workers[0]), transcriber(workers[1]), transcriber(None, 2)
-    samples = [video._lane_sample(pool, t) for t in (first, second, waiter)]
+    samples = [sampler._lane_sample(pool, t) for t in (first, second, waiter)]
     assert [s["scribe"] for s in samples] == [1, 2, 0]
     assert [s["waiting"] for s in samples] == [False, False, True]
     assert set(samples[0]) == {
@@ -378,8 +408,8 @@ def test_lane_samples_are_anonymous_and_reuse_scribe_numbers(monkeypatch):
     assert "secret-session" not in str(samples)
     # A replaced worker frees its number for the next one.
     pool.workers = {workers[1], replacement := object()}
-    assert video._lane_sample(pool, transcriber(replacement))["scribe"] == 1
-    assert video._lane_sample(pool, first)["id"] == samples[0]["id"]
+    assert sampler._lane_sample(pool, transcriber(replacement))["scribe"] == 1
+    assert sampler._lane_sample(pool, first)["id"] == samples[0]["id"]
 
 
 def test_lanes_header_counts_mics_without_a_lane_and_empty_states(monkeypatch):
@@ -508,9 +538,8 @@ def test_observe_only_decisions_are_worded_as_would(monkeypatch):
     assert "Holding new voices" in drawn and "hold Ana" in drawn
 
 
-def test_names_cross_the_pipe_for_the_owning_room_only(monkeypatch):
-    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
-    video = DiagnosticVideo(SimpleNamespace())
+def test_names_cross_the_pipe_for_the_owning_room_only():
+    sampler = DiagnosticSampler(SimpleNamespace())
     pool = SimpleNamespace(workers=set(), waiting=0)
 
     class Transcriber:
@@ -526,19 +555,19 @@ def test_names_cross_the_pipe_for_the_owning_room_only(monkeypatch):
         speaker_name={"s1": "Ana Ferreira"}.get,
     )
     other = SimpleNamespace(transcribers={"s2": theirs}, speaker_name={"s2": "Bob Secret"}.get)
-    speakers, labels = video._speakers(owner, [owner, other])
-    lanes, silent, hidden = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    speakers, labels = sampler._speakers(owner, [owner, other])
+    lanes, silent, hidden = sampler._lane_samples(pool, owner, speakers, labels, time.monotonic())
     assert (silent, hidden) == (0, 0)
     by_id = {lane["id"]: lane for lane in lanes}
-    assert by_id[video._lane(mine)]["name"] == "Ana Ferreira"
-    assert by_id[video._lane(unknown)]["name"] == "Participant"
-    assert by_id[video._lane(theirs)] == {**by_id[video._lane(theirs)], "other": True}
-    assert "name" not in by_id[video._lane(theirs)]
+    assert by_id[sampler._lane(mine)]["name"] == "Ana Ferreira"
+    assert by_id[sampler._lane(unknown)]["name"] == "Participant"
+    assert by_id[sampler._lane(theirs)] == {**by_id[sampler._lane(theirs)], "other": True}
+    assert "name" not in by_id[sampler._lane(theirs)]
     assert "Bob Secret" not in str(lanes) and "Bob Secret" not in str(labels)
     # With more than ten speakers, the owning room's lanes are kept.
     crowd = [SimpleNamespace(transcribers={f"x{i}": Transcriber()}) for i in range(12)]
-    speakers, labels = video._speakers(owner, [*crowd, owner])
-    lanes, silent, hidden = video._lane_samples(pool, owner, speakers, labels, time.monotonic())
+    speakers, labels = sampler._speakers(owner, [*crowd, owner])
+    lanes, silent, hidden = sampler._lane_samples(pool, owner, speakers, labels, time.monotonic())
     assert len(lanes) == 10 and sum("name" in lane for lane in lanes) == 2
     assert (silent, hidden) == (0, 4)
     assert [lane.get("name") for lane in lanes[:2]] == ["Ana Ferreira", "Participant"]
@@ -557,7 +586,7 @@ class Mic:
         self.gate.chunks_emitted += 1
 
 
-def crowd_room(video, n):
+def crowd_room(sampler, n):
     mics = [Mic() for _ in range(n)]
     owner = SimpleNamespace(
         transcribers={f"s{i}": mic for i, mic in enumerate(mics)},
@@ -566,17 +595,16 @@ def crowd_room(video, n):
     pool = SimpleNamespace(workers=set(), waiting=0)
 
     def sample(now):
-        speakers, labels = video._speakers(owner, [owner])
-        lanes, silent, hidden = video._lane_samples(pool, owner, speakers, labels, now)
+        speakers, labels = sampler._speakers(owner, [owner])
+        lanes, silent, hidden = sampler._lane_samples(pool, owner, speakers, labels, now)
         return [lane["name"] for lane in lanes], silent, hidden
 
     return mics, sample
 
 
-def test_lanes_show_the_most_recent_speakers_in_a_stable_order(monkeypatch):
-    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
-    video = DiagnosticVideo(SimpleNamespace())
-    mics, sample = crowd_room(video, 25)
+def test_lanes_show_the_most_recent_speakers_in_a_stable_order():
+    sampler = DiagnosticSampler(SimpleNamespace())
+    mics, sample = crowd_room(sampler, 25)
     # A first sighting is only a baseline: nobody has a lane yet.
     assert sample(1000.0) == ([], 25, 0)
     for i in range(12):  # twelve people speak in turn, one per second
@@ -597,10 +625,9 @@ def test_lanes_show_the_most_recent_speakers_in_a_stable_order(monkeypatch):
     assert (silent, hidden) == (12, 3)
 
 
-def test_a_speaker_silent_for_two_minutes_loses_the_lane(monkeypatch):
-    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
-    video = DiagnosticVideo(SimpleNamespace())
-    mics, sample = crowd_room(video, 3)
+def test_a_speaker_silent_for_two_minutes_loses_the_lane():
+    sampler = DiagnosticSampler(SimpleNamespace())
+    mics, sample = crowd_room(sampler, 3)
     sample(0.0)
     mics[0].speak()
     mics[1].speak()
@@ -617,10 +644,9 @@ def test_a_speaker_silent_for_two_minutes_loses_the_lane(monkeypatch):
     assert sample(182.0) == (["Person 2", "Person 0"], 1, 0)
 
 
-def test_engaged_speakers_always_have_a_lane(monkeypatch):
-    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
-    video = DiagnosticVideo(SimpleNamespace())
-    mics, sample = crowd_room(video, 14)
+def test_engaged_speakers_always_have_a_lane():
+    sampler = DiagnosticSampler(SimpleNamespace())
+    mics, sample = crowd_room(sampler, 14)
     sample(0.0)
     for mic in mics[:12]:
         mic.speak()
@@ -637,7 +663,7 @@ def test_engaged_speakers_always_have_a_lane(monkeypatch):
 def test_decision_line_names_only_the_owning_room():
     from cassini_live.load import THRESHOLDS
 
-    video = DiagnosticVideo(SimpleNamespace())
+    sampler = DiagnosticSampler(SimpleNamespace())
 
     class Box:  # SimpleNamespace is not weakly referenceable
         pass
@@ -659,16 +685,16 @@ def test_decision_line_names_only_the_owning_room():
         last_shed_ref=None,
     )
     labels = {mine: "Ana Ferreira"}
-    decision = video._decision(governor, None, labels)
+    decision = sampler._decision(governor, None, labels)
     assert decision["verb"] == "hold" and decision["who"] == "someone in another call"
     assert "lag 1.3 s ≥ admit 1.0" in decision["text"]
     governor.last_decision = {**governor.last_decision, "reason": None, "at": 11.0}
     governor.last_decision_ref = weakref.ref(mine)
-    decision = video._decision(governor, None, labels)
+    decision = sampler._decision(governor, None, labels)
     assert decision["verb"] == "admit" and decision["who"] == "Ana Ferreira"
     assert decision["text"].startswith("seat 2 of 4 · lag 1.3 s < 1.0 · stall 5%")
     governor.last_shed, governor.last_shed_ref = {"at": 12.0, "lag": 2.3}, weakref.ref(mine)
-    decision = video._decision(governor, None, labels)
+    decision = sampler._decision(governor, None, labels)
     assert decision["verb"] == "pause" and "shed 2.0" in decision["text"]
 
 
@@ -952,11 +978,13 @@ async def test_worst_case_sample_line_fits_the_child_limit(monkeypatch, reason):
             "oomKills": big,
         },
     )
-    monkeypatch.setattr(manager, "_host_cpu", lambda: (100, 90))
-    monkeypatch.setattr(manager, "_caption_cpu", lambda: 0)
-    monkeypatch.setattr(manager, "_cpu_weight", lambda: 10000)
+    monkeypatch.setattr(manager.sampler, "_host_cpu", lambda: (100, 90))
+    monkeypatch.setattr(manager.sampler, "_caption_cpu", lambda: 0)
+    monkeypatch.setattr(manager.sampler, "_cpu_weight", lambda: 10000)
     await manager._run("room")
     sample = json.loads(lines[-1])
+    # The widest CPU figures above reached the line.
+    assert (sample["cpuWeight"], sample["hostCpu"], sample["captionCpu"]) == (10000, 100.0, 0.0)
     assert len(sample["lanes"]) == 10 and all(len(lane["name"]) == 20 for lane in sample["lanes"])
     assert sample["decision"]["who"] == "\U0001f600" * 20
     # Measured: 6440 bytes at most (names 11 x 240, every number 24 characters wide);
@@ -964,6 +992,123 @@ async def test_worst_case_sample_line_fits_the_child_limit(monkeypatch, reason):
     assert len(lines[-1]) <= LINE_LIMIT - 1536
     # Names were read only while the video ran.
     assert shown == [True, False]
+    # The sampler's fields plus the child's own two.
+    assert set(sample) == SAMPLE_KEYS | {"diagnosticCpu", "diagnosticMiB"}
+    # One sampler per video: a restart keeps each speaker's lane number, even when the
+    # room now lists its speakers in the opposite order.
+    sampler, numbers = manager.sampler, dict(manager.sampler._lanes)
+    owner.transcribers = dict(reversed(mine.items()))
+    await manager._run("room")
+    assert manager.sampler is sampler
+    assert {transcriber: sampler._lanes.get(transcriber) for transcriber in numbers} == numbers
+
+
+# Every field a sample carries for the child to render; the video adds the child's own
+# diagnosticCpu and diagnosticMiB.
+SAMPLE_KEYS = {
+    "engine",
+    "state",
+    "rooms",
+    "tracks",
+    "maxTracks",
+    "busy",
+    "capacity",
+    "spare",
+    "vadActive",
+    "vadPeak",
+    "vadChunks",
+    "queuedChunks",
+    "sttChunks",
+    "sttAudioSec",
+    "leasedSec",
+    "yields",
+    "endSilence",
+    "endDuration",
+    "endSched",
+    "endFlush",
+    "targets",
+    "previewing",
+    "finals",
+    "partials",
+    "hostCpu",
+    "hostAvailableGiB",
+    "hostGiB",
+    "captionCpu",
+    "quota",
+    "captionMiB",
+    "limitMiB",
+    "drops",
+    "waiting",
+    "lanes",
+    "silentMics",
+    "hiddenSpeakers",
+    "admission",
+    "decision",
+    "p95",
+    "threads",
+    "segmentSeconds",
+    "cpuWeight",
+    "oomKills",
+    "engineRestarts",
+    "samplerMs",
+}
+SNAPSHOT = {
+    "memoryFraction": 0.25,
+    "memoryLimitBytes": 4 * 1024**3,
+    "hostAvailableBytes": 8 * 1024**3,
+    "hostMemoryBytes": 16 * 1024**3,
+    "cpuQuotaCpus": 4.0,
+}
+
+
+def sampling_service():
+    """A ready service with two rooms: the owner's, with one speaker holding a slot, and
+    another with an open microphone."""
+    from cassini_live.load import LoadGovernor
+
+    worker, speaking = object(), Mic()
+    speaking.worker = worker
+    owner = SimpleNamespace(transcribers={"s1": speaking}, speaker_name={"s1": "Ana"}.get)
+    other = SimpleNamespace(transcribers={"s2": Mic()})
+    pool = SimpleNamespace(busy=1, admission_limit=2, waiting=0, workers={worker}, dropped_chunks=0)
+    admission = SimpleNamespace(
+        state="ready", pool=pool, governor=LoadGovernor(ceiling=2), tracks=[None] * 2, max_tracks=8
+    )
+    return SimpleNamespace(admission=admission, clients={"a": owner, "b": other}), owner
+
+
+def test_a_sample_carries_every_field_the_child_renders(monkeypatch):
+    service, owner = sampling_service()
+    sampler = DiagnosticSampler(service)
+    monkeypatch.setattr(sampler, "_host_cpu", lambda: (100, 90))
+    monkeypatch.setattr(sampler, "_caption_cpu", lambda: 0)
+    monkeypatch.setattr(sampler, "_cpu_weight", lambda: 100)
+    sampler.prime(10.0)
+    sample = sampler.sample(owner, SNAPSHOT, 11.0)
+    assert set(sample) == SAMPLE_KEYS
+    assert [lane.get("name") for lane in sample["lanes"]] == ["Ana"]
+    assert (sample["rooms"], sample["silentMics"], sample["hiddenSpeakers"]) == (2, 1, 0)
+
+
+def test_cpu_figures_are_deltas_against_the_samplers_previous_sample(monkeypatch):
+    service, owner = sampling_service()
+    sampler = DiagnosticSampler(service)
+    # /proc/stat (total, idle) jiffies and cgroup CPU seconds at prime() and two samples.
+    hosts = iter([(1000, 900), (1100, 950), (1300, 1000)])
+    captions = iter([10.0, 10.5, 12.0])
+    weights = iter([100, 50])
+    monkeypatch.setattr(sampler, "_host_cpu", lambda: next(hosts))
+    monkeypatch.setattr(sampler, "_caption_cpu", lambda: next(captions))
+    monkeypatch.setattr(sampler, "_cpu_weight", lambda: next(weights))
+    sampler.prime(100.0)
+    first = sampler.sample(owner, SNAPSHOT, 101.0)
+    second = sampler.sample(owner, SNAPSHOT, 103.0)
+    # Since prime(): 50 of 100 jiffies idle, 0.5 CPU seconds in 1 s.
+    assert (first["hostCpu"], first["captionCpu"]) == (50.0, 50.0)
+    # Since the first sample, not prime(): 50 of 200 idle, 1.5 CPU seconds in 2 s.
+    assert (second["hostCpu"], second["captionCpu"]) == (75.0, 75.0)
+    # The cgroup's CPU weight is read once per run of samples.
+    assert first["cpuWeight"] == second["cpuWeight"] == 100
 
 
 @pytest.mark.parametrize(
