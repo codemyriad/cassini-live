@@ -244,7 +244,7 @@ extra workload will not compete with live captions:
 ```sh
 docker run --rm --network none --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 \
   --log-driver=local --log-opt max-size=10m --log-opt max-file=3 \
-  --entrypoint python ghcr.io/codemyriad/cassini-live:0.8.2 \
+  --entrypoint python ghcr.io/codemyriad/cassini-live:0.11.0 \
   -m cassini_live.capacity
 ```
 

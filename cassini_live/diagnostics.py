@@ -131,8 +131,8 @@ class DiagnosticSampler:
         return self._scribes[worker]
 
     def _lane_sample(self, pool, transcriber, name=None, other=False, now=None):
-        """One lane. `name` only for the room that owns the video; other rooms' lanes are
-        marked `other` and carry no name."""
+        """One lane. `name` only for the owner room (the video's, or the diagnostics feed's);
+        other rooms' lanes are marked `other` and carry no name."""
         gate = transcriber.gate
         held = getattr(transcriber, "worker", None)
         active = bool(getattr(gate, "active", False))
@@ -222,7 +222,8 @@ class DiagnosticSampler:
     @staticmethod
     def _speakers(owner, clients):
         """Every live transcriber with its room, and display labels for the owning room's
-        speakers only. Names cross the pipe for that room alone and are never logged."""
+        speakers only. Names leave the sampler for that room alone, to the video's pipe or to
+        the feed, which redacts them for non-members; they are never logged."""
         speakers = [
             (c, sid, t) for c in clients for sid, t in list(getattr(c, "transcribers", {}).items())
         ]

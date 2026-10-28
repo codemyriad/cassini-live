@@ -212,7 +212,7 @@ class LoadGovernor:
         self.last_refusal = None
         self.last_shed = None
         self.last_shed_at = None
-        # For the diagnostic video only: the last decision with its inputs, and weak
+        # For the diagnostics only (video and page): the last decision with its inputs, and weak
         # references to whom it and the last (would-be) shed concerned. Never exported in
         # status(): the caption process resolves them to its own anonymous lanes.
         self.last_decision = None

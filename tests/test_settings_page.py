@@ -5,6 +5,7 @@ import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import AsyncMock
+from urllib.parse import urljoin
 
 import pytest
 from fastapi.testclient import TestClient
@@ -141,6 +142,48 @@ def test_index_html_hygiene(page):
     assert parser.lang and parser.viewport and parser.status
     for required in ("notice", "live", "progress", "cancel", "engine-list", "back"):
         assert required in parser.ids, required
+
+
+class Links(HTMLParser):
+    """Each link with an id: its href, the section it sits in and its text."""
+
+    def __init__(self):
+        super().__init__()
+        self.links, self.section, self.open = {}, None, None
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "section":
+            self.section = a.get("id")
+        if tag == "a" and a.get("id"):
+            self.open = a["id"]
+            self.links[self.open] = {"href": a.get("href"), "section": self.section, "text": ""}
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self.open = None
+        if tag == "section":
+            self.section = None
+
+    def handle_data(self, data):
+        if self.open:
+            self.links[self.open]["text"] += data
+
+
+@needs_frontend
+def test_the_status_links_to_the_live_diagnostics_page(page):
+    _, client, headers = page
+    parser = Links()
+    parser.feed(client.get(PAGE, headers=headers).text)
+    link = parser.links["diagnostics"]
+    assert (link["section"], link["text"]) == ("overview", "Live diagnostics")
+    # Relative to the page, so it resolves under the AppAPI proxy prefix.
+    proxy = "https://cloud.example/index.php/apps/app_api/proxy/live_transcription"
+    target = urljoin(f"{proxy}{PAGE}", link["href"])
+    assert target == f"{proxy}/diagnostics/"
+    response = client.get(target.removeprefix(proxy), headers=headers)
+    assert response.status_code == 200
+    assert "<title>Cassini Live diagnostics</title>" in response.text
 
 
 @needs_frontend

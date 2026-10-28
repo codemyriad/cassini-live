@@ -21,19 +21,23 @@ export function backoffMs(failures) {
 }
 
 /**
- * The server's monotonic clock went back: Cassini Live came back on a rebooted or another
- * host, and its columns start over. A restarted container keeps the host's clock (measured),
- * so most restarts show only as an answer with head 0 (historyStart).
+ * The answer comes from another Cassini Live process than the last one, whose columns and
+ * lane numbers start over: its instance changed, or its monotonic clock went back (a
+ * rebooted or another host). A restarted container keeps the host's clock (measured), and
+ * its first answer to this page can already hold columns when another administrator kept
+ * the new feed running, so only the instance tells it apart. Without an instance on either
+ * side, the clock alone decides.
  */
-export function restarted(lastNow, now) {
+export function restarted(lastNow, now, lastInstance, instance) {
+  if (typeof lastInstance === 'string' && typeof instance === 'string' && instance !== lastInstance) return true
   return typeof lastNow === 'number' && typeof now === 'number' && now < lastNow
 }
 
 /**
  * Where the feed's own history begins, in server seconds, after `body`: an answer with head 0
- * holds no columns, so the feed dropped them (nobody polled for 30 s) or Cassini Live
- * restarted, and its next columns count from a fresh first sample. Null while the page has
- * seen no such answer.
+ * holds no columns, so the feed has just started or dropped them (nobody polled for 30 s),
+ * and its next columns count from a fresh first sample. Null while the page has seen no
+ * such answer.
  */
 export function historyStart(start, body) {
   return body.head === 0 ? body.now : start
