@@ -438,6 +438,18 @@ test('a server clock that went back means a restart', () => {
   assert.equal(restarted(null, 5), false)
   assert.equal(restarted(100, 100.5), false)
   assert.equal(restarted(100, 99.9), true)
+  assert.equal(restarted(100, 99.9, 'a1b2', 'a1b2'), true)
+})
+
+test('another instance means a restart, though the clock went on', () => {
+  // A restarted container keeps the host's monotonic clock.
+  assert.equal(restarted(100, 100.5, 'a1b2', 'c3d4'), true)
+  assert.equal(restarted(100, 100.5, 'a1b2', 'a1b2'), false)
+  // The first answer, or after a restart the page already started over from.
+  assert.equal(restarted(null, 5, null, 'c3d4'), false)
+  // An answer without an instance leaves the clock to decide.
+  assert.equal(restarted(100, 100.5, 'a1b2', undefined), false)
+  assert.equal(restarted(100, 100.5, null, 'a1b2'), false)
 })
 
 test('new columns are appended once, in order, and the window keeps its count and age', () => {

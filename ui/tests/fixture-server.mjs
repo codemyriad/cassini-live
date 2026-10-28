@@ -26,6 +26,7 @@
  * and once a minute the lag rises past the shed line and a speaker is paused.
  */
 
+import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -223,26 +224,33 @@ export const HOSTILE_NAME = '<img src=x onerror=alert(1)>'
 // Scripted diagnostics feeds by id: server monotonic time starts at `base` seconds
 // and one column is added per second, as DiagnosticFeed does.
 const diagnosticsFeeds = new Map()
+// DiagnosticFeed.instance: a random token per Cassini Live process.
+const newInstance = () => randomBytes(8).toString('hex')
 
 function diagnosticsFeed(id) {
   if (!diagnosticsFeeds.has(id)) {
-    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, from: 1, status: null, overrides: {} })
+    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, from: 1, instance: newInstance(), status: null, overrides: {} })
   }
   return diagnosticsFeeds.get(id)
 }
 
 /**
  * Steer a feed: {status: 403|503|null} answers every poll with that status (null:
- * normally again), {restart: true} restarts its clock lower (a rebooted host),
- * {relaunch: true} drops its columns and keeps its clock (a restarted ExApp container:
- * lane ids start over, and the first column comes over two seconds later, as
- * DiagnosticFeed's does after priming), {sample: {...}} overrides fields of every sample from now on, {history: s}
- * moves its start s seconds back, so its first answer already holds that much history.
+ * normally again), {restart: true} restarts its clock lower and keeps its instance, so
+ * only the page's clock check can see it (a rebooted host, as an answer without an
+ * instance would show it), {relaunch: true} drops its columns, keeps its clock and gets a
+ * new instance (a restarted ExApp container: lane ids start over, and the first column
+ * comes over two seconds later, as DiagnosticFeed's does after priming), {idle: true}
+ * drops its columns and keeps its clock and instance (the feed stopped after 30 s without
+ * a poll and started again), {sample: {...}} overrides fields of every sample from now on,
+ * {history: s} moves its start s seconds back, so its first answer already holds that
+ * much history.
  */
-function diagnosticsControl(feed, { status, restart, relaunch, sample: overrides, history }) {
+function diagnosticsControl(feed, { status, restart, relaunch, idle, sample: overrides, history }) {
   if (status !== undefined) feed.status = status
   if (restart) Object.assign(feed, { start: Date.now(), base: 100, from: 1 })
-  if (relaunch) feed.from = Math.floor((Date.now() - feed.start) / 1000) + 3
+  if (relaunch || idle) feed.from = Math.floor((Date.now() - feed.start) / 1000) + 3
+  if (relaunch) feed.instance = newInstance()
   if (overrides) feed.overrides = overrides
   if (history) feed.start -= history * 1000
 }
@@ -271,6 +279,7 @@ function diagnosticsBody(feed, since) {
     window: 120,
     presence: 30,
     names: true,
+    instance: feed.instance,
     head: columns.length ? columns[columns.length - 1].t : 0,
     now: Math.round((feed.base + elapsed) * 1000) / 1000,
     sample: data,

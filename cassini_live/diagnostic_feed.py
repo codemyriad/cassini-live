@@ -7,6 +7,7 @@ hold on participant names.
 """
 
 import asyncio
+import secrets
 import time
 from collections import deque
 
@@ -30,6 +31,10 @@ class DiagnosticFeed:
         self.service = service
         self.names = names
         self.sampler = DiagnosticSampler(service)
+        # Lane numbers count from 1 in each sampler, but the host's monotonic clock goes on
+        # across a container restart (measured), so `now` alone cannot tell the page that
+        # its columns are another process's. A random token: it says nothing else.
+        self.instance = secrets.token_hex(8)
         self.task = None
         # Monotonic times of the last poll, and of the last by a member of room `_member_of`:
         # Talk checked that room only, so its presence holds no other room's names.
@@ -56,7 +61,9 @@ class DiagnosticFeed:
     def _select(self):
         clients = self.service.clients
         video = self.service.diagnostics
-        if video.task is not None and video.owner in clients:
+        # A video that stopped itself (paused, failed) keeps its task and owner until that
+        # room closes; it no longer runs, so it no longer picks the room.
+        if video.task is not None and not video.task.done() and video.owner in clients:
             return video.owner, clients[video.owner]
         for token, client in list(clients.items()):
             defunct = getattr(client, "defunct", None)
@@ -109,8 +116,9 @@ class DiagnosticFeed:
 
     def read(self, since=0.0):
         """The latest sample and the columns newer than `since`; times are this process's
-        monotonic seconds."""
+        monotonic seconds, lane numbers this feed's (`instance`)."""
         return {
+            "instance": self.instance,
             "head": self.columns[-1]["t"] if self.columns else 0,
             "now": round(time.monotonic(), 3),
             "sample": self.latest,

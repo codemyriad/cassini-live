@@ -37,6 +37,8 @@ const state = {
   // Server time after which the ring's columns are the feed's own history (feed.historyStart).
   historyStart: null,
   lastNow: null,
+  // The Cassini Live process the ring's columns and lane numbers come from (feed.restarted).
+  instance: null,
   lastOkAt: null,
   failures: 0,
   refused: false,
@@ -103,11 +105,12 @@ function poll() {
 }
 
 function accept(body) {
-  if (restarted(state.lastNow, body.now)) {
+  if (restarted(state.lastNow, body.now, state.instance, body.instance)) {
     state.columns = []
     state.head = 0
     state.historyStart = null
     state.lastNow = null
+    state.instance = null
     state.nextPollAt = 0
     return
   }
@@ -115,6 +118,7 @@ function accept(body) {
   state.historyStart = historyStart(state.historyStart, body)
   if (state.columns.length) state.head = state.columns[state.columns.length - 1].t
   state.lastNow = body.now
+  state.instance = typeof body.instance === 'string' ? body.instance : null
   state.body = body
   state.lastOkAt = Date.now()
   state.failures = 0
@@ -153,8 +157,8 @@ function render() {
   const body = state.body
   const sample = body ? body.sample : null
   const now = body ? body.now : 0
-  // Lane ids count from 1 in each Cassini Live process, and its monotonic clock keeps
-  // counting across a container restart: older columns may be another process's speakers.
+  // Only the history since the feed last started: the seconds before it were not sampled.
+  // Columns from another Cassini Live process never get here (accept drops them).
   const history = feedHistory(state.columns, state.historyStart)
   // Before the first sample the figures are the video's empty ones, shown dimmed.
   document.body.classList.toggle('waiting', !sample)

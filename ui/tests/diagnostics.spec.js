@@ -371,27 +371,76 @@ test('draws ten lanes: names, tags, every state, the lag graph', async ({ page }
   await expectClean(page, seen)
 })
 
-test('a Cassini Live restart that keeps the clock draws the lanes afresh', async ({ page, request }, info) => {
+// How far back the runs and the lag line reach, in seconds.
+const reach = async (page) => {
+  const runs = (await drawnRuns(page)).flat()
+  const graph = await drawnGraph(page)
+  return {
+    runs: runs.length,
+    lanes: Math.max(0, ...runs.map((run) => run.oldest)),
+    graph: Math.max(0, ...graph.lines.flat().map((point) => (graph.right - point.x) / graph.perS)),
+  }
+}
+
+const STARTS_OVER = [
   // A restarted container keeps the host's monotonic clock, and the new process numbers
   // its speakers from 1 again: the old lane 1's runs were someone else's.
+  ['relaunch', 'a Cassini Live restart that keeps the clock draws the lanes afresh'],
+  // A feed nobody polled for 30 s stopped, and the seconds until it started again were
+  // never sampled.
+  ['idle', 'a feed that stopped and started again draws the lanes from its new start'],
+]
+
+for (const [how, title] of STARTS_OVER) {
+  test(title, async ({ page, request }, info) => {
+    const seen = await open(page, info, { before: (id) => control(page.request, id, TEN) })
+    await expect.poll(async () => (await reach(page)).lanes, { timeout: 5000 }).toBeGreaterThan(60)
+    expect((await reach(page)).graph).toBeGreaterThan(60)
+    const polls = seen.polls.length
+    const relaunched = Date.now()
+    await control(request, seen.id, { [how]: true })
+    await expect.poll(() => seen.polls.length, { timeout: 10000 }).toBeGreaterThan(polls + 5)
+    const drawn = await reach(page)
+    const since = (Date.now() - relaunched) / 1000
+    expect(drawn.runs).toBeGreaterThan(0)
+    expect(drawn.lanes).toBeLessThan(since)
+    expect(drawn.graph).toBeLessThan(since)
+    await expect(page.locator('#lane-names li')).toHaveCount(10)
+    await expectClean(page, seen)
+  })
+}
+
+test('a restart while the tab was hidden draws the lanes afresh, though the new feed has columns', async ({ page, request }, info) => {
+  // Another administrator kept the restarted container's feed running, so the page's first
+  // answer when it comes back already holds new columns, on the same clock: only the
+  // instance says that lane 1 is someone else now.
   const seen = await open(page, info, { before: (id) => control(page.request, id, TEN) })
-  // How far back the runs and the lag line reach, in seconds.
-  const reach = async () => {
-    const runs = (await drawnRuns(page)).flat()
-    const graph = await drawnGraph(page)
-    return {
-      runs: runs.length,
-      lanes: Math.max(0, ...runs.map((run) => run.oldest)),
-      graph: Math.max(0, ...graph.lines.flat().map((point) => (graph.right - point.x) / graph.perS)),
-    }
-  }
-  await expect.poll(async () => (await reach()).lanes, { timeout: 5000 }).toBeGreaterThan(60)
-  expect((await reach()).graph).toBeGreaterThan(60)
-  const polls = seen.polls.length
+  const heads = new Map()
+  page.on('response', (r) => {
+    if (!r.url().includes('/diagnostics/api/feed')) return
+    const since = new URL(r.url()).searchParams.get('since')
+    r.json().then((body) => heads.set(since, body.head), () => {})
+  })
+  await expect.poll(async () => (await reach(page)).lanes, { timeout: 5000 }).toBeGreaterThan(60)
+  const setHidden = (hidden) => page.evaluate((hidden) => {
+    if (hidden) Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+    else delete document.hidden
+    document.dispatchEvent(new Event('visibilitychange'))
+  }, hidden)
+  await setHidden(true)
   const relaunched = Date.now()
   await control(request, seen.id, { relaunch: true })
-  await expect.poll(() => seen.polls.length, { timeout: 10000 }).toBeGreaterThan(polls + 5)
-  const drawn = await reach()
+  // The new feed's first column comes three seconds after its start.
+  await page.waitForTimeout(4500)
+  const polls = seen.polls.length
+  await setHidden(false)
+  await expect.poll(() => seen.polls.length, { timeout: 10000 }).toBeGreaterThan(polls + 3)
+  const [back, again] = seen.polls.slice(polls).map((p) => p.url.searchParams.get('since'))
+  // It asked from the newest column it held and got columns, then asked again from the start.
+  expect(Number(back)).toBeGreaterThan(5000)
+  expect(heads.get(back)).toBeGreaterThan(Number(back))
+  expect(again).toBe('0')
+  const drawn = await reach(page)
   const since = (Date.now() - relaunched) / 1000
   expect(drawn.runs).toBeGreaterThan(0)
   expect(drawn.lanes).toBeLessThan(since)

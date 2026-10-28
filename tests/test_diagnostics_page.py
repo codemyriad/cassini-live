@@ -20,7 +20,18 @@ PAGE = "/diagnostics/"
 # Distinctive identifiers that must never reach the page.
 TOKEN, OTHER_TOKEN = "ROOMTOKEN-q9x7", "ROOMTOKEN-other-m4v2"
 SESSION, ATTENDEE = "SESSIONID-k3z5", "ATTENDEE-p2w8"
-KEYS = {"version", "window", "presence", "names", "head", "now", "sample", "columns", "error"}
+KEYS = {
+    "version",
+    "window",
+    "presence",
+    "names",
+    "instance",
+    "head",
+    "now",
+    "sample",
+    "columns",
+    "error",
+}
 
 
 class WatchedRoom(Room):
@@ -221,6 +232,19 @@ def test_a_non_member_costs_one_talk_check_per_window(monkeypatch, headers):
     assert asked[1:] == [("alice", "GET", participants(OTHER_TOKEN))]
 
 
+def test_the_instance_is_the_same_on_every_poll_and_new_in_each_app(monkeypatch, headers):
+    room = WatchedRoom("Ana")
+    app, service, _ = build_app(monkeypatch, member=False, rooms={TOKEN: room})
+    sample(service, room)
+    client = TestClient(app)
+    polls = [client.get(FEED + query, headers=headers) for query in ("", "?since=2.0", "")]
+    seen = {poll.json()["instance"] for poll in polls}
+    assert seen == {service.diagnostic_feed.instance}
+    # A restarted container is a new app: its lane numbers start over on the same clock.
+    again, _, _ = build_app(monkeypatch, member=False, rooms={TOKEN: room})
+    assert TestClient(again).get(FEED, headers=headers).json()["instance"] not in seen
+
+
 def test_redaction_copies_the_sample():
     lanes = [{"id": 1, "name": "Ana"}, {"id": 2, "other": True}]
     body = {
@@ -417,7 +441,7 @@ def test_no_room_token_session_or_participant_id_reaches_the_page(monkeypatch, h
     )
     # The video runs in the newer room, so the feed samples that one.
     video = service.diagnostics
-    video.task, video.owner, video.state = SimpleNamespace(), TOKEN, "connected"
+    video.task, video.owner, video.state = SimpleNamespace(done=lambda: False), TOKEN, "connected"
     video.metrics = {"frames": 3, "kbps": 9.5}
     decide(service, first_mic(room))
     sample(service, room, other)
@@ -510,5 +534,5 @@ def test_worst_case_response_stays_under_64_kib(monkeypatch, headers):
     assert all(len(column["lanes"]) == 10 for column in body["columns"])
     lanes = body["sample"]["lanes"]
     assert len(lanes) == 10 and all(lane.get("name") == "\U0001f600" * 20 for lane in lanes)
-    # Measured: 46522 bytes, 42001 of them the 120 columns of ten lanes.
+    # Measured: 46552 bytes, 42001 of them the 120 columns of ten lanes.
     assert len(response.content) <= 64 * 1024

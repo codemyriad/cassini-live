@@ -100,15 +100,42 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
   `window.__CASSINI_LIVE_PANEL__` (destroy, injectTranscript, attached).
 - `src/loader.js` — the loader bookmarklet source.
 - `scripts/build.js` — builds `dist/` and stages the served files into
-  `../cassini_live/static/panel/` (committed; `--check` fails when stale).
+  `../cassini_live/static/panel/` and `../cassini_live/static/diagnostics/`
+  (committed; `--check` fails when stale).
+
+## Diagnostics page
+
+The package builds three bundles: the panel (`src/main.js`), its loader
+bookmarklet (`src/loader.js`) and the administrators' live diagnostics page
+(`src/diagnostics/main.js`). The page is a plain static page the app serves at
+`…/apps/app_api/proxy/live_transcription/diagnostics/` (ADMIN), under the
+settings page's CSP (`script-src 'self'; style-src 'self'`): no inline styles,
+sizes through CSSOM. It polls `api/feed` a second after each answer and draws
+the diagnostic video's two views from the samples and history columns. See
+[the diagnostics page](../docs/diagnostics-page.md).
+
+- `src/diagnostics/format.js`, `src/diagnostics/lanes.js` — pure view models
+  for the status, hero numbers, pipeline, panels, lanes and lag graph, ported
+  from the video's Pillow renderer (`cassini_live/diagnostic_video.py`).
+- `src/diagnostics/feed.js` — the poll protocol: the relative feed path,
+  backoff, the page's copy of the columns, and restart detection (a new
+  `instance`, or the server clock going back).
+- `src/diagnostics/main.js`, `dom.js`, `lanesView.js` — the polling loop and
+  the DOM: feed strings reach it as `textContent` only.
+- `src/diagnostics/index.html`, `app.css` — copied as they are.
+
+The build writes them to `../cassini_live/static/diagnostics/{index.html,app.js,app.css}`
+(committed) and `dist/diagnostics/` (for the fixture server). Unit tests are
+`tests/unit/diagnostics-*.test.mjs`; `tests/diagnostics.spec.js` runs the page
+in Playwright against the fixture server's scripted feed.
 
 ## Develop
 
 ```bash
 npm ci
-npm run build        # dist/ + ../cassini_live/static/panel/
-npm run test:unit    # store semantics (node:test)
-npm run test:e2e     # Playwright against a CSP-faithful fake Talk page
+npm run build        # dist/ + ../cassini_live/static/{panel,diagnostics}/
+npm run test:unit    # store semantics and the diagnostics view models (node:test)
+npm run test:e2e     # Playwright against a CSP-faithful fake Talk page and diagnostics feed
 npm run replay -- meeting.replay.json   # scrub a replayed meeting (see ../docs/replay.md)
 ```
 
@@ -128,3 +155,8 @@ feed events from the devtools console:
 ```js
 __FIXTURE__.transcript({ id: 'sid-alice', message: 'hello', final: true, languageId: 'en' })
 ```
+
+The same server serves the diagnostics page with a scripted feed at
+`http://127.0.0.1:4317/diagnostics/`; `POST /fixture-diagnostics/<id>` steers
+the feed of `/diag/<id>/diagnostics/` (see `diagnosticsControl` in
+`tests/fixture-server.mjs`).

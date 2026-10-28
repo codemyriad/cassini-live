@@ -52,7 +52,7 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>
         <display-name>Diagnostic video (optional)</display-name>
-        <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 0.5 fps; stops under resource pressure. Default off.</description>
+        <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 1 fps; stops under resource pressure. Default off. The admin-only diagnostics page shows the same without this option.</description>
       </variable>
     </environment-variables>
     <!-- Native caption endpoints are server-to-server, never browser-proxied. The settings

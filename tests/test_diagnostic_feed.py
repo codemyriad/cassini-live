@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,30 @@ def test_times_are_rounded_as_the_page_sends_them_back(monkeypatch):
     ]
 
 
+async def test_the_instance_tells_one_feeds_lane_numbers_from_anothers(monkeypatch):
+    room = Room("Ana")
+    feed = make_feed(monkeypatch, service_with(room=room))
+    instance = feed.read(0)["instance"]
+    # A random token: it says nothing about the host, the process or the rooms.
+    assert re.fullmatch(r"[0-9a-f]{16}", instance)
+    feed._step(1.0)
+    room.speak()
+    feed._step(2.0)
+    assert [lane["id"] for lane in feed.latest["lanes"]] == [1]
+    assert feed.read(0)["instance"] == feed.read(2.0)["instance"] == instance
+    # Idling drops the history but keeps the lane numbers, and so the instance.
+    await feed.close()
+    assert feed.read(0)["instance"] == instance
+    # A restarted container's feed numbers its lanes from 1 again, on the host's clock.
+    other_room = Room("Bo")
+    other = make_feed(monkeypatch, service_with(room=other_room))
+    other._step(3.0)
+    other_room.speak()
+    other._step(4.0)
+    assert [lane["id"] for lane in other.latest["lanes"]] == [1]
+    assert other.read(0)["instance"] != instance
+
+
 @pytest.mark.parametrize(
     "admission",
     [
@@ -152,12 +177,17 @@ def test_owner_is_the_video_room_else_the_oldest_live_room_else_none(monkeypatch
     assert feed.owner_token() == "room-1"
     first.defunct.set()
     assert feed.owner_token() == "room-2"
-    service.diagnostics.task, service.diagnostics.owner = object(), "room-3"
+    running = SimpleNamespace(done=lambda: False)
+    service.diagnostics.task, service.diagnostics.owner = running, "room-3"
     assert feed.owner_token() == "room-3"
     # A video still stopping for a room that is gone, or no video at all.
     service.diagnostics.owner = "room-gone"
     assert feed.owner_token() == "room-2"
     service.diagnostics.task, service.diagnostics.owner = None, "room-3"
+    assert feed.owner_token() == "room-2"
+    # A video that stopped itself keeps its task and owner until its room closes, but no
+    # longer runs: the feed samples the oldest live room again.
+    service.diagnostics.task = SimpleNamespace(done=lambda: True)
     assert feed.owner_token() == "room-2"
     second.defunct.set()
     assert feed.owner_token() == "room-3"
