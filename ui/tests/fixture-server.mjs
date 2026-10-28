@@ -20,14 +20,17 @@
  * And the diagnostics page (dist/diagnostics/) at /diagnostics/, optionally under
  * /diag/<id> and the AppAPI proxy path, with the ExApp's page CSP and a scripted
  * feed that advances once a second. Each <id> is its own feed, so tests do not
- * share one; POST /fixture-diagnostics/<id> steers it (see diagnosticsControl).
+ * share one; POST /fixture-diagnostics/<id> steers it (see diagnosticsControl). Its
+ * columns follow the sample's lanes (diagnostics-fixtures.scriptedColumn): speakers
+ * talk in bursts, a paused, held or lost lane ends or passes a stretch in that state,
+ * and once a minute the lag rises past the shed line and a speaker is paused.
  */
 
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { governor, sample } from './diagnostics-fixtures.mjs'
+import { governor, lagAt, sample, scriptedColumn } from './diagnostics-fixtures.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const distDir = join(here, '..', 'dist')
@@ -223,41 +226,35 @@ const diagnosticsFeeds = new Map()
 
 function diagnosticsFeed(id) {
   if (!diagnosticsFeeds.has(id)) {
-    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, status: null, overrides: {} })
+    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, from: 1, status: null, overrides: {} })
   }
   return diagnosticsFeeds.get(id)
 }
 
 /**
  * Steer a feed: {status: 403|503|null} answers every poll with that status (null:
- * normally again), {restart: true} restarts its clock lower (a restarted ExApp),
- * {sample: {...}} overrides fields of every sample from now on.
+ * normally again), {restart: true} restarts its clock lower (a rebooted host),
+ * {relaunch: true} drops its columns and keeps its clock (a restarted ExApp container:
+ * lane ids start over, and the first column comes over two seconds later, as
+ * DiagnosticFeed's does after priming), {sample: {...}} overrides fields of every sample from now on, {history: s}
+ * moves its start s seconds back, so its first answer already holds that much history.
  */
-function diagnosticsControl(feed, { status, restart, sample: overrides }) {
+function diagnosticsControl(feed, { status, restart, relaunch, sample: overrides, history }) {
   if (status !== undefined) feed.status = status
-  if (restart) Object.assign(feed, { start: Date.now(), base: 100 })
+  if (restart) Object.assign(feed, { start: Date.now(), base: 100, from: 1 })
+  if (relaunch) feed.from = Math.floor((Date.now() - feed.start) / 1000) + 3
   if (overrides) feed.overrides = overrides
+  if (history) feed.start -= history * 1000
 }
 
 function diagnosticsBody(feed, since) {
   const elapsed = (Date.now() - feed.start) / 1000
   const ticks = Math.floor(elapsed)
-  const columns = []
-  for (let k = Math.max(1, ticks - 119); k <= ticks; k++) {
-    columns.push({
-      t: feed.base + k,
-      lanes: { 1: 'speech', 2: k % 4 === 0 ? 'waiting' : 'speech' },
-      finals: k % 3 === 0 ? 1 : 0,
-      drops: 0,
-      lag: 0.1 * (k % 10),
-      shed: false,
-    })
-  }
   const data = sample({
     vadActive: 1 + (ticks % 3),
     queuedChunks: ticks,
     finals: 40 + Math.floor(ticks / 3),
-    admission: governor({ lagSeconds: 0.1 * (ticks % 10) }),
+    admission: governor({ lagSeconds: lagAt(feed.base + ticks) }),
     lanes: [
       { id: 1, active: true, speech: 120 + ticks, lost: 0, scribe: 1, waiting: false, paused: false, lag: 0.3, name: HOSTILE_NAME },
       { id: 2, active: false, speech: 80, lost: 0, scribe: 2, waiting: false, paused: false, lag: 0.0, name: 'Bo' },
@@ -265,6 +262,10 @@ function diagnosticsBody(feed, since) {
     decision: { at: 1793212496.5, verb: 'admit', who: HOSTILE_NAME, text: 'seat 2 of 4 · lag 0.4 s < 1.0 · stall 6%' },
     ...feed.overrides,
   })
+  const columns = []
+  for (let k = Math.max(feed.from, ticks - 119); k <= ticks; k++) {
+    columns.push(scriptedColumn(Array.isArray(data.lanes) ? data.lanes : [], feed.base + k, feed.base + ticks))
+  }
   return {
     version: 'fixture',
     window: 120,

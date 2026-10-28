@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { TEN_LANES } from './diagnostics-fixtures.mjs'
 import { HOSTILE_NAME } from './fixture-server.mjs'
 
 const PROXY = '/index.php/apps/app_api/proxy/live_transcription'
@@ -72,7 +73,9 @@ test('renders the status, hero, five pipeline cards and three panels from the fe
   ])
   await expect(page.locator('#memory')).toHaveText('1.07/3 GiB')
   await expect(page.locator('#video')).toHaveText('Diagnostic video off')
-  await expect(page.locator('#lanes')).toContainText('Speaker lanes')
+  await expect(page.locator('#lanes-title')).toHaveText('Speakers, last two minutes')
+  await expect(page.locator('#lane-names .lane-name')).toHaveText([HOSTILE_NAME, 'Bo'])
+  await expect(page.locator('#lane-tags .tag-name')).toHaveText(['scribe 1', 'scribe 2'])
   await expect(page.locator('#version')).toHaveText('fixture')
   // Widths go through CSSOM, which the page CSP allows; a style attribute would not apply.
   expect(await page.locator('#memory-fill').evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThan(30)
@@ -181,6 +184,8 @@ test('a restarted server is read again from the start', async ({ page, request }
 test('speaker names render as text, never as markup', async ({ page }, info) => {
   const seen = await open(page, info)
   await expect(page.locator('#decision-verb')).toHaveText(`admit ${HOSTILE_NAME}`)
+  await expect(page.locator('#lane-names .lane-name').first()).toHaveText(HOSTILE_NAME)
+  await expect(page.locator('#lane-tags li').first()).toContainText(HOSTILE_NAME)
   await expect(page.locator('#decision-time')).toHaveText('18:34:56')
   await expect(page.locator('img')).toHaveCount(0)
   await page.waitForTimeout(500)
@@ -225,4 +230,231 @@ test('is dark unless the system asks for light', async ({ page }, info) => {
   expect(await background()).toBe('rgb(9, 9, 9)')
   await page.emulateMedia({ colorScheme: 'light' })
   expect(await background()).toBe('rgb(244, 244, 239)')
+})
+
+/* ---------- speaker lanes and the lag graph ---------- */
+
+const TEN = { history: 120, sample: { lanes: TEN_LANES, silentMics: 3, hiddenSpeakers: 2 } }
+const NAMES = ['Ana Ferreira', 'Bo', 'Chidi Okonkwo', 'Dana Whitfield', 'Emeka Adeyemi', 'Guest · Farah', 'Maximiliane Theodora von Wolkenstein-Rhe', 'Jun', 'Participant', 'other call']
+
+// Each lane's runs, oldest first, as drawn: their edges in seconds before the band's right
+// ("now") edge, from where they land on screen.
+const drawnRuns = (page) => page.locator('#band').evaluate((band) => {
+  const box = band.getBoundingClientRect()
+  const perS = box.width / band.viewBox.baseVal.width
+  const age = (x) => (box.right - x) / perS
+  return Array.from(band.children, (lane) => Array.from(lane.querySelectorAll('rect.seg'), (rect) => {
+    const edges = rect.getBoundingClientRect()
+    return { state: rect.classList[1], oldest: age(edges.left), newest: age(edges.right) }
+  }))
+})
+
+// The lag graph on screen: its threshold lines' y, each polyline's points, its box.
+const drawnGraph = (page) => page.locator('#graph').evaluate((svg) => {
+  const toScreen = svg.getScreenCTM()
+  const at = (x, y) => {
+    const point = new DOMPoint(x, y).matrixTransform(toScreen)
+    return { x: point.x, y: point.y }
+  }
+  const lineY = (id) => at(0, document.getElementById(id).y1.baseVal.value).y
+  const box = svg.getBoundingClientRect()
+  return {
+    shed: lineY('graph-shed'),
+    admit: lineY('graph-admit'),
+    lines: Array.from(svg.querySelectorAll('#graph-lines polyline'), (line) => Array.from(line.points, (p) => at(p.x, p.y))),
+    top: box.top,
+    bottom: box.bottom,
+    right: box.right,
+    perS: box.width / svg.viewBox.baseVal.width,
+  }
+})
+
+test('draws ten lanes: names, tags, every state, the lag graph', async ({ page }, info) => {
+  await page.emulateMedia({ colorScheme: 'dark' })
+  const openedAt = Date.now()
+  const seen = await open(page, info, { before: (id) => control(page.request, id, TEN) })
+  await expect(page.locator('#lane-names .lane-name')).toHaveText(NAMES)
+  await expect(page.locator('#lane-names .lane-name.other')).toHaveText(['other call'])
+  await expect(page.locator('#lane-tags .tag-name')).toHaveText(['scribe 1', 'scribe 2', 'paused', 'held', 'scribe 3', 'idle', 'idle', 'scribe 4', 'idle', 'scribe 5'])
+  await expect(page.locator('#lane-tags .tag-value')).toHaveText(['0.3 s', '0.0 s', '2.4 s', '1.6 s', '0.8 s', '', '', '1.1 s', '', '0.5 s'])
+  await expect(page.locator('#lane-tags li').nth(2)).toHaveAttribute('data-kind', 'paused')
+  await expect(page.locator('#left-out')).toHaveText('+3 silent mics · +2 more speakers')
+  await expect(page.locator('#lanes-empty')).toBeHidden()
+  await expect(page.locator('#lanes')).toHaveAttribute('data-density', 'dense')
+  await expect(page.locator('#band')).toHaveAttribute('aria-label', '10 speakers in the last two minutes; 5 captioned now; 1 held; 1 paused')
+  await expect(page.locator('#band')).toHaveAttribute('role', 'img')
+  await expect(page.locator('#band > g')).toHaveCount(10)
+  for (const state of ['captioned', 'held', 'paused', 'lost']) {
+    await expect(page.locator(`#band rect.seg.${state}`).first()).toBeAttached()
+  }
+  // The theme colours the runs through their classes (the dark tokens: cyan, the red of lost audio).
+  expect(await page.locator('#band rect.seg.captioned').first().evaluate((r) => getComputedStyle(r).fill)).toBe('rgb(131, 205, 223)')
+  expect(await page.locator('#band rect.seg.lost').first().evaluate((r) => getComputedStyle(r).fill)).toBe('rgb(255, 111, 76)')
+  expect(await page.locator('#band rect.seg.held').first().evaluate((r) => getComputedStyle(r).fill)).toBe('none')
+  // Held is the teal outline, paused the dark amber fill inside an amber edge.
+  const paint = (selector) => page.locator(selector).first().evaluate((r) => {
+    const style = getComputedStyle(r)
+    return [style.fill, style.stroke, style.strokeWidth]
+  })
+  expect(await paint('#band rect.seg.held')).toEqual(['none', 'rgb(79, 138, 153)', '3px'])
+  expect(await paint('#band rect.seg.paused')).toEqual(['rgb(107, 79, 5)', 'rgb(252, 183, 0)', '2px'])
+  await expect(page.locator('#lane-tags')).toBeVisible()
+
+  // Runs sit where the video draws them: newest against "now" at the right, oldest left.
+  const runs = await drawnRuns(page)
+  const watched = (Date.now() - openedAt) / 1000
+  // Chidi was paused for the first answer's last twelve columns, and has been since.
+  const paused = runs[2].at(-1)
+  expect(paused.state).toBe('paused')
+  expect(paused.newest).toBeGreaterThanOrEqual(0)
+  expect(paused.newest).toBeLessThan(1.25)
+  expect(paused.oldest).toBeGreaterThan(11.9)
+  expect(paused.oldest).toBeLessThan(13 + watched)
+  expect(runs[0].length).toBeGreaterThan(2)
+  expect(runs[0][0].oldest).toBeGreaterThan(runs[0].at(-1).oldest)
+  for (const lane of runs) {
+    for (let i = 1; i < lane.length; i++) expect(lane[i].oldest).toBeLessThanOrEqual(lane[i - 1].newest + 0.01)
+  }
+
+  // The lag graph: the shed line 18 px (1 s) over the admit line; time runs left to right
+  // up to "now"; a lag over the 2.5 s ceiling is drawn at it, 9 px over the shed line;
+  // calm lag under the admit line.
+  const graph = await drawnGraph(page)
+  expect(graph.shed).toBeLessThan(graph.admit)
+  expect(Math.abs(graph.admit - graph.shed - 18)).toBeLessThanOrEqual(1)
+  expect(graph.lines.length).toBeGreaterThan(0)
+  for (const line of graph.lines) expect(line.at(-1).x).toBeGreaterThan(line[0].x)
+  // The newest column's middle, or the one before it when the newest has no reading.
+  expect((graph.right - graph.lines.at(-1).at(-1).x) / graph.perS).toBeLessThan(2.6)
+  const ys = graph.lines.flat().map((point) => point.y)
+  expect(Math.abs(graph.shed - Math.min(...ys) - 9)).toBeLessThanOrEqual(1)
+  expect(Math.max(...ys)).toBeGreaterThan(graph.admit)
+  for (const y of ys) {
+    expect(y).toBeGreaterThanOrEqual(graph.top)
+    expect(y).toBeLessThanOrEqual(graph.bottom)
+  }
+  await expect(page.locator('#graph polyline').first()).toBeAttached()
+  expect(await page.locator('#graph polyline').first().evaluate((l) => l.points.length)).toBeGreaterThan(50)
+  await expect(page.locator('#graph-sheds line').first()).toBeAttached()
+  await expect(page.locator('#graph-sent rect').first()).toBeAttached()
+  await expect(page.locator('#graph')).toHaveAttribute('aria-label', /^Caption lag over the last two minutes; /)
+  await expect(page.locator('.graph-legend li')).toHaveText(['shed 2.0 s', 'admit 1.0 s', '▮ caption sent'])
+  await expect(page.locator('.axis span')).toHaveText(['−2 min', '−1 min', 'now'])
+  await expect(page.locator('.legend li')).toHaveText(['captioned', 'held', 'paused', 'lost'])
+
+  // Each name and tag sits on its own lane.
+  const middles = (selector) => page.locator(selector).evaluateAll((nodes) => nodes.map((n) => {
+    const box = n.getBoundingClientRect()
+    return Math.round(box.top + box.height / 2)
+  }))
+  const lanes = await middles('#band rect.lane-bg')
+  for (const selector of ['#lane-names li', '#lane-tags li']) {
+    const rows = await middles(selector)
+    expect(rows.length).toBe(10)
+    rows.forEach((middle, i) => expect(Math.abs(middle - lanes[i])).toBeLessThanOrEqual(1))
+  }
+
+  // The DOM stays the same size from one answer to the next: nodes are reused, not added.
+  const nodes = () => page.locator('#lanes *').count()
+  const before = await nodes()
+  const lines = await page.locator('#graph-lines > *').count()
+  const head = seen.polls.length
+  await expect.poll(() => seen.polls.length, { timeout: 4000 }).toBeGreaterThan(head + 2)
+  expect(Math.abs((await nodes()) - before)).toBeLessThan(20)
+  expect(await page.locator('#band rect').count()).toBeLessThan(10 * 20)
+  // The fixed parts exactly: one leaked node per answer would show here.
+  await expect(page.locator('#legend li')).toHaveCount(4)
+  await expect(page.locator('#lane-names li')).toHaveCount(10)
+  await expect(page.locator('#lane-tags li')).toHaveCount(10)
+  await expect(page.locator('#band > g')).toHaveCount(10)
+  expect(await page.locator('#graph-lines > *').count()).toBe(lines)
+  await expectClean(page, seen)
+})
+
+test('a Cassini Live restart that keeps the clock draws the lanes afresh', async ({ page, request }, info) => {
+  // A restarted container keeps the host's monotonic clock, and the new process numbers
+  // its speakers from 1 again: the old lane 1's runs were someone else's.
+  const seen = await open(page, info, { before: (id) => control(page.request, id, TEN) })
+  // How far back the runs and the lag line reach, in seconds.
+  const reach = async () => {
+    const runs = (await drawnRuns(page)).flat()
+    const graph = await drawnGraph(page)
+    return {
+      runs: runs.length,
+      lanes: Math.max(0, ...runs.map((run) => run.oldest)),
+      graph: Math.max(0, ...graph.lines.flat().map((point) => (graph.right - point.x) / graph.perS)),
+    }
+  }
+  await expect.poll(async () => (await reach()).lanes, { timeout: 5000 }).toBeGreaterThan(60)
+  expect((await reach()).graph).toBeGreaterThan(60)
+  const polls = seen.polls.length
+  const relaunched = Date.now()
+  await control(request, seen.id, { relaunch: true })
+  await expect.poll(() => seen.polls.length, { timeout: 10000 }).toBeGreaterThan(polls + 5)
+  const drawn = await reach()
+  const since = (Date.now() - relaunched) / 1000
+  expect(drawn.runs).toBeGreaterThan(0)
+  expect(drawn.lanes).toBeLessThan(since)
+  expect(drawn.graph).toBeLessThan(since)
+  await expect(page.locator('#lane-names li')).toHaveCount(10)
+  await expectClean(page, seen)
+})
+
+test('redacted names read Participant; another call reads other call', async ({ page }, info) => {
+  const lanes = [{ ...TEN_LANES[0], name: 'Participant' }, { ...TEN_LANES[1], name: undefined }, TEN_LANES[9]]
+  const seen = await open(page, info, { before: (id) => control(page.request, id, { history: 30, sample: { lanes } }) })
+  await expect(page.locator('#lane-names .lane-name')).toHaveText(['Participant', 'Participant', 'other call'])
+  await expect(page.locator('#lanes')).toHaveAttribute('data-density', 'roomy')
+  await expectClean(page, seen)
+})
+
+test('an empty band counts open microphones, or says there are none', async ({ page, request }, info) => {
+  const seen = await open(page, info, { before: (id) => control(page.request, id, { sample: { lanes: [], silentMics: 3, hiddenSpeakers: 0 } }) })
+  await expect(page.locator('#lanes-empty')).toHaveText('Nobody spoke in the last two minutes · 3 mics open')
+  await expect(page.locator('#band')).toHaveAttribute('aria-label', 'Nobody spoke in the last two minutes · 3 mics open')
+  // Said once, by the band; no empty "Speakers now" list after it.
+  await expect(page.locator('#lanes .lanes-grid')).toMatchAriaSnapshot(`
+    - /children: equal
+    - img "Nobody spoke in the last two minutes · 3 mics open"
+    - img /^Caption lag over the last two minutes; /
+    - list:
+      - listitem: shed 2.0 s
+      - listitem: admit 1.0 s
+      - listitem: caption sent
+  `)
+  await expect(page.locator('#lanes-empty')).toHaveAttribute('aria-hidden', 'true')
+  await expect(page.locator('#lane-tags')).toBeHidden()
+  await expect(page.locator('#left-out')).toBeHidden()
+  await expect(page.locator('#lane-names li')).toHaveCount(0)
+  await expect(page.locator('#band > g')).toHaveCount(0)
+  await control(request, seen.id, { sample: { lanes: [], silentMics: 0, hiddenSpeakers: 0 } })
+  await expect(page.locator('#lanes-empty')).toHaveText('No microphones open')
+  await expectClean(page, seen)
+})
+
+test('long, emoji and right-to-left names fit a 375 px phone', async ({ page }, info) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  const lanes = TEN_LANES.map((lane, i) => (i === 0 ? { ...lane, name: '\u{1F600}'.repeat(40) } : i === 1 ? { ...lane, name: 'عبد الرحمن بن محمد الشريف الحسيني' } : lane))
+  const seen = await open(page, info, { before: (id) => control(page.request, id, { ...TEN, sample: { ...TEN.sample, lanes } }) })
+  await expect(page.locator('#lane-names li')).toHaveCount(10)
+  await expect(page.locator('#lane-names .lane-name').first()).toHaveText('\u{1F600}'.repeat(40))
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
+  const band = await page.locator('#band').boundingBox()
+  const chips = await page.locator('#lane-names .lane-name').evaluateAll((nodes) => nodes.map((n) => {
+    const style = getComputedStyle(n)
+    return { ...n.getBoundingClientRect().toJSON(), padding: parseFloat(style.paddingLeft) + parseFloat(style.paddingRight), text: n.textContent, cut: n.scrollWidth > n.clientWidth }
+  }))
+  for (const box of chips) {
+    // The name gets a quarter of the band (the chip its padding besides, as the video
+    // fits it), so a long name never hides the recent history.
+    expect(box.width - box.padding).toBeLessThanOrEqual(band.width / 4 + 1)
+    expect(box.left).toBeGreaterThanOrEqual(band.x)
+  }
+  // The page's own label for another call's speaker is shown whole.
+  expect(chips.filter((box) => box.text === 'other call').map((box) => box.cut)).toEqual([false])
+  expect(chips[0].cut).toBe(true)
+  const spill = await page.locator('#lane-tags li, .graph-legend, .lanes-head').evaluateAll((nodes) => nodes.filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent))
+  expect(spill).toEqual([])
+  await expectClean(page, seen)
 })

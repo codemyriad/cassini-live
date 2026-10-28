@@ -57,6 +57,39 @@ test('light state hues keep 3:1 on the page and panels and differ in lightness',
   for (let i = 1; i < lightness.length; i++) assert.ok(lightness[i] - lightness[i - 1] >= 10, `L* ${lightness}`)
 })
 
+test('the four lane states differ in lightness, not only in hue, in both themes', () => {
+  // Captioned, held (its outline), paused (its fill) and lost, as the lane band draws them.
+  for (const [name, theme] of Object.entries(THEMES)) {
+    const lightness = ['cyan', 'waiting', 'paused-bg', 'red'].map((token) => lab(theme[token])[0]).sort((a, b) => a - b)
+    for (let i = 1; i < lightness.length; i++) assert.ok(lightness[i] - lightness[i - 1] >= 10, `${name}: L* ${lightness}`)
+  }
+  // Held and paused keep their edges visible on the lane: 3:1 on the panel.
+  for (const [name, theme] of Object.entries(THEMES)) {
+    for (const edge of ['waiting', 'amber']) assert.ok(contrast(theme[edge], theme.panel) >= 3, `${name}: ${edge} on panel`)
+  }
+})
+
+// The colour token of a rule as app.css writes it: `<selector> { … color: var(--token); … }`.
+function ruleColor(selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = css.match(new RegExp(`^${escaped}\\s*\\{[^}]*?[\\s;{]color:\\s*var\\(--([\\w-]+)\\)`, 'm'))
+  assert.ok(match, selector)
+  return match[1]
+}
+
+test('the lag graph legend words keep 4.5:1 on the page; gold only keys the ticks', () => {
+  // 12 px words beside the graph, on the page, need AA text contrast; the ▮ key is a graphic.
+  for (const [name, theme] of Object.entries(THEMES)) {
+    for (const selector of ['.graph-legend .shed', '.graph-legend .admit', '.graph-legend .sent']) {
+      const token = ruleColor(selector)
+      assert.ok(contrast(theme[token], theme.bg) >= 4.5, `${name}: ${selector} (${token}) on bg`)
+    }
+    assert.ok(contrast(theme[ruleColor('.graph-legend .key')], theme.bg) >= 3, `${name}: the caption-sent key on bg`)
+    // The graph's "lag" label sits on the graph's panel.
+    assert.ok(contrast(theme[ruleColor('.graph-label')], theme.panel) >= 4.5, `${name}: the lag label on panel`)
+  }
+})
+
 test('text tokens keep 4.5:1 on the page and panels; the outline only draws edges', () => {
   for (const [name, theme] of Object.entries(THEMES)) {
     for (const text of ['text-main', 'text-soft', 'text-dim']) {

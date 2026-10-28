@@ -6,6 +6,7 @@
  * `style-src 'self'`, so sizes go through CSSOM, never a style attribute.
  */
 
+import { $, el, ensureChildren, setFraction, setText, setTone, show } from './dom.js'
 import { backoffMs, feedHistory, feedPath, historyStart, mergeColumns, POLL_MS, restarted } from './feed.js'
 import {
   decisionLine,
@@ -21,6 +22,7 @@ import {
   unreachable,
   videoLine,
 } from './format.js'
+import { renderLanes } from './lanesView.js'
 
 // The connection line ages once a second while a poll is pending or backing off.
 const TICK_MS = 1000
@@ -42,39 +44,6 @@ const state = {
   nextPollAt: 0,
   // The one pending timer: the next poll, or the next connection-line refresh.
   timer: null,
-}
-
-const $ = (id) => document.getElementById(id)
-
-function setText(node, text) {
-  const value = text === null || text === undefined ? '' : String(text)
-  if (node.textContent !== value) node.textContent = value
-}
-
-function setTone(node, tone) {
-  if (node.dataset.tone !== tone) node.dataset.tone = tone
-}
-
-function show(node, visible) {
-  if (node.hidden === visible) node.hidden = !visible
-}
-
-function setFraction(node, property, fraction) {
-  node.style.setProperty(property, `${(fraction * 100).toFixed(2)}%`)
-}
-
-function el(tag, className, text) {
-  const node = document.createElement(tag)
-  if (className) node.className = className
-  if (text !== undefined) node.textContent = text
-  return node
-}
-
-// Keep exactly `count` children made by `make`, reusing the ones there.
-function ensureChildren(parent, count, make) {
-  while (parent.children.length < count) parent.appendChild(make())
-  while (parent.children.length > count) parent.lastElementChild.remove()
-  return Array.from(parent.children)
 }
 
 /* ---------- polling ---------- */
@@ -184,13 +153,17 @@ function render() {
   const body = state.body
   const sample = body ? body.sample : null
   const now = body ? body.now : 0
+  // Lane ids count from 1 in each Cassini Live process, and its monotonic clock keeps
+  // counting across a container restart: older columns may be another process's speakers.
+  const history = feedHistory(state.columns, state.historyStart)
   // Before the first sample the figures are the video's empty ones, shown dimmed.
   document.body.classList.toggle('waiting', !sample)
   renderHeader(sample, state.columns, now)
   renderHero(sample)
+  renderLanes(sample, history, body ? body.window : null, now)
   renderDecision(sample)
   renderFooter(sample)
-  renderStages(pipelineStages(sample, feedHistory(state.columns, state.historyStart), now))
+  renderStages(pipelineStages(sample, history, now))
   renderPanels(protectionPanels(sample))
   const video = videoLine(body ? body.video : null)
   setText($('video'), video.text)

@@ -341,7 +341,9 @@ def test_the_page_markup_suits_its_csp_and_the_proxy(monkeypatch, headers):
     assert parser.styles == 0 and parser.inline == [] and parser.handlers == []
     assert parser.lang and parser.viewport and parser.noscript
     # Two polite announcements: the status pill and the connection line, nothing louder.
-    assert parser.live == {"pill": "polite", "freshness": "polite"} and parser.roles == []
+    # The only roles are the lane band's and the lag graph's: images with a summary.
+    assert parser.live == {"pill": "polite", "freshness": "polite"}
+    assert parser.roles == ["img", "img"]
     for required in ("pill", "engine", "observe", "freshness", "lanes", "decision", "stages"):
         assert required in parser.ids, required
     # Relative to the page, so they resolve under the AppAPI proxy prefix.
