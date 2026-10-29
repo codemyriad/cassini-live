@@ -108,3 +108,15 @@ test('timestamps come from the entries', () => {
   assert.equal(store.items[0].lines[0].at, 1700)
   assert.equal(store.items[0].startedAt, 1700)
 })
+
+
+test('poll eviction releases an already pending first retained final and its successors', () => {
+  const store = createStore()
+  store.applyLiveFinal(final(3, 'a', 'three'))
+  store.applyLiveFinal(final(4, 'a', 'four'))
+  store.applyPoll([final(3, 'a', 'three')])
+  assert.deepEqual(texts(store), ['three', 'four'])
+  assert.equal(store.confirmedSeq, 4)
+  store.applyPoll([final(3, 'a', 'three'), final(4, 'a', 'four')])
+  assert.deepEqual(texts(store), ['three', 'four'])
+})

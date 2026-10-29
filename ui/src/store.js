@@ -85,8 +85,10 @@ export function createStore() {
   function ingest(entry) {
     const seq = entry && typeof entry.seq === 'number' ? entry.seq : null
     if (seq === null) return // only seq-tagged entries belong on the timeline
-    if (seq <= appliedSeq || pending.has(seq)) return // already have it
+    if (seq <= appliedSeq) return // already rendered
+    if (pending.has(seq) && seq !== appliedSeq + 1) return // still held behind a gap
     if (seq === appliedSeq + 1) {
+      pending.delete(seq) // eviction may have made a held entry contiguous
       render(entry)
       appliedSeq = seq
       while (pending.has(appliedSeq + 1)) {
