@@ -21,7 +21,7 @@ secret once in deploy options; its URL is discovered from Talk.
 Cassini Live is a companion to Cassini recordings. It replaces the official Live Transcription
 ExApp because Talk currently requires the live_transcription app ID. Install only one provider.
 This is an initial development release, not yet published to the Nextcloud App Store.]]></description>
-  <version>0.8.2</version>
+  <version>0.10.0</version>
   <licence>agpl</licence>
   <author>codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -35,7 +35,7 @@ This is an initial development release, not yet published to the Nextcloud App S
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.8.2</image-tag>
+      <image-tag>0.10.0</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -59,6 +59,14 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
          page and its API are admin-only; the app checks methods and CSRF itself. -->
     <routes>
       <route><url>^/?status$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <!-- USER: late-joiner catch-up. GET /history?token=<roomToken> returns the
+           current call's finals; membership is re-checked in the handler by acting
+           as the caller over Talk's OCS API. -->
+      <route><url>^/?history$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <!-- The transcript panel bundle and its bookmarklet install page: read-only
+           static content for any logged-in user. Same-origin serving is what lets
+           the bookmarklet pass Talk's CSP and the panel reach future ExApp routes. -->
+      <route><url>^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$</url><verb>GET</verb><access_level>USER</access_level></route>
       <route><url>^/?settings/(index\.html|app\.js|app\.css)$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/licenses/[A-Za-z0-9.-]+\.txt$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/state$</url><verb>GET</verb><access_level>ADMIN</access_level></route>

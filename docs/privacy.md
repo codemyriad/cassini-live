@@ -8,9 +8,13 @@ organisation's meeting practices.
 
 Audio is held in bounded memory buffers and subprocess pipes. Recognised text
 is sent through the existing HPB to participants who enabled captions.
-Cassini Live writes neither recordings nor transcripts to disk and exposes
-neither caption history nor room lists in its status API. Participants' clients
-may retain displayed text; other installed Talk features have their own policies.
+Cassini Live writes neither recordings nor transcripts to disk. It keeps a
+bounded in-memory transcript of the **current call** so that someone who joins
+late can catch up on what was said; this is served only to participants of that
+call (membership is checked against Talk for each request) and is dropped when
+the call's caption session ends. The status API still exposes neither caption
+history nor room lists. Participants' clients may retain displayed text; other
+installed Talk features have their own policies.
 
 The app calls your Nextcloud for lifecycle, settings form registration, public
 URL and signalling settings, and connects to your HPB and configured STUN/TURN services.
