@@ -137,6 +137,9 @@ for recordings.
 
 ## Development
 
+To run this checkout against an existing Nextcloud/Talk harness with no Cassini
+checkout dependency, use the [standalone development script](docs/dev-harness.md).
+
 With Python 3.12 and [uv](https://docs.astral.sh/uv/):
 
 ```sh
