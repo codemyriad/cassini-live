@@ -7,7 +7,9 @@
 //     speaker's display name (`names: true` in the feed);
 //   - a second administrator who is not a participant sees the same lanes as
 //     "Participant" (`names: false`), and the speaker's name appears nowhere on the page;
-//   - the page loads under the app's CSP without violations.
+//   - the page loads under the app's CSP without violations;
+//   - signed out while the page is open, it names AppAPI's refusal (Nextcloud's HTML 404)
+//     instead of reporting Cassini Live as unreachable.
 //
 // Not part of `npm test`: needs the harness up and the ExApp installed
 // (gocassini: ./harness/bin/live-panel-setup.sh) and a second admin account. Run from the
@@ -194,6 +196,16 @@ try {
     if (v.violations.length) throw new Error(`${who}: CSP violations ${v.violations}`)
     if (w.problems.length) throw new Error(`${who}: ${w.problems.join('; ')}`)
   }
+
+  // Signed out while the page is open: AppAPI answers with Nextcloud's HTML 404, which the
+  // page must name as a refusal, not as Cassini Live being down.
+  await auditor.page.context().clearCookies()
+  const out = await auditor.page.waitForFunction(
+    () => /Nextcloud refused the feed/.test(document.getElementById('freshness')?.textContent || ''),
+    null,
+    { timeout: 15000 },
+  ).then(() => auditor.page.evaluate(() => document.getElementById('freshness').textContent))
+  log('signed out:', out)
   await writeFile(`${OUT}/diag-feed-member.json`, JSON.stringify(memberAnswer, null, 2))
   log('SUCCESS')
 } catch (err) {
