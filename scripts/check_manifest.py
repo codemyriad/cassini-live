@@ -32,12 +32,19 @@ def main():
         (r.findtext("url").replace(r"\/", "/"), r.findtext("verb"), r.findtext("access_level"))
         for r in routes
     ]
-    for pattern, _, level in table:
-        if pattern == "^/?status$":
-            assert level == "USER", "status is the only user route"
+    user_patterns = [
+        "^/?status$",
+        "^/?history$",
+        r"^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$",
+    ]
+    for pattern, verb, level in table:
+        if pattern in user_patterns:
+            assert level == "USER", pattern
+            if pattern.startswith("^/?panel/"):
+                assert verb == "GET", "the panel serves read-only static content"
         else:
             assert level == "ADMIN" and pattern.startswith("^/?settings/"), pattern
-    assert [p for p, _, level in table if level == "USER"] == ["^/?status$"]
+    assert [p for p, _, level in table if level == "USER"] == user_patterns
 
     # AppAPI matches "/" + path (and the bare path, deprecated); HaRP matches "/" + path.
     def matches(path, verb=None):
