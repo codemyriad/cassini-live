@@ -37,6 +37,8 @@ export function renderPage({ replay, viewer, token }) {
     const listeners = new Map()
     const bucket = (name) => { if (!listeners.has(name)) listeners.set(name, new Set()); return listeners.get(name) }
     const connection = {
+      on(name, cb) { bucket(name).add(cb) },
+      off(name, cb) { bucket(name).delete(cb) },
       getSessionId: () => ${jsonForScript(me.sid)},
       currentRoomToken: ${jsonForScript(token)},
       currentCallToken: ${jsonForScript(token)},
