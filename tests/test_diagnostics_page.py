@@ -26,6 +26,8 @@ KEYS = {
     "presence",
     "names",
     "instance",
+    "collecting",
+    "sampledAt",
     "head",
     "now",
     "sample",

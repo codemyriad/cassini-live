@@ -500,3 +500,13 @@ test('after the feed idled, captions sent count its new history, not the minute 
   const sent = pipelineStages(sample(), feedHistory(ring, start), NOW)[4]
   assert.deepEqual([sent.big, sent.unit], ['5', 'lines so far'])
 })
+
+// Stopped caption sessions retain a visible two-minute window even on a late visit.
+test('retained diagnostics use their final sampling time for the history window', async () => {
+  const { viewTime } = await import('../../src/diagnostics/feed.js')
+  const stopped = { collecting: false, sampledAt: 100, now: 1000 }
+  assert.equal(viewTime(stopped), 100)
+  assert.equal(mergeColumns([], columns(120, { now: 100 }), 120, viewTime(stopped)).length, 120)
+  assert.equal(viewTime({ ...stopped, collecting: true }), 1000)
+  assert.equal(viewTime({ now: 1000 }), 1000)
+})

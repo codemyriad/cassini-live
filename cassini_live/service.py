@@ -66,6 +66,7 @@ class CaptionService:
                 return
             if client:
                 await client.add_target(req.ncSessionId)
+                self.diagnostic_feed.start()
                 return
             if self.settings is None:
                 raise SpreedClientException("Talk's high-performance backend is not ready")
@@ -96,6 +97,7 @@ class CaptionService:
                         self.admission.require_ready()
                     await client.add_target(req.ncSessionId)
                     self.diagnostics.start(req.roomToken)
+                    self.diagnostic_feed.start()
             except BaseException:
                 if self.clients.get(req.roomToken) is client:
                     self.clients.pop(req.roomToken, None)

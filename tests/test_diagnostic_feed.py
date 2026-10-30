@@ -1,4 +1,4 @@
-"""The diagnostics page's feed: presence-driven sampling, history, owner room and names."""
+"""The diagnostics page's feed: caption-driven sampling, history, owner room and names."""
 
 import asyncio
 import json
@@ -68,8 +68,7 @@ def make_feed(monkeypatch, service, names=None, data=SNAPSHOT):
 
 
 def without_ticker(feed):
-    """For tests that step the feed at their own times: polls record presence but start no
-    ticker, whose real clock would find them long gone and idle the feed."""
+    """Stand in for a running ticker while tests step the feed at their own times."""
     feed.task = asyncio.get_running_loop().create_future()
     return feed
 
@@ -369,7 +368,7 @@ async def test_a_step_failing_as_the_owner_changes_holds_no_new_names(monkeypatc
     await feed.close()
 
 
-async def test_speech_while_nobody_watched_is_not_shown_as_current(monkeypatch):
+async def test_speech_before_a_new_session_is_not_shown_as_current(monkeypatch):
     room = Room("Ana")
     feed = make_feed(monkeypatch, service_with(room=room))
     feed._step(1.0)
@@ -377,7 +376,7 @@ async def test_speech_while_nobody_watched_is_not_shown_as_current(monkeypatch):
     feed._step(2.0)
     assert [lane["id"] for lane in feed.latest["lanes"]] == [1]
     await feed.close()
-    # Ana speaks once while the page is closed; it opens again ten minutes later.
+    # Ana speaks once between caption sessions; a new session starts ten minutes later.
     room.speak()
     feed.sampler.prime(600.0)
     feed._step(601.0)
@@ -389,30 +388,49 @@ async def test_speech_while_nobody_watched_is_not_shown_as_current(monkeypatch):
     assert [lane["id"] for lane in feed.latest["lanes"]] == [1]
 
 
-async def test_ticker_samples_while_polled_then_stops_and_drops_everything(monkeypatch):
+async def test_captions_buffer_without_viewers_and_retain_history_after_last_room(monkeypatch):
     monkeypatch.setattr(diagnostic_feed, "SAMPLE_S", 0.01)
-    monkeypatch.setattr(diagnostic_feed, "PRESENCE_S", 0.3)
-    room = Room("Ana")
-    feed = make_feed(monkeypatch, service_with(room=room))
-    primes = []
-    prime = feed.sampler.prime
-    monkeypatch.setattr(feed.sampler, "prime", lambda now=None: primes.append(now) or prime(now))
-    feed.touch("room")
+    monkeypatch.setattr(diagnostic_feed, "PRESENCE_S", 0.02)
+    room, other = Room("Ana"), Room("Bob")
+    service = service_with(room=room, other=other)
+    feed = make_feed(monkeypatch, service)
+    # Polling alone never starts sampling.
+    feed.touch(None)
+    assert feed.task is None
+    feed.start()
     task = feed.task
-    await wait_for(lambda: len(feed.columns) >= 3, lambda: feed.touch("room"))
-    assert feed.task is task and room.shown == [True] and len(primes) == 1
-    # Nobody polls any more: the ticker stops on its own and forgets what it held.
+    await wait_for(lambda: len(feed.columns) >= 4)
+    assert room.shown == []  # no viewer, no name lookup
+    first = feed.read(0)
+    assert len(first["columns"]) >= 4 and first["collecting"]
+    # A second tab reads the same history; neither poll starts another task.
+    feed.touch(None)
+    assert feed.read(0)["columns"] == first["columns"] and feed.task is task
+    feed.touch("room")
+    await wait_for(lambda: room.shown == [True, False])
+    assert not task.done()  # name presence expired, collection did not
+    service.clients.pop("room")
+    head = feed.read()["head"]
+    await wait_for(lambda: feed.read()["head"] > head)
+    assert not task.done()  # the other room keeps collecting
+    other.speak()
+    feed.touch("other")
+    await wait_for(lambda: any(lane.get("name") == "Bob" for lane in feed.latest["lanes"]))
+    service.clients.clear()
     async with asyncio.timeout(5):
         await task
-    assert room.shown == [True, False]
-    assert (feed.latest, list(feed.columns), feed.names_token()) == (None, [], None)
-    body = feed.read(0)
-    assert (body["head"], body["sample"], body["columns"], body["error"]) == (0, None, [], None)
-    # A later poll starts it again, primed afresh.
+    retained = feed.read(0)
+    assert retained["columns"] and retained["sample"] and not retained["collecting"]
+    assert "Bob" not in json.dumps(retained) and other.shown == [True, False]
     feed.touch(None)
-    assert feed.task is not task
-    await wait_for(lambda: feed.latest is not None, lambda: feed.touch(None))
-    assert len(primes) == 2 and room.shown == [True, False]
+    assert feed.task is task and feed.read(0)["columns"] == retained["columns"]
+    assert feed.read()["sampledAt"] == retained["sampledAt"]
+    # The next meeting starts fresh, without a delta spanning the idle interval.
+    service.clients["next"] = Room("Carol")
+    feed.start()
+    assert feed.instance != retained["instance"] and not feed.columns and feed.latest is None
+    await wait_for(lambda: len(feed.columns) >= 2)
+    assert feed.read()["columns"][0]["t"] > retained["head"]
     await feed.close()
     assert feed.task is None and feed.latest is None
 
@@ -426,7 +444,7 @@ async def test_the_first_tick_only_primes(monkeypatch):
         feed.sampler, "prime", lambda now=None: calls.append(("prime", now)) or prime(now)
     )
     monkeypatch.setattr(feed, "_step", lambda now: calls.append(("step", now)) or step(now))
-    feed.touch(None)
+    feed.start()
     await wait_for(lambda: len(calls) >= 2, lambda: feed.touch(None))
     await feed.close()
     (first, primed), (second, sampled) = calls[:2]
@@ -447,13 +465,13 @@ async def test_a_failing_tick_keeps_the_last_good_data_and_names_only_the_error(
         return dict(SNAPSHOT)
 
     monkeypatch.setattr(diagnostic_feed, "snapshot", snapshot)
-    feed.touch(None)
+    feed.start()
     await wait_for(lambda: len(feed.columns) >= 2, lambda: feed.touch(None))
     failing["on"] = True
     await wait_for(lambda: feed.error is not None, lambda: feed.touch(None))
     latest, columns = feed.latest, list(feed.columns)
     await asyncio.sleep(0.05)
-    feed.touch(None)
+    feed.start()
     body = feed.read(0)
     assert body["error"] == "PermissionError" and not feed.task.done()
     assert body["sample"] is latest and body["columns"] == columns
@@ -467,7 +485,7 @@ async def test_a_failing_tick_keeps_the_last_good_data_and_names_only_the_error(
 
 async def test_a_failing_prime_is_retried(monkeypatch):
     monkeypatch.setattr(diagnostic_feed, "SAMPLE_S", 0.01)
-    feed = DiagnosticFeed(service_with(), NameHolds())
+    feed = DiagnosticFeed(service_with(room=Room("Ana")), NameHolds())
     quiet(monkeypatch, feed.sampler)
     readings = iter([OSError("no cpu.stat"), (100, 90)])
 
@@ -478,7 +496,7 @@ async def test_a_failing_prime_is_retried(monkeypatch):
         return reading
 
     monkeypatch.setattr(feed.sampler, "_host_cpu", host_cpu)
-    feed.touch(None)
+    feed.start()
     await wait_for(lambda: feed.latest is not None, lambda: feed.touch(None))
     assert feed.error is None
     await feed.close()
