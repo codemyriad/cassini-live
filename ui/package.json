@@ -10,7 +10,8 @@
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "node --test tests/unit/*.test.mjs",
     "test:e2e": "playwright test",
-    "serve:fixture": "node tests/fixture-server.mjs"
+    "serve:fixture": "node tests/fixture-server.mjs",
+    "replay": "node replay/server.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

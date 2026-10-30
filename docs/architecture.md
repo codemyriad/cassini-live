@@ -168,6 +168,11 @@ runs a paced ten-track meeting through real VAD and Whistle (set
 `NEEDLE3_LIB_PATH` to the native engine). Add `--speakers 2` for overlap.
 This fixture bypasses WebRTC; it is not a substitute for a real Talk call.
 
+`uv run python -m cassini_live.replay meeting.mkv` plays an archived Cassini
+recording (one audio track per participant) through the same transcribers, VAD
+and engine, and writes a timeline the transcript panel can be scrubbed through
+(`cd ui && npm run replay -- meeting.replay.json`). See [replay](replay.md).
+
 ## Capacity measurement
 
 `cassini_live.capacity` exercises the actual gate, queues and loaded engine
