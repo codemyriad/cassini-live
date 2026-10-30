@@ -19,6 +19,9 @@ POOL = None  # Set by application lifespan before rooms can be created.
 # Decision 4: the only per-speaker channel Talk offers is the speaker's own preview line,
 # seen by every caption viewer in the room; the next partial replaces it.
 PAUSED_NOTICE = "Captions paused for this speaker while the server catches up"
+# A track silent this long (DTX, mute) ends its speech segment. The meeting replay
+# (replay.py) raises it while it stalls the audio for a slow engine.
+RECEIVE_TIMEOUT = 1.0
 
 
 class AdmissionRefused(CapacityError):
@@ -189,7 +192,7 @@ class WhistleTranscriber:
                 try:
                     # DTX/muted clients can stop sending frames altogether.
                     # Finish speech and free its worker even without silence frames.
-                    frame = await asyncio.wait_for(self.stream.receive(), 1.0)
+                    frame = await asyncio.wait_for(self.stream.receive(), RECEIVE_TIMEOUT)
                 except TimeoutError:
                     self._flush_gate()
                     continue

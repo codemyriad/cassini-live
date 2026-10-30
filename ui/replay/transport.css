@@ -1,0 +1,166 @@
+/* Replay page: a Talk-call-shaped layout (dark stage, white sidebar) plus the
+ * transport bar. The panel brings its own styles in its shadow root. */
+:root {
+  --stage: #181818;
+  --sidebar: #ffffff;
+  --bar: #f5f5f5;
+  --text: #222;
+  --muted: #666;
+  --accent: #0082c9;
+  --sidebar-width: 380px;
+  --topbar-height: 44px;
+  --transport-height: 56px;
+  color-scheme: light;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  background: var(--stage);
+}
+.topbar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: var(--topbar-height);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  background: var(--accent);
+  color: #fff;
+  z-index: 3;
+}
+.topbar__brand { font-weight: 600; }
+.topbar__title { opacity: 0.95; }
+.topbar__meta { margin-left: auto; opacity: 0.8; font-size: 12px; }
+
+#app-content-vue.call {
+  position: fixed;
+  top: var(--topbar-height);
+  left: 0;
+  right: var(--sidebar-width);
+  bottom: var(--transport-height);
+  overflow: auto;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.call__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  height: 100%;
+}
+.tile {
+  position: relative;
+  min-height: 160px;
+  border-radius: 12px;
+  background: #2b2b2b;
+  display: grid;
+  place-items: center;
+  color: #eee;
+}
+.tile--me { outline: 2px solid var(--accent); }
+.tile__avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 32px;
+  background: #4a4a4a;
+}
+.video-container__user-name {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 13px;
+}
+.transcript { display: none; }
+
+#app-sidebar-vue {
+  position: fixed;
+  top: var(--topbar-height);
+  right: 0;
+  bottom: var(--transport-height);
+  width: var(--sidebar-width);
+  background: var(--sidebar);
+  border-left: 1px solid #ddd;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.app-sidebar-header { padding: 12px 16px 4px; }
+.app-sidebar-header__mainname { margin: 0; font-size: 18px; font-weight: 600; }
+.app-sidebar-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.app-sidebar-tabs__nav {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid #e5e5e5;
+}
+.tabBtn {
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tabBtn--selected {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.app-sidebar-tabs__content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.app-sidebar__tab { display: none; padding: 12px 16px; }
+.app-sidebar__tab--active { display: block; }
+.placeholder { color: var(--muted); margin: 0; padding-left: 18px; }
+p.placeholder { padding-left: 0; }
+
+.transport {
+  position: fixed;
+  inset: auto 0 0 0;
+  height: var(--transport-height);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  box-sizing: border-box;
+  background: var(--bar);
+  border-top: 1px solid #ddd;
+  z-index: 3;
+}
+.transport button {
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  background: #fff;
+  cursor: pointer;
+  min-width: 44px;
+}
+.transport button[aria-pressed='true'] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.transport__time { font-variant-numeric: tabular-nums; min-width: 110px; }
+.transport input[type='range'] { flex: 1; min-width: 120px; }
+.transport label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.transport select, .transport input[type='text'] { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #ccc; background: #fff; }
+.transport__clock { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-width: 320px; }
+  .topbar__meta { display: none; }
+}

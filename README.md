@@ -149,6 +149,10 @@ For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
 `docker build -t cassini-live:0.9.0 .`.
 
+To see what the transcript panel would have shown at any moment of a past
+meeting, replay one of Cassini's archived recordings through the pipeline and
+scrub the result: [docs/replay.md](docs/replay.md).
+
 This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish
 production readiness or replace human review.
