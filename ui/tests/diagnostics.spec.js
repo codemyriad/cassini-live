@@ -533,3 +533,21 @@ test('long, emoji and right-to-left names fit a 375 px phone', async ({ page }, 
   expect(spill).toEqual([])
   await expectClean(page, seen)
 })
+
+
+test('a late visit shows retained history and labels it as stopped', async ({ page }, info) => {
+  await page.route('**/diagnostics/api/feed?*', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json()
+    body.collecting = false
+    body.sampledAt = body.now
+    body.now += 600
+    await route.fulfill({ response, json: body })
+  })
+  const seen = await open(page, info, { before: (id) => control(page.request, id, TEN) })
+  await expect(page.locator('#freshness')).toHaveText('Captions stopped · showing final diagnostics')
+  await expect(page.locator('#pill-label')).toHaveText('No captions running')
+  await expect.poll(async () => (await reach(page)).lanes).toBeGreaterThan(60)
+  expect((await reach(page)).graph).toBeGreaterThan(60)
+  await expectClean(page, seen)
+})

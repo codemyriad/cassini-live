@@ -7,7 +7,7 @@
  */
 
 import { $, el, ensureChildren, setFraction, setText, setTone, show } from './dom.js'
-import { backoffMs, feedHistory, feedPath, historyStart, mergeColumns, POLL_MS, restarted } from './feed.js'
+import { backoffMs, feedHistory, feedPath, historyStart, mergeColumns, POLL_MS, restarted, viewTime } from './feed.js'
 import {
   decisionLine,
   engineLine,
@@ -123,7 +123,7 @@ function accept(body) {
     state.nextPollAt = 0
     return
   }
-  state.columns = mergeColumns(state.columns, body.columns, body.window, body.now)
+  state.columns = mergeColumns(state.columns, body.columns, body.window, viewTime(body))
   state.historyStart = historyStart(state.historyStart, body)
   if (state.columns.length) state.head = state.columns[state.columns.length - 1].t
   state.lastNow = body.now
@@ -166,7 +166,7 @@ document.addEventListener('visibilitychange', () => {
 function render() {
   const body = state.body
   const sample = body ? body.sample : null
-  const now = body ? body.now : 0
+  const now = body ? viewTime(body) : 0
   // Only the history since the feed last started: the seconds before it were not sampled.
   // Columns from another Cassini Live process never get here (accept drops them).
   const history = feedHistory(state.columns, state.historyStart)
@@ -193,6 +193,10 @@ function renderConnection() {
   let line
   if (state.refused) line = { stale: true, text: REFUSED, tone: 'bad' }
   else if (state.failures) line = (state.notServed ? notServed : unreachable)(state.lastOkAt, now)
+  else if (state.body?.collecting === false) line = {
+    stale: false, tone: 'idle',
+    text: state.body.sample ? 'Captions stopped · showing final diagnostics' : 'Waiting for live captions',
+  }
   else line = freshness(state.lastOkAt, now)
   setText($('freshness'), line.text)
   setTone($('freshness'), line.tone)
@@ -200,7 +204,9 @@ function renderConnection() {
 }
 
 function renderHeader(sample, columns, now) {
-  const pill = state.refused ? { label: 'No access', tone: 'bad', note: '' } : statusPill(sample, columns, now)
+  let pill = statusPill(sample, columns, now)
+  if (state.refused) pill = { label: 'No access', tone: 'bad', note: '' }
+  else if (state.body?.collecting === false) pill = { label: 'No captions running', tone: 'idle', note: '' }
   setText($('pill-label'), pill.label)
   setTone($('pill'), pill.tone)
   setText($('pill-note'), pill.note)

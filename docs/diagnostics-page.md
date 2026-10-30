@@ -57,8 +57,9 @@ keeps showing the last good numbers.
 ## How it works
 
 The page polls the feed, `diagnostics/api/feed`, a second after each answer.
-The first poll wakes the feed: a one-second ticker whose sampler reads the same
-state as the video's sampler, with the same code. The feed keeps the latest
+Starting live captions wakes the feed: a one-second ticker whose sampler reads
+the same state as the video's sampler, with the same code. Collection continues
+while any caption room remains, even if nobody opens the page. The feed keeps the latest
 sample and two minutes of one-second history columns. It answers each poll with
 the sample and the columns newer than the newest one the page has. The page
 keeps its own copy of the two minutes and draws both panes from it.
@@ -73,7 +74,7 @@ administrator's browser            caption service process
 │                      │ ◄──────── │  touch(), then read(since)           │
 └──────────────────────┘ JSON, 1/s └──────────────────┬───────────────────┘
                                                       │ sampling goes on
-                                                      ▼ while polled < 30 s
+                                                      ▼ while captions run
                                    ┌──────────────────────────────────────┐
                                    │ DiagnosticFeed                       │
                                    │  1 Hz ticker, the latest sample and  │
@@ -112,15 +113,20 @@ token, session id or participant id.
 
 ## Cost
 
-Nothing is sampled until an administrator opens the page. The footer shows the
+Sampling starts when live captions start, without waiting for an administrator
+to open the page. The footer shows the
 sampler's own CPU time per sample as "Sampling". The 0.6.0 sampler, before
 lanes and names, used 1.1–3.0 ms per update on staging in one short call
 ([verification](verification.md)); the current sampler has not been measured
-there. Thirty seconds after the last poll the ticker stops and drops its two
-minutes of history and its hold on names, so a page opened later fills its
-lanes from that moment.
+there. When the last caption room closes, the ticker stops on its next tick and
+releases its hold on names. Its final two minutes of anonymous history stay in
+memory and remain visible on the page, labelled as stopped. A new caption
+session starts a fresh history; shutting down the service discards the buffer.
+Viewer presence only controls name lookup, which expires 30 seconds after the
+last authorized poll.
 
-A hidden browser tab stops polling, and polls again at once when shown. Each
+A hidden browser tab stops polling, and polls again at once when shown. This
+does not stop collection while captions run. All tabs share the server buffer. Each
 answer carries only the history columns the page doesn't have yet: up to 120
 on the first poll, then about one per second. The largest answer we could
 construct (ten lanes in every column, every name 20 emoji, every number at its
@@ -138,7 +144,8 @@ app's own administrator check), stops polling until you reload.
 
 Lane numbers count from 1 in each Cassini Live process, and a restarted
 container keeps the host's monotonic clock. Each answer therefore carries a
-random `instance` token. When it changes, or when the clock goes back, the page
+random `instance` token, also renewed when a new caption session replaces a
+retained history. When it changes, or when the clock goes back, the page
 drops its history and asks again from the start.
 
 ## Access
@@ -159,7 +166,10 @@ The feed, `GET diagnostics/api/feed?since=<seconds>`, returns:
 - `columns`: the history columns newer than `since`
 - `head` (the newest column's time, 0 when there is none) and `now`, both in
   the app process's monotonic seconds
-- `instance`: a random token, new each time the app starts
+- `instance`: a random token, new on app startup and when retained history is replaced
+- `collecting`: whether the sampler is running
+- `sampledAt`: the final/latest sample time in monotonic seconds; the page anchors
+  stopped history here rather than aging it out
 - `names`: whether names are included
 - `video`: the diagnostic video's status
 - `error`: the exception type when the last sample failed, otherwise null

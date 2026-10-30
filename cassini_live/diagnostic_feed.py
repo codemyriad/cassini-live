@@ -1,9 +1,7 @@
-"""The diagnostics page's feed: one-second samples and history while an administrator watches.
+"""One-second diagnostics and a two-minute memory buffer while captions run.
 
-The feed's own DiagnosticSampler reads the same live state with the same code as the
-diagnostic video's, so their numbers agree; each keeps its own continuity. Nothing runs while
-nobody polls: the ticker stops PRESENCE_S after the last poll and drops its history and its
-hold on participant names.
+Viewer presence controls participant-name lookup only. When the last caption room
+closes, keep the final buffer until captions restart or the service shuts down.
 """
 
 import asyncio
@@ -12,7 +10,7 @@ import time
 from collections import deque
 
 from .diagnostic_history import COLUMNS, history_column
-from .diagnostics import SAMPLE_S, DiagnosticSampler
+from .diagnostics import OTHER_CALL_SPEAKER, SAMPLE_S, SOME_SPEAKER, UNNAMED, DiagnosticSampler
 from .resources import snapshot
 
 # A viewer counts as watching this long after its last poll; the page polls once a second.
@@ -36,9 +34,9 @@ class DiagnosticFeed:
         # its columns are another process's. A random token: it says nothing else.
         self.instance = secrets.token_hex(8)
         self.task = None
-        # Monotonic times of the last poll, and of the last by a member of room `_member_of`:
+        # Monotonic time of the last poll by a member of room `_member_of`:
         # Talk checked that room only, so its presence holds no other room's names.
-        self._viewer = self._member = self._member_of = None
+        self._member = self._member_of = None
         # The client whose names this feed holds.
         self._holding = None
         self.columns = deque(maxlen=COLUMNS)
@@ -46,17 +44,21 @@ class DiagnosticFeed:
         # The room whose names `latest` may carry.
         self.latest_owner_token = None
         self.error = None
+        self.sampled_at = None
+
+    def start(self):
+        """Start once when captions begin; a new run gets a fresh history."""
+        if self.task is None or self.task.done():
+            if self.latest is not None:
+                self.instance = secrets.token_hex(8)
+            self._idle()
+            self.task = asyncio.create_task(self._run())
 
     def touch(self, member_of, now=None):
-        """A poll keeps the feed sampling for PRESENCE_S. A poll by a member of room
-        `member_of`, as Talk answered, also keeps that room's participant names read for as
-        long while it is the owner room."""
+        """Keep an authorized viewer's name lookup alive, without starting collection."""
         now = time.monotonic() if now is None else now
-        self._viewer = now
         if member_of:
             self._member, self._member_of = now, member_of
-        if self.task is None or self.task.done():
-            self.task = asyncio.create_task(self._run())
 
     def _select(self):
         clients = self.service.clients
@@ -80,7 +82,7 @@ class DiagnosticFeed:
     async def _run(self):
         primed = False
         try:
-            while _recent(self._viewer, time.monotonic()):
+            while self.owner_token() is not None:
                 now = time.monotonic()
                 try:
                     # The first tick only primes: CPU figures need a second to measure.
@@ -96,7 +98,16 @@ class DiagnosticFeed:
                     self.error = type(error).__name__
                 await asyncio.sleep(SAMPLE_S)
         finally:
-            self._idle()
+            self._release()
+            self._member = self._member_of = None
+            # Retain anonymous history, not names after their lookup lifetime ends.
+            if self.latest is not None:
+                for lane in self.latest.get("lanes", []):
+                    if "name" in lane:
+                        lane["name"] = UNNAMED
+                decision = self.latest.get("decision")
+                if decision and decision.get("who") != OTHER_CALL_SPEAKER:
+                    decision["who"] = SOME_SPEAKER
 
     def _step(self, now):
         started = time.thread_time()
@@ -113,12 +124,15 @@ class DiagnosticFeed:
             # Rounded as the page sends it back in `since`.
             self.columns.append(history_column(self.latest, sample, round(now, 3)))
         self.latest, self.latest_owner_token = sample, token
+        self.sampled_at = round(now, 3)
 
     def read(self, since=0.0):
         """The latest sample and the columns newer than `since`; times are this process's
         monotonic seconds, lane numbers this feed's (`instance`)."""
         return {
             "instance": self.instance,
+            "collecting": self.task is not None and not self.task.done(),
+            "sampledAt": self.sampled_at,
             "head": self.columns[-1]["t"] if self.columns else 0,
             "now": round(time.monotonic(), 3),
             "sample": self.latest,
@@ -133,10 +147,10 @@ class DiagnosticFeed:
 
     def _idle(self):
         self._release()
-        # Speech while nobody watches would otherwise show as current on the next start.
+        # A later caption session must establish fresh counter and voice baselines.
         self.sampler.forget_voices()
         self.columns.clear()
-        self.latest = self.latest_owner_token = self.error = None
+        self.latest = self.latest_owner_token = self.error = self.sampled_at = None
         self._member = self._member_of = None
 
     async def close(self):

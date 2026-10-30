@@ -2,7 +2,7 @@
 
 AppAPI and HaRP enforce the ADMIN access level of the routes in appinfo/info.xml; every
 route here is a read-only GET. The page is a static bundle built from ui/ into
-cassini_live/static/diagnostics/, served with the settings page's CSP and headers. Polls
+cassini_live/static/diagnostics/, served with the settings page's CSP and headers. Caption rooms
 keep the feed sampling (diagnostic_feed). Names of the owner room's speakers go only to an
 administrator who is a participant of that room, checked with Talk as them on each poll
 (answers cached briefly); everyone else reads generic labels. Lanes carry the sampler's

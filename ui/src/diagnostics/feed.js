@@ -24,7 +24,7 @@ export function backoffMs(failures) {
  * The answer comes from another Cassini Live process than the last one, whose columns and
  * lane numbers start over: its instance changed, or its monotonic clock went back (a
  * rebooted or another host). A restarted container keeps the host's clock (measured), and
- * its first answer to this page can already hold columns when another administrator kept
+ * its first answer to this page can already hold columns when captions kept
  * the new feed running, so only the instance tells it apart. Without an instance on either
  * side, the clock alone decides.
  */
@@ -35,7 +35,7 @@ export function restarted(lastNow, now, lastInstance, instance) {
 
 /**
  * Where the feed's own history begins, in server seconds, after `body`: an answer with head 0
- * holds no columns, so the feed has just started or dropped them (nobody polled for 30 s),
+ * holds no columns, so the feed has not sampled yet or a new caption session started,
  * and its next columns count from a fresh first sample. Null while the page has seen no
  * such answer.
  */
@@ -65,4 +65,9 @@ export function mergeColumns(ring, incoming, window, now) {
   const size = Number.isInteger(window) && window > 0 ? window : WINDOW
   const kept = ring.concat(added).slice(-size)
   return typeof now === 'number' ? kept.filter((column) => column.t > now - size) : kept
+}
+
+/** Retained history stays positioned at its final sample after captions stop. */
+export function viewTime(body) {
+  return body.collecting === false && typeof body.sampledAt === 'number' ? body.sampledAt : body.now
 }
