@@ -100,6 +100,11 @@ way the loader bookmarklet mounts it. The server owns the meeting clock:
   final lands.
 - A seek remounts the panel (its store is append-only by `seq`, like a live
   call's); playing just lets it poll. Speeds up to 16×. Space, ← and → work.
+  With the HPB panel, history polls run every three wall-clock seconds; at
+  16×, a poll can advance through 48 seconds of meeting history. Finals and
+  joins arrive in batches without being lost. Pause and seek to inspect an
+  exact moment. Replay implements the panel's connection subscription API and
+  acknowledges caption activation locally; it does not simulate the HPB feed.
 - "View as" reloads the page as another participant: their lines get the
   `you` chip and their join reads "You joined here". `?t=mm:ss` in the URL
   opens at that time.

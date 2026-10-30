@@ -60,10 +60,14 @@ const pageScript = `
     if (!listeners.has(name)) listeners.set(name, new Set())
     return listeners.get(name)
   }
+  // Talk's signalling connection is an emitter; the live caption feed arrives on
+  // its raw 'message' event (which carries cassini-live's seq), as in real Talk.
   const connection = {
     getSessionId: () => ${JSON.stringify(FULL.me)},
     currentRoomToken: 'room-1',
     currentCallToken: 'room-1',
+    on(name, cb) { bucket('conn:' + name).add(cb) },
+    off(name, cb) { bucket('conn:' + name).delete(cb) },
     // the authoritative roster: full session id -> {userid, user.displayname}
     joinedUsers: {
       ${JSON.stringify(FULL.me)}: { sessionid: ${JSON.stringify(FULL.me)}, userid: 'me', user: { displayname: 'Mel Me' } },
@@ -74,8 +78,6 @@ const pageScript = `
   window.OCA = {
     Talk: {
       SimpleWebRTC: {
-        on(name, cb) { bucket(name).add(cb) },
-        off(name, cb) { bucket(name).delete(cb) },
         connection,
         // peers carry no nick in this Talk build (as measured)
         webrtc: { peers: [ { id: ${JSON.stringify(FULL.alice)}, type: 'video' }, { id: ${JSON.stringify(FULL.bob)}, type: 'video' } ] },
@@ -85,13 +87,15 @@ const pageScript = `
   window.OC = {
     getCurrentUser: () => ({ uid: 'me', displayName: 'Mel Me' }),
     generateUrl: (p) => '/index.php' + p,
+    requestToken: 'fixture-request-token',
   }
   window.__FIXTURE__ = {
     // the SHORT (event) ids and the FULL ids (as the roster/timeline use)
     sid: ${JSON.stringify(SID)},
     full: ${JSON.stringify(FULL)},
-    transcript(data) { for (const cb of bucket('transcript')) cb(data) },
-    listenerCount(name) { return bucket(name).size },
+    // emit a raw signalling 'message' — the live HPB feed (finals carry seq)
+    message(data) { for (const cb of bucket('conn:message')) cb(data) },
+    listenerCount(name) { return bucket('conn:' + name).size },
     // call/room controls, driving the session scoping
     setCall(room, call) { connection.currentRoomToken = room; connection.currentCallToken = call || null },
     endCall() { connection.currentCallToken = null },
@@ -112,6 +116,10 @@ const pageScript = `
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ token, clear: true }),
       }).then((r) => r.json())
+    },
+    // which conversations the panel turned captions on for (auto-enable)
+    enabledTokens() {
+      return fetch('/fixture-enabled').then((r) => r.json())
     },
     // sidebar presence, for the reactive show/hide
     removeSidebar() { document.getElementById('app-sidebar-vue')?.remove() },
@@ -191,12 +199,28 @@ function timeline(token) {
   return timelines.get(token)
 }
 
+// Conversations the panel enabled captions for (Talk's live-transcription POST).
+const enabled = []
+
 export function startFixtureServer(port = PORT) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`)
     if (url.pathname.startsWith('/call/')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': CSP })
       res.end(page)
+      return
+    }
+    // Talk's "turn captions on" endpoint — record which conversation was enabled.
+    const enableMatch = url.pathname.match(/\/apps\/spreed\/api\/v1\/live-transcription\/([^/]+)$/)
+    if (enableMatch && req.method === 'POST') {
+      if (!enabled.includes(enableMatch[1])) enabled.push(enableMatch[1])
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ocs: { meta: { status: 'ok' } } }))
+      return
+    }
+    if (url.pathname === '/fixture-enabled') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(enabled))
       return
     }
     if (url.pathname.endsWith('/live_transcription/fixture-append')) {
@@ -209,7 +233,13 @@ export function startFixtureServer(port = PORT) {
           tl.entries = []
           tl.seq = 0
         }
-        for (const e of entries || []) tl.entries.push({ ...e, seq: ++tl.seq })
+        // Honor an explicit seq so tests keep the live feed and the poll on one
+        // shared seq space (as cassini-live does); otherwise auto-assign.
+        for (const e of entries || []) {
+          const seq = typeof e.seq === 'number' ? e.seq : tl.seq + 1
+          tl.seq = Math.max(tl.seq, seq)
+          tl.entries.push({ ...e, seq })
+        }
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ head: tl.seq }))
       })
