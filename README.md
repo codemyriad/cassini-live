@@ -126,7 +126,7 @@ You need Nextcloud with Talk's High-performance backend, AppAPI, a deploy daemon
 and Linux with cgroup v2 (PSI pressure statistics are optional: without them
 admission does not use the CPU-stall input). The image includes
 Whistle and runs offline after installation. Only an optional Nemotron engine
-needs a download from GitHub, when an administrator chooses it. An administrator must supply the
+needs a download (from dist.gocassini.com), when an administrator chooses it. An administrator must supply the
 HPB internal secret.
 
 Follow the [installation instructions](docs/install.md). There is no published
