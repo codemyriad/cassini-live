@@ -46,11 +46,16 @@ async def test_concurrent_requests_join_room_once_and_stop_last_receiver():
     )
     assert len(created) == 1
     assert set(created[0].targets) == {"a", "b"}
+    assert service.diagnostic_feed.task is not None
+    feed_task = service.diagnostic_feed.task
     await service.request(req.model_copy(update={"enable": False}))
     assert "room" in service.clients
     await service.request(req.model_copy(update={"enable": False, "ncSessionId": "b"}))
     assert service.clients == {}
     assert created[0].defunct.is_set()
+    async with asyncio.timeout(3):
+        await feed_task
+    await service.close()
 
 
 async def test_failed_join_cleans_room_and_reports_failure():
@@ -61,6 +66,7 @@ async def test_failed_join_cleans_room_and_reports_failure():
     with pytest.raises(SpreedClientException):
         await service.request(TranscribeRequest(roomToken="room", ncSessionId="a"))
     assert not service.clients
+    assert service.diagnostic_feed.task is None
     assert client.defunct.is_set()
 
 

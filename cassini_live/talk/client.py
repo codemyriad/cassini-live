@@ -57,8 +57,9 @@ from websockets import connect
 from websockets.exceptions import WebSocketException
 
 LOGGER = logging.getLogger("lt.spreed_client")
-# Participant names for the diagnostic video: at most one Talk participants request per
-# room every 10 s. Unjustified beyond "join bursts coalesce"; names are cosmetic.
+# Participant names for the diagnostics (the video and the page): at most one Talk
+# participants request per room every 10 s. Unjustified beyond "join bursts coalesce";
+# names are cosmetic.
 NAMES_REFRESH_S = 10
 
 # Bounded in-memory transcript of the current call, kept so a late joiner can
@@ -114,8 +115,9 @@ class SpreedClient:
 		self.targets: dict[str, Target] = {}
 		self.target_lock = asyncio.Lock()
 		self.nc_sid_map: dict[str, str] = {}  # {"nc_session_id": "session_id"}, use the same target lock
-		# Display names for the diagnostic video, read as the latest Nextcloud user who
-		# enabled captions here, only while this room owns the running video:
+		# Display names for the diagnostics, read as the latest Nextcloud user who enabled
+		# captions here, only while someone holds them (diagnostics.NameHolds): this room's
+		# running diagnostic video, or a member of it watching the diagnostics page:
 		# {"nc_session_id": label}. Never logged.
 		self.name_user: str | None = None
 		self.names_shown = False
@@ -597,9 +599,11 @@ class SpreedClient:
 			"bye": {}
 		})
 
-	def _record(self, entry: dict) -> None:
+	def _record(self, entry: dict) -> dict:
 		self._history_seq += 1
-		self.history.append({"seq": self._history_seq, **entry})
+		recorded = {"seq": self._history_seq, **entry}
+		self.history.append(recorded)
+		return recorded
 
 	def history_snapshot(self, since: int = 0) -> list[dict]:
 		"""Timeline entries newer than `since`, oldest first, for catch-up."""
@@ -623,14 +627,19 @@ class SpreedClient:
 	async def send_transcript(self, transcript: Transcript):
 		# Buffer finals for late-joiner catch-up before the targets check, so the
 		# record is complete even in the brief window with no caption receivers.
+		# The buffer seq rides along on the HPB message so the panel's live feed
+		# and its /history poll share one seq space (D-830): the raw signalling
+		# "message" event in the browser keeps `seq` even though Talk's filtered
+		# "transcript" event drops it.
+		seq = None
 		if transcript.final and transcript.message:
-			self._record({
+			seq = self._record({
 				"type": "final",
 				"speakerSessionId": transcript.speaker_session_id,
 				"message": transcript.message,
 				"langId": transcript.lang_id,
 				"t": int(time.time() * 1000),
-			})
+			})["seq"]
 		async with self.target_lock:
 			if not self.targets:
 				LOGGER.debug("No targets to send transcript to, skipping", extra={
@@ -641,6 +650,15 @@ class SpreedClient:
 				return
 			sids = list(self.targets.keys())
 
+		data = {
+			"final": transcript.final,
+			"langId": transcript.lang_id,
+			"message": transcript.message,
+			"speakerSessionId": transcript.speaker_session_id,
+			"type": "transcript",
+		}
+		if seq is not None:
+			data["seq"] = seq
 		for sid in sids:
 			await self.send_message({
 				"type": "message",
@@ -649,13 +667,7 @@ class SpreedClient:
 						"type": "session",
 						"sessionid": sid,
 					},
-					"data": {
-						"final": transcript.final,
-						"langId": transcript.lang_id,
-						"message": transcript.message,
-						"speakerSessionId": transcript.speaker_session_id,
-						"type": "transcript",
-					},
+					"data": data,
 				}
 			})
 
@@ -688,7 +700,8 @@ class SpreedClient:
 			self.refresh_names()
 
 	def show_names(self, shown: bool):
-		"""Names are read and kept only while this room's diagnostic video runs."""
+		"""Names are read and kept only while this room's diagnostic video runs or a member
+		watches the diagnostics page (diagnostics.NameHolds)."""
 		self.names_shown = shown
 		if shown:
 			self.refresh_names()

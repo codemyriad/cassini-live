@@ -5,7 +5,8 @@ import weakref
 from contextlib import suppress
 
 from .config import websocket_url
-from .diagnostics import DiagnosticVideo
+from .diagnostic_feed import DiagnosticFeed
+from .diagnostics import DiagnosticVideo, NameHolds
 from .safety import ResourceRefused
 from .talk.client import SpreedClient
 from .talk.types import HPBSettings, SigConnectResult, SpreedClientException
@@ -23,7 +24,10 @@ class CaptionService:
         self.generation = 0
         self.closing = {}
         self.inflight = set()
-        self.diagnostics = DiagnosticVideo(self)
+        # The video and the diagnostics page can both want one room's names.
+        self.name_holds = NameHolds()
+        self.diagnostics = DiagnosticVideo(self, names=self.name_holds)
+        self.diagnostic_feed = DiagnosticFeed(self, names=self.name_holds)
 
     async def discover(self, nc):
         if not self.config.secret:
@@ -62,6 +66,7 @@ class CaptionService:
                 return
             if client:
                 await client.add_target(req.ncSessionId)
+                self.diagnostic_feed.start()
                 return
             if self.settings is None:
                 raise SpreedClientException("Talk's high-performance backend is not ready")
@@ -92,6 +97,7 @@ class CaptionService:
                         self.admission.require_ready()
                     await client.add_target(req.ncSessionId)
                     self.diagnostics.start(req.roomToken)
+                    self.diagnostic_feed.start()
             except BaseException:
                 if self.clients.get(req.roomToken) is client:
                     self.clients.pop(req.roomToken, None)
@@ -117,6 +123,7 @@ class CaptionService:
     async def close(self):
         self.enabled = False
         await self.stop_rooms()
+        await self.diagnostic_feed.close()
 
     def _closing_task(self, client):
         if client not in self.closing:

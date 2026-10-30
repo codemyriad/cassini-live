@@ -154,11 +154,12 @@ async def require_same_origin(request: Request) -> dict | None:
     return data
 
 
-def _load_assets() -> dict[str, bytes]:
+def load_assets(static: Path, types: dict[str, str]) -> dict[str, bytes]:
+    """A page's files by name, with the app version in its index.html."""
     assets = {}
-    for name in ASSETS:
+    for name in types:
         try:
-            content = (STATIC / name).read_bytes()
+            content = (static / name).read_bytes()
         except OSError:
             continue  # Served as 404; the image always ships the files.
         if name == "index.html":
@@ -186,7 +187,7 @@ def guard(handler):
 
 def create_router(manager: EngineManager, status_body: Callable[[], dict]) -> APIRouter:
     router = APIRouter()
-    assets = _load_assets()
+    assets = load_assets(STATIC, ASSETS)
 
     @router.get("/settings/api/state")
     @guard

@@ -399,7 +399,7 @@ def test_panel_shape(tmp_path, monkeypatch):
     assert not en["eligible"] and en["reasons"][0]["code"] == "memory_limit"
     assert set(en["license"]) == {"id", "name", "url", "version", "notice", "summary"}
     assert en["requirements"]["memoryLimitMiB"] == 2304
-    assert en["model"]["bytesTotal"] == catalog.get("nemotron-en").asset.archive_bytes
+    assert en["model"]["bytesTotal"] == catalog.get("nemotron-en").asset.download_bytes
     assert panel["host"]["cpuFlags"] == ["avx2"]
     assert panel["switch"]["state"] == "idle"
     assert panel["measurements"] == {"measuredOn": catalog.MEASURED_ON, "estimates": ["cpu"]}

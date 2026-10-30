@@ -67,6 +67,20 @@ failures (container restarts preserve them), and becomes available again
 automatically. An interrupted call may need captions toggled back on.
 See [load, admission and capacity](docs/capacity.md).
 
+Changes in 0.11.0:
+
+* A live diagnostics page for administrators, served by the app at
+  `/index.php/apps/app_api/proxy/live_transcription/diagnostics/` and linked
+  from the settings page's Status section. It shows both views of the
+  diagnostic video at once, updated every second, without joining a call or
+  setting a deploy option. The app samples for it only while the page polls,
+  and shows speakers' names only to administrators who are participants of
+  the sampled call's Talk conversation. See
+  [diagnostics page](docs/diagnostics-page.md).
+* Upgrading from 0.10.0: 0.11.0 adds admin-only proxy routes for the page.
+  Update with `occ app_api:app:update live_transcription` (or reinstall);
+  AppAPI re-reads routes only on a version change.
+
 Changes in 0.10.0:
 
 * The transcript panel catches up late joiners: the app keeps a bounded
@@ -118,7 +132,9 @@ Changes in 0.8.0:
 An optional [diagnostic video](docs/diagnostic-video.md) shows, inside a call,
 how captions are made: each speaker's lane under their name, the caption lag,
 admission decisions and resource use, including its own overhead. We enable it
-on our deployments; other installations default to off.
+on our deployments; other installations default to off. Administrators can see
+the same on the [diagnostics page](docs/diagnostics-page.md) without joining a
+call or setting any option.
 
 ## Try it
 
@@ -126,7 +142,7 @@ You need Nextcloud with Talk's High-performance backend, AppAPI, a deploy daemon
 and Linux with cgroup v2 (PSI pressure statistics are optional: without them
 admission does not use the CPU-stall input). The image includes
 Whistle and runs offline after installation. Only an optional Nemotron engine
-needs a download from GitHub, when an administrator chooses it. An administrator must supply the
+needs a download (from dist.gocassini.com), when an administrator chooses it. An administrator must supply the
 HPB internal secret.
 
 Follow the [installation instructions](docs/install.md). There is no published
@@ -136,6 +152,9 @@ run together. [Cassini](https://github.com/codemyriad/gocassini) can stay instal
 for recordings.
 
 ## Development
+
+To run this checkout against an existing Nextcloud/Talk harness with no Cassini
+checkout dependency, use the [standalone development script](docs/dev-harness.md).
 
 With Python 3.12 and [uv](https://docs.astral.sh/uv/):
 
@@ -147,7 +166,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.9.0 .`.
+`docker build -t cassini-live:0.11.0 .`.
 
 To see what the transcript panel would have shown at any moment of a past
 meeting, replay one of Cassini's archived recordings through the pipeline and

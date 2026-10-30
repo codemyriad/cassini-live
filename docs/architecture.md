@@ -132,9 +132,11 @@ Whistle workers. Admission uses speaking slots: their number is the measured
 `testedSpeakers`, and there is no two-second preemption. Nemotron English
 advertises only English (and `auto`, which means English) to Talk.
 
-The Nemotron models are downloaded on demand into
+The Nemotron models are downloaded on demand from `https://dist.gocassini.com`
+(one resumable Zstandard object per file, `User-Agent: cassini-live/<version>`) into
 `APP_PERSISTENT_STORAGE/models/<engine>/`, pinned by the SHA-256 of every
-extracted file, and stored with their license and notice files. The image
+compressed object and every decompressed file, and stored with their license and
+notice files. The image
 contains only Whistle.
 
 ## Verification boundaries

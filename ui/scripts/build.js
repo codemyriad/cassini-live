@@ -1,12 +1,14 @@
 /**
- * Build the panel bundle and both bookmarklet flavours, and stage the files
- * the ExApp serves (cassini_live/static/panel/).
+ * Build the panel bundle and both bookmarklet flavours, and the diagnostics
+ * page, and stage the files the ExApp serves (cassini_live/static/).
  *
  * Outputs:
  *   dist/panel.js                 minified IIFE bundle (also ExApp-served)
  *   dist/bookmarklet-inline.txt   whole bundle as one javascript: URL
  *   dist/bookmarklet-loader.txt   nonce loader as a javascript: URL
- *   ../cassini_live/static/panel/{panel.js,index.html,install.js}
+ *   dist/diagnostics/{index.html,app.js,app.css}   for the fixture server
+ *   ../cassini_live/static/panel/{panel.js,index.html,install.js,install.css}
+ *   ../cassini_live/static/diagnostics/{index.html,app.js,app.css}
  *
  * `--check` rebuilds into memory and fails when any committed output is
  * stale, mirroring the waveforms repo's check:bookmarklet gate.
@@ -22,6 +24,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const uiRoot = join(here, '..')
 const distDir = join(uiRoot, 'dist')
 const staticPanelDir = join(uiRoot, '..', 'cassini_live', 'static', 'panel')
+const staticDiagnosticsDir = join(uiRoot, '..', 'cassini_live', 'static', 'diagnostics')
+const distDiagnosticsDir = join(distDir, 'diagnostics')
 const checkMode = process.argv.includes('--check')
 
 const pkg = JSON.parse(await readFile(join(uiRoot, 'package.json'), 'utf8'))
@@ -77,6 +81,16 @@ const installJs = [
 const installHtml = await readFile(join(uiRoot, 'src', 'install-page.html'), 'utf8')
 const installCss = await readFile(join(uiRoot, 'src', 'install-page.css'), 'utf8')
 
+const diagnosticsBanner = `/* Cassini Live diagnostics page v${pkg.version} — https://github.com/codemyriad/cassini-live */\n`
+const diagnosticsJs = diagnosticsBanner + (await bundle('src/diagnostics/main.js'))
+const diagnosticsHtml = await readFile(join(uiRoot, 'src', 'diagnostics', 'index.html'), 'utf8')
+const diagnosticsCss = await readFile(join(uiRoot, 'src', 'diagnostics', 'app.css'), 'utf8')
+const diagnostics = [
+  ['app.js', diagnosticsJs],
+  ['index.html', diagnosticsHtml],
+  ['app.css', diagnosticsCss],
+]
+
 // The committed outputs are what the ExApp serves; dist/ is gitignored (the
 // repo-root dist/ rule covers it) and exists for tests and local pickup, so
 // `--check` judges only the committed set.
@@ -85,11 +99,13 @@ const committed = [
   [join(staticPanelDir, 'install.js'), installJs],
   [join(staticPanelDir, 'install.css'), installCss],
   [join(staticPanelDir, 'index.html'), installHtml],
+  ...diagnostics.map(([name, content]) => [join(staticDiagnosticsDir, name), content]),
 ]
 const generated = [
   [join(distDir, 'panel.js'), panelJs],
   [join(distDir, 'bookmarklet-inline.txt'), inlineBookmarklet],
   [join(distDir, 'bookmarklet-loader.txt'), loaderBookmarklet],
+  ...diagnostics.map(([name, content]) => [join(distDiagnosticsDir, name), content]),
 ]
 
 if (checkMode) {
@@ -107,11 +123,12 @@ if (checkMode) {
   }
   console.log('committed build outputs are current')
 } else {
-  await mkdir(distDir, { recursive: true })
-  await mkdir(staticPanelDir, { recursive: true })
+  for (const dir of [distDir, distDiagnosticsDir, staticPanelDir, staticDiagnosticsDir]) {
+    await mkdir(dir, { recursive: true })
+  }
   for (const [path, content] of [...committed, ...generated]) {
     await writeFile(path, content)
   }
   const kb = (s) => `${(Buffer.byteLength(s) / 1024).toFixed(1)} KB`
-  console.log(`panel.js ${kb(panelJs)}, inline bookmarklet ${kb(inlineBookmarklet)}, loader ${kb(loaderBookmarklet)}`)
+  console.log(`panel.js ${kb(panelJs)}, inline bookmarklet ${kb(inlineBookmarklet)}, loader ${kb(loaderBookmarklet)}, diagnostics app.js ${kb(diagnosticsJs)}`)
 }

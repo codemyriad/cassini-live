@@ -21,6 +21,7 @@ import { createTap } from './tap.js'
 import { createNames } from './names.js'
 import { createSession } from './session.js'
 import { fetchHistory } from './history.js'
+import { enableCaptions } from './captions.js'
 import { createSidebarPanel } from './sidebar.js'
 
 const GLOBAL = '__CASSINI_LIVE_PANEL__'
@@ -31,19 +32,19 @@ function mount() {
   let panel = null
   let lastStatus = { state: 'waiting' }
   const tap = createTap({
-    // Finals come from the polled server timeline (session.js); the live hook
-    // only drives in-progress partials, when the viewer has captions on.
-    onEvent: (event) => {
-      if (!event.final) store.setPartial(event.sid, event.text, event.lang)
-    },
+    // The live HPB feed: finals carry the server seq and merge with the poll;
+    // partials are transient liveness.
+    onFinal: (entry) => store.applyLiveFinal(entry),
+    onPartial: (p) => store.setPartial(p.sid, p.text, p.lang),
     onStatus: (status) => {
       lastStatus = status
       if (panel) panel.setStatus(status)
     },
   })
   const names = createNames({ tap })
-  // Scope the transcript per conversation/call and poll the server timeline.
-  const session = createSession({ tap, store, fetchHistory })
+  // Scope per conversation/call, poll /history for gaps, and turn captions on
+  // for this session when a call starts so it is on the HPB feed.
+  const session = createSession({ tap, store, fetchHistory, onCallStart: enableCaptions })
 
   function destroy() {
     session.destroy()

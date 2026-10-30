@@ -6,6 +6,10 @@ in that room can see it. It shows how Cassini Live is working and the names of
 that room's speakers, never audio or caption text. Codemyriad deployments enable
 this option; other installations default to off.
 
+Administrators can see the same diagnostics on the
+[diagnostics page](diagnostics-page.md), without joining a call or setting this
+option. The page leaves the video unchanged, and each works without the other.
+
 ## What it shows
 
 The feed alternates every 20 seconds between two views.
@@ -63,22 +67,26 @@ container started.
 
 Talk's call events carry no display names, so the app reads the room's
 participant list from Talk, as the Nextcloud user who most recently enabled
-captions there. It does so only for the room that hosts the running video and
-only while it runs, at most once every 10 seconds; a participant who joins while
-a read is in flight is picked up by one more read once the 10 seconds have
-passed. The first read as a given user costs two requests (nc_py_api also reads
-the server's capabilities when it switches user); later reads cost one. If Talk
-refuses that user (403 or 404, for example after they left the room), the app
-stops asking as them until the next user enables captions there.
+captions there. For the video it does so only for the room that hosts the
+running video and only while it runs, at most once every 10 seconds; the
+[diagnostics page](diagnostics-page.md#names) also has the list of the call it
+samples read while a participant of that conversation has polled the page in
+the last 30 seconds. A participant who joins while a read is in flight is
+picked up by one more read once the 10 seconds have passed. The first read as
+a given user costs two requests (nc_py_api also reads the server's capabilities
+when it switches user); later reads cost one. If Talk refuses that user (403
+or 404, for example after they left the room), the app stops asking as them
+until the next user enables captions there.
 
 Names reach the video for the room that hosts it and are dropped from memory
-when the video stops or moves to another room. Lanes from other captioned rooms
-read *other call*, and the decision line calls their speakers "someone in
-another call". Guests show as "Guest · name". When the list cannot be read the
-lanes read *Participant*; captions are unaffected. Names are never logged. Each
-name is cut to 40 characters and to 240 bytes as it travels to the video
-process (20 emoji), which keeps every metrics line well inside the pipe's 8 KiB
-line limit; a longer line would be skipped, not fatal.
+when the video stops or moves to another room, unless the diagnostics page is
+still showing them to a participant of that conversation. Lanes from other
+captioned rooms read *other call*, and the decision line calls their speakers
+"someone in another call". Guests show as "Guest · name". When the list cannot
+be read the lanes read *Participant*; captions are unaffected. Names are never
+logged. Each name is cut to 40 characters and to 240 bytes as it travels to the
+video process (20 emoji), which keeps every metrics line well inside the pipe's
+8 KiB line limit; a longer line would be skipped, not fatal.
 
 ## Cost and limits
 

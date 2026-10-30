@@ -43,7 +43,7 @@ def card(engine_id, **changes):
             "recommendedMemoryLimitMiB": req.recommended_memory_mib,
             "hostMemoryMiB": 5120,
             "cpuQuota": req.min_cpu_quota,
-            "downloadBytes": engine.asset.archive_bytes if engine.asset else 0,
+            "downloadBytes": engine.asset.download_bytes if engine.asset else 0,
             "diskBytes": catalog.download_disk_bytes(engine_id),
             "cpuFlags": list(req.cpu_flags),
             "provisional": req.provisional,
@@ -177,11 +177,11 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
             {"cards": {"nemotron-en": card("nemotron-en", model={"state": "ready"})}},
             "Nemotron English — ready · English only",
         ),
-        ("nemotron-en", {}, "Nemotron English — available · English only, 0.43 GiB download"),
+        ("nemotron-en", {}, "Nemotron English — available · English only, 0.41 GiB download"),
         (
             "nemotron-multilingual",
             {},
-            "Nemotron Multilingual — available · 7 languages, 0.44 GiB download",
+            "Nemotron Multilingual — available · 7 languages, 0.42 GiB download",
         ),
         (
             "nemotron-multilingual",
@@ -189,7 +189,7 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
                 "nemotron-multilingual", model={"state": "partial"}, advisory=True,
                 reasons=ADVISORY,
             )}},
-            "Nemotron Multilingual — available · 7 languages, 0.44 GiB download · warning",
+            "Nemotron Multilingual — available · 7 languages, 0.42 GiB download · warning",
         ),
         (
             "nemotron-en",

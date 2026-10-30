@@ -6,7 +6,9 @@ viewer's own lines, which Talk's built-in overlay drops.
 
 It mounts as an extra **tab in Talk's right sidebar**, next to Chat /
 Participants / Shared items, rather than a floating window, and hides Talk's
-native caption overlay while it is on (the sidebar replaces it).
+native caption overlay while it is on (the sidebar replaces it). Activating it
+also turns Talk's live captions on for you, so you are on the feed immediately
+without clicking the CC button.
 
 ## How it reaches the page
 
@@ -27,31 +29,39 @@ People pick both up on the install page the app serves at
 
 ## How it gets the words
 
-The **server timeline is the single source of truth**. cassini-live transcribes
-every speaker in the call — not only those who enabled captions — and records
-who joined when, each entry tagged with a monotonic `seq`. The panel polls it:
+Two sources share **one seq space**, so they merge exactly:
 
 ```
- cassini-live ─ buffers finals (all speakers) + joins, each with a seq
-       │  GET /history?token=<room>&since=<lastSeq>  →  {entries, head}
-       ▼
- session.js (poll ~1.2s) ─▶ store.applyTimeline (idempotent by seq)
-                               ├─ finals → speaker blocks
-                               └─ joins  → "<name> joined" dividers   ─▶ sidebar tab view
- Talk's SimpleWebRTC 'transcript' (live) ─▶ tap ─▶ store partials (transient only)
+ cassini-live buffers every final (all speakers) + joins, each with a seq, and
+ sends each final over the HPB tagged with that same seq.
+
+   HPB ─ connection.on('message') {type:transcript, seq, final, message, sid} ─▶ live feed (instant)
+   HTTP ─ GET /history?token=<room>&since=<contiguousSeq>  (every ~3s) ─────────▶ gap-fill + joins + catch-up
+                         │
+            store: reorder buffer over the shared seq
+              seq == applied+1 → render, advance, flush held
+              seq >  applied+1 → hold (out of order / a gap the poll will fill)
+              seq <= applied   → already have it, skip     ─▶ sidebar tab view
+   live partials (no seq) ─────────────────────────────────▶ transient italic line
 ```
 
-Why poll instead of relying on live `'transcript'` events: a live event only
-reaches a session from the moment it enables captions, so anything said before —
-including the viewer's *own* words spoken before clicking the captions button —
-would be dropped. Polling the server buffer (which holds everything, regardless
-of who subscribed) closes that gap. The live hook is kept only for in-progress
-**partials** (shown transient, cleared when the final lands via the poll).
+The live feed gives near-instant finals; the poll is a backstop that fills any
+gap the live feed missed and delivers joins and the initial catch-up. Because
+both carry the server's `seq`, the merge is exact — no duplicates, no drops, no
+content-matching.
+
+Why read the live feed from `connection.on('message')` and not
+`SimpleWebRTC.on('transcript')`: the filtered `transcript` event keeps only
+`{id, message, languageId, final}` and **drops** the `seq`, but the raw
+`message` event (what Talk's own SimpleWebRTC listens to) carries the full
+payload. `window.signalingSocket` is a raw fallback. It also still sees the
+viewer's own lines (no `CallParticipantModel` filtering).
 
 `session.js` scopes everything per conversation: it watches the room and call
-tokens and resets on a new call or a switch to another conversation; an ended
-call's transcript stays until the viewer navigates away. Join events render as a
-divider per participant — the viewer's own reads "You joined here".
+tokens, resets on a new call or a switch to another conversation (and enables
+captions for the session so it is on the feed), and polls `/history` for gaps.
+An ended call's transcript stays until the viewer navigates away. Join events
+render as a divider per participant — the viewer's own reads "You joined here".
 
 Speaker names resolve in the browser (the payload only carries the speaker's
 signalling session id). The authoritative source is `connection.joinedUsers`,
@@ -65,14 +75,18 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
 
 ## Code layout
 
-- `src/store.js` — the timeline: ordered items (`block` | `join`) applied
-  idempotently by `seq`, plus a transient partials channel; `reset()`.
-- `src/tap.js` — attaches to `OCA.Talk.SimpleWebRTC` for the connection (room /
-  call tokens, own session id) and feeds in-progress partials to the store.
+- `src/store.js` — the timeline: a reorder buffer over the shared `seq` (live +
+  poll merge), ordered items (`block` | `join`), a transient partials channel,
+  `reset()`.
+- `src/tap.js` — the live feed: subscribes to `connection.on('message')` for the
+  raw payload (incl. `seq`), emits finals and partials, exposes the connection
+  (room / call tokens, own session id), re-attaches on rejoin.
 - `src/names.js` — prefix-aware name resolution (see above).
-- `src/history.js` — `fetchHistory(token, since)` for the timeline poll.
-- `src/session.js` — conversation/call scoping and the ~1.2s poll loop; resets on
-  a new call or a change of conversation; an ended call stays until navigation.
+- `src/history.js` — `fetchHistory(token, since)` for the gap-fill poll.
+- `src/session.js` — conversation/call scoping and the ~3s gap-fill poll;
+  resets + enables captions on a new call or a change of conversation; an ended
+  call stays until navigation.
+- `src/captions.js` — turns Talk's live captions on for the session (best-effort).
 - `src/panel.js` — `createTranscriptView`: renders the timeline (speaker blocks,
   "<name> joined" dividers, transient partials), replaying current state on
   mount, into a shadow root the caller supplies. CSP discipline throughout: no
@@ -86,15 +100,42 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
   `window.__CASSINI_LIVE_PANEL__` (destroy, injectTranscript, attached).
 - `src/loader.js` — the loader bookmarklet source.
 - `scripts/build.js` — builds `dist/` and stages the served files into
-  `../cassini_live/static/panel/` (committed; `--check` fails when stale).
+  `../cassini_live/static/panel/` and `../cassini_live/static/diagnostics/`
+  (committed; `--check` fails when stale).
+
+## Diagnostics page
+
+The package builds three bundles: the panel (`src/main.js`), its loader
+bookmarklet (`src/loader.js`) and the administrators' live diagnostics page
+(`src/diagnostics/main.js`). The page is a plain static page the app serves at
+`…/apps/app_api/proxy/live_transcription/diagnostics/` (ADMIN), under the
+settings page's CSP (`script-src 'self'; style-src 'self'`): no inline styles,
+sizes through CSSOM. It polls `api/feed` a second after each answer and draws
+the diagnostic video's two views from the samples and history columns. See
+[the diagnostics page](../docs/diagnostics-page.md).
+
+- `src/diagnostics/format.js`, `src/diagnostics/lanes.js` — pure view models
+  for the status, hero numbers, pipeline, panels, lanes and lag graph, ported
+  from the video's Pillow renderer (`cassini_live/diagnostic_video.py`).
+- `src/diagnostics/feed.js` — the poll protocol: the relative feed path,
+  backoff, the page's copy of the columns, and restart detection (a new
+  `instance`, or the server clock going back).
+- `src/diagnostics/main.js`, `dom.js`, `lanesView.js` — the polling loop and
+  the DOM: feed strings reach it as `textContent` only.
+- `src/diagnostics/index.html`, `app.css` — copied as they are.
+
+The build writes them to `../cassini_live/static/diagnostics/{index.html,app.js,app.css}`
+(committed) and `dist/diagnostics/` (for the fixture server). Unit tests are
+`tests/unit/diagnostics-*.test.mjs`; `tests/diagnostics.spec.js` runs the page
+in Playwright against the fixture server's scripted feed.
 
 ## Develop
 
 ```bash
 npm ci
-npm run build        # dist/ + ../cassini_live/static/panel/
-npm run test:unit    # store semantics (node:test)
-npm run test:e2e     # Playwright against a CSP-faithful fake Talk page
+npm run build        # dist/ + ../cassini_live/static/{panel,diagnostics}/
+npm run test:unit    # store semantics and the diagnostics view models (node:test)
+npm run test:e2e     # Playwright against a CSP-faithful fake Talk page and diagnostics feed
 npm run replay -- meeting.replay.json   # scrub a replayed meeting (see ../docs/replay.md)
 ```
 
@@ -114,3 +155,8 @@ feed events from the devtools console:
 ```js
 __FIXTURE__.transcript({ id: 'sid-alice', message: 'hello', final: true, languageId: 'en' })
 ```
+
+The same server serves the diagnostics page with a scripted feed at
+`http://127.0.0.1:4317/diagnostics/`; `POST /fixture-diagnostics/<id>` steers
+the feed of `/diag/<id>/diagnostics/` (see `diagnosticsControl` in
+`tests/fixture-server.mjs`).
