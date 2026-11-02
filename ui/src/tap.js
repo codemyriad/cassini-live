@@ -1,104 +1,97 @@
 /**
- * Transcript tap: subscribes to Talk's SimpleWebRTC 'transcript' events.
+ * Live caption feed from Talk's signalling connection.
  *
- * Talk's own caption overlay filters these events through per-participant
- * models, which drops the viewer's own captions. The raw emitter sees every
- * caption message the HPB delivers to this session (validated against
- * spreed's src/utils/webrtc/simplewebrtc/simplewebrtc.js — the 'transcript'
- * emit happens before any filtering), so the panel renders own lines too.
+ * We subscribe to `connection.on('message', …)` rather than
+ * `SimpleWebRTC.on('transcript', …)`: the filtered transcript event keeps only
+ * {id, message, languageId, final} and drops cassini-live's `seq`, but the raw
+ * "message" event (what Talk's own SimpleWebRTC listens to) carries the full
+ * payload — including the `seq` that lets the panel merge this live feed with
+ * the /history poll on one shared seq space (D-830). It also still sees the
+ * viewer's own lines (no CallParticipantModel filtering).
  *
- * The global appears only once the user is in a call, so the tap polls for
- * it and reports its status transitions to the caller.
+ * The connection appears only once in a call and is replaced on rejoin, so we
+ * poll for it and re-attach.
  */
 
 const POLL_INTERVAL_MS = 1000
 
-export function createTap({ onEvent, onStatus }) {
+export function createTap({ onFinal, onPartial, onStatus }) {
   let webrtc = null
+  let connection = null
   let pollTimer = null
   let stopped = false
 
   const handler = (data) => {
-    if (!data || typeof data !== 'object') return
-    onEvent({
-      sid: typeof data.id === 'string' ? data.id : '',
-      text: typeof data.message === 'string' ? data.message : '',
-      final: data.final !== false,
-      lang: typeof data.languageId === 'string' ? data.languageId : null,
-    })
+    if (!data || typeof data !== 'object' || data.type !== 'transcript') return
+    const sid = typeof data.speakerSessionId === 'string' ? data.speakerSessionId : ''
+    const text = typeof data.message === 'string' ? data.message : ''
+    const lang = typeof data.langId === 'string' ? data.langId : null
+    if (data.final === false) {
+      onPartial({ sid, text, lang })
+    } else if (typeof data.seq === 'number') {
+      onFinal({ seq: data.seq, type: 'final', speakerSessionId: sid, message: text, langId: lang })
+    }
+    // A final without a seq (e.g. the disabled translation path) is ignored —
+    // the /history poll is the source of truth for anything the live feed drops.
   }
 
   function locate() {
     try {
-      const candidate = window.OCA?.Talk?.SimpleWebRTC
-      if (candidate && typeof candidate.on === 'function') return candidate
+      const w = window.OCA?.Talk?.SimpleWebRTC
+      if (w && w.connection && typeof w.connection.on === 'function') return w
     } catch {
-      // Defensive: a Talk refactor may turn any of these into throwing getters.
+      // Defensive: a Talk refactor may turn any of these into a throwing getter.
     }
     return null
   }
 
+  function detach() {
+    if (connection && typeof connection.off === 'function') {
+      connection.off('message', handler)
+    }
+    connection = null
+  }
+
   function attach() {
-    if (stopped || webrtc) return
+    if (stopped) return
     const candidate = locate()
     if (!candidate) {
+      detach()
       onStatus({ state: 'waiting' })
       pollTimer = setTimeout(attach, POLL_INTERVAL_MS)
       return
     }
-    webrtc = candidate
-    webrtc.on('transcript', handler)
-    onStatus({ state: 'attached' })
-    watch()
+    if (candidate !== webrtc || candidate.connection !== connection) {
+      detach()
+      webrtc = candidate
+      connection = candidate.connection
+      connection.on('message', handler)
+      onStatus({ state: 'attached' })
+    }
+    // Keep following connection replacement (rejoin) and disappearance.
+    pollTimer = setTimeout(attach, POLL_INTERVAL_MS)
   }
 
-  // Talk replaces the SimpleWebRTC instance when the user rejoins a call;
-  // keep following the live one.
-  function watch() {
-    if (stopped) return
-    pollTimer = setTimeout(() => {
-      if (stopped) return
-      if (locate() !== webrtc) {
-        if (webrtc && typeof webrtc.off === 'function') {
-          webrtc.off('transcript', handler)
-        }
-        webrtc = null
-        attach()
-      } else {
-        watch()
-      }
-    }, POLL_INTERVAL_MS * 5)
-  }
-
-  function ownSessionId() {
+  function readConn(key) {
     try {
-      return webrtc?.connection?.getSessionId?.() || null
+      const v = connection?.[key] ?? webrtc?.connection?.[key]
+      return typeof v === 'string' && v ? v : null
     } catch {
       return null
     }
   }
 
-  function destroy() {
-    stopped = true
-    if (pollTimer) clearTimeout(pollTimer)
-    if (webrtc && typeof webrtc.off === 'function') {
-      webrtc.off('transcript', handler)
+  function ownSessionId() {
+    try {
+      return (connection || webrtc?.connection)?.getSessionId?.() || null
+    } catch {
+      return null
     }
-    webrtc = null
   }
 
-  attach()
-
-  // The conversation (room) token, from the signalling connection with a URL
-  // fallback, and the call token (non-null only while in a call). Used to scope
-  // the transcript per conversation and detect a call starting (D-830).
   function roomToken() {
-    try {
-      const t = webrtc?.connection?.currentRoomToken
-      if (typeof t === 'string' && t) return t
-    } catch {
-      /* fall through */
-    }
+    const t = readConn('currentRoomToken')
+    if (t) return t
     try {
       const m = location.pathname.match(/\/call\/([^/?#]+)/)
       if (m) return m[1]
@@ -108,14 +101,16 @@ export function createTap({ onEvent, onStatus }) {
     return null
   }
 
-  function callToken() {
-    try {
-      const t = webrtc?.connection?.currentCallToken
-      return typeof t === 'string' && t ? t : null
-    } catch {
-      return null
-    }
+  const callToken = () => readConn('currentCallToken')
+
+  function destroy() {
+    stopped = true
+    if (pollTimer) clearTimeout(pollTimer)
+    detach()
+    webrtc = null
   }
+
+  attach()
 
   return {
     destroy,
@@ -123,7 +118,7 @@ export function createTap({ onEvent, onStatus }) {
     roomToken,
     callToken,
     get attached() {
-      return webrtc !== null
+      return connection !== null
     },
     get webrtc() {
       return webrtc

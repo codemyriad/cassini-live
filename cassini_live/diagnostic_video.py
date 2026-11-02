@@ -29,6 +29,8 @@ from aiortc.sdp import candidate_from_sdp
 from PIL import Image, ImageDraw, ImageFont
 from websockets.asyncio.client import connect
 
+from .diagnostic_history import COLUMNS, history_column
+
 WIDTH, HEIGHT = 960, 540
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 FONT = f"{FONT_DIR}/DejaVuSansCondensed.ttf"
@@ -45,8 +47,8 @@ if not os.path.exists(FONT_ITALIC):
 # faster frame would repeat the same figures. Measured at 0.5 fps on staging: 1.5-4.9 %
 # of one CPU; per-frame cost is the same, so 1 fps stays under the 15 % stop rule.
 FRAME_S = 1.0
-# Two minutes of history at one 6 px column per one-second sample.
-COLUMNS, COLUMN_W = 120, 6
+# Two minutes of history (COLUMNS) at one 6 px column per one-second sample.
+COLUMN_W = 6
 LANES_X, LANES_Y, LANES_W = 32, 214, COLUMNS * COLUMN_W
 LANES_H, LANE_GAP = 152, 8  # Four 30 px lanes with 8 px gaps fill the band (mockup).
 NOW_X = LANES_X + LANES_W
@@ -785,42 +787,6 @@ def _fit_font(text, size, width):
     while size > 20 and _font("bold", size).getlength(text) > width:
         size -= 2
     return _font("bold", size)
-
-
-def history_column(previous, data, now):
-    """One one-second column from cumulative counters; previous is the last sample."""
-
-    def delta(new, old):
-        # Counters restart when a speaker's gate is rebuilt (language change).
-        return new if new < old else new - old
-
-    lanes = {}
-    before = {lane["id"]: lane for lane in previous.get("lanes", [])}
-    for lane in data.get("lanes", []):
-        old = before.get(lane["id"], {})
-        speech = delta(lane.get("speech", 0), old.get("speech", lane.get("speech", 0)))
-        lost = delta(lane.get("lost", 0), old.get("lost", lane.get("lost", 0)))
-        if lost:
-            lanes[lane["id"]] = "lost"
-        elif lane.get("paused"):
-            lanes[lane["id"]] = "paused"
-        elif lane.get("waiting"):
-            lanes[lane["id"]] = "waiting"
-        elif speech or lane.get("active"):
-            lanes[lane["id"]] = "speech"
-    finals = int(data.get("finals", 0))
-    drops = int(data.get("drops", 0))
-    admission = data.get("admission") or {}
-    sheds = int(admission.get("shedEvents", 0) or 0)
-    before_sheds = int((previous.get("admission") or {}).get("shedEvents", sheds) or 0)
-    return {
-        "t": now,
-        "lanes": lanes,
-        "finals": delta(finals, int(previous.get("finals", finals))),
-        "drops": delta(drops, int(previous.get("drops", drops))),
-        "lag": admission.get("lagSeconds"),
-        "shed": delta(sheds, before_sheds) > 0,
-    }
 
 
 class DashboardTrack(VideoStreamTrack):

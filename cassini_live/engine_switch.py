@@ -718,7 +718,7 @@ class EngineManager:
                 "recommendedMemoryLimitMiB": need.recommended_memory_mib,
                 "hostMemoryMiB": 2 * memory,
                 "cpuQuota": need.min_cpu_quota,
-                "downloadBytes": asset.archive_bytes if asset else 0,
+                "downloadBytes": asset.download_bytes if asset else 0,
                 "diskBytes": catalog.download_disk_bytes(engine_id),
                 "cpuFlags": list(need.cpu_flags),
                 "provisional": need.provisional,
@@ -735,7 +735,7 @@ class EngineManager:
                 "state": model.state,
                 "bytesDone": progress.bytes_done if progress else model.partial_bytes,
                 "bytesTotal": (
-                    progress.bytes_total if progress else asset.archive_bytes if asset else 0
+                    progress.bytes_total if progress else asset.download_bytes if asset else 0
                 ),
                 "error": model.error,
             },

@@ -1,10 +1,10 @@
 """On-demand model download, verification and atomic install.
 
-Models are large and come from a rolling release tag, so nothing is trusted until its pinned
-hash matches the catalog: the archive's before it is opened, then every file's. Archives are
-streamed (bz2 -> tar) with bounded memory, member names are compared and never joined, and
-the final directory is replaced with one rename, so a crash leaves either the old install or
-none.
+Each model file is one Zstandard object on dist.gocassini.com. Nothing is trusted until its
+pinned hash matches the catalog: the compressed object's before it is decoded, then the
+decoded file's. Objects download into .partial/<engine>/ and resume with Range/If-Range,
+decoding streams with bounded memory, and the final directory is replaced with one rename,
+so a crash leaves either the old install or none.
 """
 
 import asyncio
@@ -15,14 +15,15 @@ import logging
 import os
 import secrets
 import shutil
-import tarfile
 import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Literal
+
+import zstandard
 
 from . import __version__, catalog
 
@@ -31,7 +32,7 @@ BLOCK = 1024 * 1024
 GIB = 1024**3
 # Page cache counts toward the container's memory.current, which the 80% safety trip reads.
 CACHE_DROP = 64 * BLOCK
-# While calls have captions, hashing and unpacking sleep this many times their CPU time, so
+# While calls have captions, hashing and decoding sleep this many times their CPU time, so
 # they take about a quarter of a core from the shared quota instead of a whole one.
 PACE_SLEEP = 3.0
 log = logging.getLogger(__name__)
@@ -59,8 +60,7 @@ class ModelState:
 
 
 class ModelError(RuntimeError):
-    """code: disk_space | network | size_mismatch | hash_mismatch | archive_layout | cancelled
-    | busy | storage"""
+    """code: disk_space | network | size_mismatch | hash_mismatch | cancelled | busy | storage"""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -120,11 +120,11 @@ def _gib(value: int) -> str:
     return f"{value / GIB:.1f}"
 
 
-class _HashingReader:
-    """The raw archive as tarfile reads it: hashed for provenance, checked for cancel."""
+class _PacedReader:
+    """A verified .zst object as the decompressor reads it: paced, checked for cancel."""
 
     def __init__(self, f, cancelled, pace):
-        self.f, self.cancelled, self.pace, self.digest = f, cancelled, pace, hashlib.sha256()
+        self.f, self.cancelled, self.pace = f, cancelled, pace
         self.uncached = 0
 
     def read(self, size=-1):
@@ -132,7 +132,6 @@ class _HashingReader:
             raise ModelError("cancelled", "The model download was cancelled")
         self.pace()
         data = self.f.read(BLOCK if size is None or size < 0 or size > BLOCK else size)
-        self.digest.update(data)
         self.uncached += len(data)
         if self.uncached >= CACHE_DROP or not data:
             self.uncached = 0
@@ -145,7 +144,7 @@ class ModelStore:
                  opener=urllib.request.urlopen, disk_usage=shutil.disk_usage,
                  clock=time.time, license_root: Path = REPO_ROOT, calls_active=None):
         self.engines, self.opener, self.disk_usage, self.clock = engines, opener, disk_usage, clock
-        self.calls_active = calls_active  # hashing and unpacking slow down while True
+        self.calls_active = calls_active  # hashing and decoding slow down while True
         self.license_root = Path(license_root)
         self.root = None
         self._busy: str | None = None
@@ -169,6 +168,11 @@ class ModelStore:
             return
         for path in leftovers:
             shutil.rmtree(path, ignore_errors=True)
+        # Archives and sidecars left by the GitHub .tar.bz2 downloads of 0.8.2 and earlier.
+        with contextlib.suppress(OSError):
+            for path in (self.root / ".partial").glob("*.tar.bz2*"):
+                if path.is_file():
+                    path.unlink()
 
     def _engine(self, engine_id: str) -> catalog.Engine:
         return self.engines[engine_id]
@@ -184,16 +188,31 @@ class ModelStore:
     def _bundled_dir() -> Path:
         return Path(os.environ.get("CASSINI_LIVE_WEIGHTS", "/opt/whistle/whistle.cact")).parent
 
-    def _partial(self, asset: catalog.ModelAsset) -> tuple[Path, Path]:
-        partial = self.root / ".partial" / asset.archive
-        return partial, partial.with_name(asset.archive + ".json")
+    def _partial_dir(self, engine_id: str) -> Path:
+        return self.root / ".partial" / engine_id
+
+    def _partial(self, engine_id: str, f: catalog.ModelFile) -> tuple[Path, Path]:
+        partial = self._partial_dir(engine_id) / f"{f.name}.zst"
+        return partial, partial.with_name(partial.name + ".json")
+
+    def _partial_bytes(self, engine: catalog.Engine) -> int:
+        total = 0
+        for f in engine.asset.files:
+            with contextlib.suppress(OSError):
+                total += self._partial(engine.id, f)[0].stat().st_size
+        return total
+
+    def _discard_partial(self, engine_id: str):
+        shutil.rmtree(self._partial_dir(engine_id), ignore_errors=True)
 
     def _manifest_ok(self, engine: catalog.Engine, final: Path) -> bool:
+        """The installed files carry the pinned names, sizes and hashes. Where they came from
+        is not compared, so installs from the old GitHub archives (same files, a manifest
+        with "archive" instead of "source") stay ready."""
         try:
             manifest = json.loads((final / "manifest.json").read_text())
             pins = {f.name: {"sha256": f.sha256, "size": f.size} for f in engine.asset.files}
             return (manifest.get("engine") == engine.id
-                    and manifest.get("archive") == engine.asset.archive
                     and manifest.get("files") == pins
                     and all((final / f.name).stat().st_size == f.size
                             and not (final / f.name).is_symlink() for f in engine.asset.files))
@@ -218,11 +237,7 @@ class ModelStore:
             return ModelState(engine_id, "corrupt", None,
                               error="The installed model files are incomplete or changed")
         error = self._errors.get(engine_id)
-        partial, _ = self._partial(engine.asset)
-        try:
-            size = partial.stat().st_size
-        except OSError:
-            size = 0
+        size = self._partial_bytes(engine)
         if size:
             return ModelState(engine_id, "partial", None, size, error)
         return ModelState(engine_id, "error" if error else "absent", None, error=error)
@@ -262,8 +277,7 @@ class ModelStore:
             return True
         asset = self._engine(engine_id).asset
         if discard and asset is not None and self.root is not None:
-            for path in self._partial(asset):
-                path.unlink(missing_ok=True)
+            self._discard_partial(engine_id)
         return False
 
     async def download(self, engine_id: str) -> Path:
@@ -277,7 +291,7 @@ class ModelStore:
                              "cannot be downloaded")
         self._busy, self._discard = engine_id, False
         self._cancel = threading.Event()
-        self._progress = Progress(engine_id, "downloading", 0, engine.asset.archive_bytes,
+        self._progress = Progress(engine_id, "downloading", 0, engine.asset.download_bytes,
                                   self.clock())
         self._errors.pop(engine_id, None)
         work = asyncio.ensure_future(asyncio.to_thread(self._download_sync, engine, self._cancel))
@@ -298,40 +312,51 @@ class ModelStore:
 
     def _download_sync(self, engine: catalog.Engine, cancelled: threading.Event) -> Path:
         asset = engine.asset
-        partial, sidecar = self._partial(asset)
         try:
+            self._writable()
             # A reinstall keeps the old directory until the final rename.
-            self._fetch(asset, partial, sidecar, cancelled, _tree_bytes(self.root / engine.id))
+            replacing = _tree_bytes(self.root / engine.id)
+            need = catalog.asset_disk_bytes(asset, self._partial_bytes(engine)) + replacing
+            free = self.disk_usage(self.root).free
+            if free < need:
+                raise ModelError("disk_space", f"Downloading needs {_gib(need)} GiB of free "
+                                 f"space; {_gib(free)} GiB is free.")
+            before = 0
+            for f in asset.files:
+                self._fetch(engine.id, f, cancelled, before)
+                before += f.zst_bytes
             pace = _Pacer(self.calls_active)
-            self._check_archive(asset, partial, cancelled, pace)
+            self._check_objects(engine, cancelled, pace)
             staging = self.root / f".staging-{engine.id}-{secrets.token_hex(4)}"
             try:
-                observed = self._extract(asset, partial, staging, cancelled, pace)
+                self._decode(engine, staging, cancelled, pace)
                 self._progress.phase = "installing"
-                final = self._install(engine, staging, observed)
+                final = self._install(engine, staging)
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise
         except ModelError as error:
-            if error.code in ("hash_mismatch", "archive_layout") or (
-                error.code == "cancelled" and self._discard
-            ):
-                partial.unlink(missing_ok=True)
-                sidecar.unlink(missing_ok=True)
+            if error.code == "hash_mismatch" or (error.code == "cancelled" and self._discard):
+                self._discard_partial(engine.id)
             raise
         except OSError as error:
             raise ModelError("storage", f"Could not write the model files: {error.strerror}")
-        partial.unlink(missing_ok=True)
-        sidecar.unlink(missing_ok=True)
+        self._discard_partial(engine.id)
         return final
 
-    def _fetch(self, asset, partial: Path, sidecar: Path, cancelled, replacing: int = 0):
+    def _writable(self):
+        partial = self.root / ".partial"
         try:
-            partial.parent.mkdir(parents=True, exist_ok=True)
+            partial.mkdir(parents=True, exist_ok=True)
         except OSError:
             raise ModelError("storage", "Persistent app storage is not writable")
-        if not os.access(self.root, os.W_OK) or not os.access(partial.parent, os.W_OK):
+        if not os.access(self.root, os.W_OK) or not os.access(partial, os.W_OK):
             raise ModelError("storage", "Persistent app storage is not writable")
+
+    def _fetch(self, engine_id: str, f: catalog.ModelFile, cancelled, before: int):
+        """Download one .zst object; `before` counts the objects ahead of it, for progress."""
+        partial, sidecar = self._partial(engine_id, f)
+        partial.parent.mkdir(exist_ok=True)
         try:
             done = partial.stat().st_size
         except OSError:
@@ -341,22 +366,18 @@ class ModelStore:
         except (OSError, ValueError):
             meta = {}
         validator = meta.get("etag") or meta.get("lastModified")
-        if done > asset.archive_bytes or meta.get("archiveBytes") != asset.archive_bytes:
+        if done > f.zst_bytes or meta.get("bytes") != f.zst_bytes:
             done = 0
         if done and not validator:
             done = 0
-        need = catalog.asset_disk_bytes(asset, done) + replacing
-        free = self.disk_usage(self.root).free
-        if free < need:
-            raise ModelError("disk_space", f"Downloading needs {_gib(need)} GiB of free space; "
-                             f"{_gib(free)} GiB is free.")
-        self._progress.bytes_done = done
-        if done == asset.archive_bytes:
+        self._progress.bytes_done = before + done
+        if done == f.zst_bytes:
             return
-        headers = {"User-Agent": f"cassini-live/{__version__}"}
+        # identity: the object is already compressed; a transfer encoding would break Range.
+        headers = {"User-Agent": f"cassini-live/{__version__}", "Accept-Encoding": "identity"}
         if done:
             headers |= {"Range": f"bytes={done}-", "If-Range": validator}
-        request = urllib.request.Request(asset.url, headers=headers)
+        request = urllib.request.Request(f.url, headers=headers)
         try:
             response = self.opener(request, timeout=30)
         except (urllib.error.URLError, OSError, ValueError) as error:
@@ -365,24 +386,24 @@ class ModelStore:
             status = getattr(response, "status", None) or response.getcode()
             if status == 206 and done:
                 first, total = _content_range(response.headers.get("Content-Range", ""))
-                if total != asset.archive_bytes:
+                if total != f.zst_bytes:
                     raise _changed()
                 if first != done:
                     raise ModelError("network", "The download server resumed at the wrong offset")
                 mode = "ab"
             elif status == 200:
-                if _int(response.headers.get("Content-Length")) != asset.archive_bytes:
+                if _int(response.headers.get("Content-Length")) != f.zst_bytes:
                     raise _changed()
                 done, mode = 0, "wb"
-                meta = {"url": asset.url, "etag": response.headers.get("ETag"),
+                meta = {"url": f.url, "etag": response.headers.get("ETag"),
                         "lastModified": response.headers.get("Last-Modified"),
-                        "archiveBytes": asset.archive_bytes}
+                        "bytes": f.zst_bytes}
                 tmp = sidecar.with_name(sidecar.name + ".tmp")
                 tmp.write_text(json.dumps(meta))
                 os.replace(tmp, sidecar)
             else:
                 raise ModelError("network", f"The download server answered with status {status}")
-            self._progress.bytes_done = done
+            self._progress.bytes_done = before + done
             with partial.open(mode) as out:
                 try:
                     while True:
@@ -391,12 +412,12 @@ class ModelStore:
                         block = response.read(BLOCK)
                         if not block:
                             break
-                        if done + len(block) > asset.archive_bytes:
-                            out.write(block[: asset.archive_bytes - done])
+                        if done + len(block) > f.zst_bytes:
+                            out.write(block[: f.zst_bytes - done])
                             raise _changed()
                         out.write(block)
                         done += len(block)
-                        self._progress.bytes_done = done
+                        self._progress.bytes_done = before + done
                         if done % CACHE_DROP < len(block):
                             _drop_cache(out, sync=True)
                 except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
@@ -405,49 +426,36 @@ class ModelStore:
                     out.flush()
                     os.fsync(out.fileno())
                     _drop_cache(out)
-        if done != asset.archive_bytes:
+        if done != f.zst_bytes:
             raise ModelError("network", "The download ended early; it will resume next time")
 
-    def _check_archive(self, asset, partial: Path, cancelled, pace):
-        """Hash the whole archive first: tarfile buffers headers whole, so it never sees an
-        unpinned archive. This also verifies a resumed download."""
+    def _check_objects(self, engine: catalog.Engine, cancelled, pace):
+        """Hash every downloaded object first, so the decoder never sees unpinned bytes. This
+        also verifies resumed downloads."""
         self._progress.phase = "verifying"
-        self._progress.bytes_done, self._progress.bytes_total = 0, asset.archive_bytes
-        if _hash_file(partial, cancelled, pace) != asset.archive_sha256:
-            raise ModelError("hash_mismatch", "The downloaded model archive does not match its "
-                             "pinned checksum")
+        self._progress.bytes_done, self._progress.bytes_total = 0, engine.asset.download_bytes
+        for f in engine.asset.files:
+            if _hash_file(self._partial(engine.id, f)[0], cancelled, pace) != f.zst_sha256:
+                raise ModelError("hash_mismatch", f"The downloaded {f.name} does not match its "
+                                 "pinned checksum")
+            self._progress.bytes_done += f.zst_bytes
 
-    def _extract(self, asset, partial: Path, staging: Path, cancelled, pace) -> str:
+    def _decode(self, engine: catalog.Engine, staging: Path, cancelled, pace):
         self._progress.phase = "extracting"
-        self._progress.bytes_done, self._progress.bytes_total = 0, asset.extracted_bytes
+        self._progress.bytes_done = 0
+        self._progress.bytes_total = engine.asset.extracted_bytes
         staging.mkdir(mode=0o750)
-        wanted = {f"{asset.directory}/{f.name}": f for f in asset.files}
-        seen: set[str] = set()
-        with partial.open("rb") as raw:
-            reader = _HashingReader(raw, cancelled, pace)
-            try:
-                with tarfile.open(fileobj=reader, mode="r|bz2") as tar:
-                    for member in tar:
-                        claimed = _claimed_name(member.name)
-                        if claimed not in wanted:
-                            continue
-                        if member.name != claimed or not member.isfile():
-                            raise _layout(f"{member.name} is not a regular file")
-                        pin = wanted[claimed]
-                        if pin.name in seen:
-                            raise _layout(f"{pin.name} appears twice")
-                        if member.size != pin.size:
-                            raise _layout(f"{pin.name} has an unexpected size")
-                        seen.add(pin.name)
-                        self._copy(tar.extractfile(member), staging / pin.name, pin, cancelled)
-                while reader.read(BLOCK):
-                    pass
-            except (tarfile.TarError, EOFError) as error:
-                raise _layout(f"The model archive cannot be read: {error}")
-        missing = sorted(f.name for f in asset.files if f.name not in seen)
-        if missing:
-            raise _layout("The model archive lacks " + ", ".join(missing))
-        return reader.digest.hexdigest()
+        for f in engine.asset.files:
+            with self._partial(engine.id, f)[0].open("rb") as raw:
+                # Each object is many independent frames, then a skippable seek-table frame.
+                source = zstandard.ZstdDecompressor().stream_reader(
+                    _PacedReader(raw, cancelled, pace), read_size=BLOCK,
+                    read_across_frames=True)
+                try:
+                    self._copy(source, staging / f.name, f, cancelled)
+                except zstandard.ZstdError as error:
+                    raise ModelError("hash_mismatch", f"{f.name} cannot be decompressed: "
+                                     f"{error}")
 
     def _copy(self, source, target: Path, pin: catalog.ModelFile, cancelled):
         digest = hashlib.sha256()
@@ -457,6 +465,8 @@ class ModelStore:
             while block := source.read(BLOCK):
                 if cancelled.is_set():
                     raise ModelError("cancelled", "The model download was cancelled")
+                if written + len(block) > pin.size:
+                    raise ModelError("hash_mismatch", f"{pin.name} is larger than pinned")
                 digest.update(block)
                 out.write(block)
                 written += len(block)
@@ -466,21 +476,21 @@ class ModelStore:
             out.flush()
             os.fsync(out.fileno())
             _drop_cache(out)
-        if digest.hexdigest() != pin.sha256:
+        if written != pin.size or digest.hexdigest() != pin.sha256:
             raise ModelError("hash_mismatch", f"{pin.name} does not match its pinned checksum")
 
-    def _install(self, engine: catalog.Engine, staging: Path, observed: str) -> Path:
+    def _install(self, engine: catalog.Engine, staging: Path) -> Path:
         license = engine.license
         shutil.copyfile(self.license_root / license.text_file, staging / "LICENSE.txt")
         if license.notice:
             (staging / "NOTICE.txt").write_text(license.notice + "\n")
         manifest = {
             "engine": engine.id,
-            "archive": engine.asset.archive,
-            "url": engine.asset.url,
-            "archiveBytes": engine.asset.archive_bytes,
-            "archiveSha256Observed": observed,
+            "source": catalog.DIST_URL,
+            "model": engine.asset.model,
             "files": {f.name: {"sha256": f.sha256, "size": f.size} for f in engine.asset.files},
+            "downloads": {f.name: {"url": f.url, "sha256": f.zst_sha256, "bytes": f.zst_bytes}
+                          for f in engine.asset.files},
             "license": license.id,
             "licenseVersion": license.version,
             "installedAt": int(self.clock()),
@@ -524,8 +534,7 @@ class ModelStore:
             old = self.root / f".old-{engine.id}-{secrets.token_hex(4)}"
             os.replace(final, old)
             shutil.rmtree(old, ignore_errors=True)
-        for path in self._partial(engine.asset):
-            path.unlink(missing_ok=True)
+        self._discard_partial(engine.id)
         self._errors.pop(engine.id, None)
 
 
@@ -538,17 +547,6 @@ def _tree_bytes(path: Path) -> int:
             if child.is_file() and not child.is_symlink():
                 total += child.stat().st_size
     return total
-
-
-def _claimed_name(name: str) -> str:
-    """The pinned name a member would land on if a careless extractor joined it."""
-    parts = []
-    for part in PurePosixPath(name.lstrip("/")).parts:
-        if part == "..":
-            parts = parts[:-1]
-        elif part != ".":
-            parts.append(part)
-    return "/".join(parts)
 
 
 def _content_range(value: str) -> tuple[int | None, int | None]:
@@ -568,12 +566,8 @@ def _int(value) -> int | None:
 
 
 def _changed() -> ModelError:
-    return ModelError("size_mismatch", "The upstream model archive changed; this version of "
+    return ModelError("size_mismatch", "The published model file changed; this version of "
                       "Cassini Live cannot verify it")
-
-
-def _layout(message: str) -> ModelError:
-    return ModelError("archive_layout", message)
 
 
 def _why(error: BaseException) -> str:

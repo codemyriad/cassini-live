@@ -1,25 +1,35 @@
 /**
- * Transcript store: a single, ordered timeline built from the server's polled
- * history (D-830). The server is the source of truth — it transcribes every
- * speaker in the call (not only those who enabled captions) and records who
- * joined when, each entry tagged with a monotonic `seq`. The store applies
- * those entries idempotently, so a poll that re-sends earlier entries is a
- * no-op and nothing is dropped between joining and enabling captions.
+ * Transcript store: a single, ordered timeline merged from two sources that
+ * share ONE seq space (D-830):
+ *
+ *  - the live HPB feed — finals carry the server's buffer `seq` (read from the
+ *    raw signalling "message" event); near-instant;
+ *  - the `/history` poll — the authoritative record, used to fill gaps and to
+ *    deliver joins and initial catch-up.
+ *
+ * Both flow through a reorder buffer keyed by seq, so rendering is append-only
+ * and in order, nothing is double-counted, and a live final that arrives before
+ * the entries it follows is held until the gap is filled:
+ *
+ *   seq == applied+1 → render, advance, flush anything now contiguous
+ *   seq >  applied+1 → hold (out of order / a gap the poll will fill)
+ *   seq <= applied   → already have it, skip
  *
  * Items, in order:
  * - `block`: a run of consecutive FINAL lines by one speaker.
  * - `join`:  a participant join marker ("… joined").
  *
  * Partials (in-progress speech) are a separate, transient channel fed by the
- * live caption hook when the viewer has captions on — they are never part of
- * the durable timeline and clear when the final for that speaker lands.
+ * live feed — never part of the durable timeline, cleared when the speaker's
+ * final lands.
  */
 
 let nextItemId = 1
 
 export function createStore() {
   let items = []
-  let lastSeq = 0
+  let appliedSeq = 0 // highest contiguously-applied seq; what the poll asks after
+  let pending = new Map() // seq -> entry, held until the gap below it fills
   const partials = new Map() // sid -> { text, lang }
   const listeners = new Set()
 
@@ -32,7 +42,7 @@ export function createStore() {
     return last && last.kind === 'block' ? last : null
   }
 
-  function applyFinal(entry) {
+  function renderFinal(entry) {
     const sid = entry.speakerSessionId
     const text = entry.message
     if (typeof sid !== 'string' || sid === '' || typeof text !== 'string' || text === '') return
@@ -53,7 +63,7 @@ export function createStore() {
     }
   }
 
-  function applyJoin(entry) {
+  function renderJoin(entry) {
     const item = {
       id: nextItemId++,
       kind: 'join',
@@ -66,17 +76,48 @@ export function createStore() {
     emit({ type: 'add', item })
   }
 
-  // Apply a batch of server timeline entries (each with a `seq`), skipping any
-  // at or below the last seq we have seen. Entries are assumed oldest-first.
-  function applyTimeline(entries) {
-    if (!Array.isArray(entries)) return
-    for (const entry of entries) {
-      const seq = entry && typeof entry.seq === 'number' ? entry.seq : null
-      if (seq !== null && seq <= lastSeq) continue
-      if (entry.type === 'join') applyJoin(entry)
-      else applyFinal(entry)
-      if (seq !== null) lastSeq = seq
+  function render(entry) {
+    if (entry.type === 'join') renderJoin(entry)
+    else renderFinal(entry)
+  }
+
+  // Place one seq-tagged entry into the timeline via the reorder buffer.
+  function ingest(entry) {
+    const seq = entry && typeof entry.seq === 'number' ? entry.seq : null
+    if (seq === null) return // only seq-tagged entries belong on the timeline
+    if (seq <= appliedSeq) return // already rendered
+    if (pending.has(seq) && seq !== appliedSeq + 1) return // still held behind a gap
+    if (seq === appliedSeq + 1) {
+      pending.delete(seq) // eviction may have made a held entry contiguous
+      render(entry)
+      appliedSeq = seq
+      while (pending.has(appliedSeq + 1)) {
+        const next = pending.get(appliedSeq + 1)
+        pending.delete(appliedSeq + 1)
+        render(next)
+        appliedSeq += 1
+      }
+    } else {
+      pending.set(seq, entry)
     }
+  }
+
+  // A single live final from the HPB feed (held if it arrives before its gap).
+  function applyLiveFinal(entry) {
+    ingest(entry)
+  }
+
+  // The authoritative poll delta (oldest-first). It establishes what the server
+  // still holds: if its smallest seq is past the gap we are waiting on, those
+  // entries were evicted and never coming, so step over them.
+  function applyPoll(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return
+    const first = entries.find((e) => typeof e.seq === 'number')
+    if (first && first.seq > appliedSeq + 1) {
+      appliedSeq = first.seq - 1
+      for (const seq of [...pending.keys()]) if (seq <= appliedSeq) pending.delete(seq)
+    }
+    for (const entry of entries) ingest(entry)
   }
 
   // In-progress speech for a speaker (from the live hook). Empty text clears it.
@@ -92,20 +133,24 @@ export function createStore() {
 
   function reset() {
     items = []
-    lastSeq = 0
+    appliedSeq = 0
+    pending = new Map()
     partials.clear()
     emit({ type: 'reset' })
   }
 
   return {
-    applyTimeline,
+    applyLiveFinal,
+    applyPoll,
     setPartial,
     reset,
     get items() {
       return items
     },
-    get lastSeq() {
-      return lastSeq
+    // The last CONTIGUOUS seq — what the poll should ask after, so a gap is
+    // re-requested rather than skipped.
+    get confirmedSeq() {
+      return appliedSeq
     },
     partialFor(sid) {
       return partials.get(sid) || null

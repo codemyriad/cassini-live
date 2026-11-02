@@ -1,15 +1,14 @@
-"""Tiny model archives and a scriptable HTTP opener for the model store tests."""
+"""Tiny .zst model objects and a scriptable HTTP opener for the model store tests."""
 
 import dataclasses
 import hashlib
-import io
-import tarfile
 import urllib.error
 from email.message import Message
 
+import zstandard
+
 from cassini_live import catalog
 
-DIRECTORY = "tiny-model"
 FILES = {
     "encoder.int8.onnx": b"encoder" * 300,
     "decoder.int8.onnx": b"decoder" * 50,
@@ -18,48 +17,33 @@ FILES = {
 }
 
 
-def member(name, data=b"", kind=tarfile.REGTYPE, linkname=""):
-    info = tarfile.TarInfo(name)
-    info.type, info.linkname = kind, linkname
-    info.size = len(data) if kind == tarfile.REGTYPE else 0
-    return info, data
+def compress(data: bytes, frame=256) -> bytes:
+    """Independent frames, like the dist objects (there each holds up to 256 KiB)."""
+    out = zstandard.ZstdCompressor(level=3)
+    return b"".join(out.compress(data[i:i + frame]) for i in range(0, len(data), frame))
 
 
-def make_archive(files=None, extra_members=(), directory=DIRECTORY, skip=()) -> bytes:
-    """A .tar.bz2 with `directory/<file>` members, then any (TarInfo, data) extras."""
+def make_objects(files=None) -> dict[str, bytes]:
     files = FILES if files is None else files
-    out = io.BytesIO()
-    with tarfile.open(fileobj=out, mode="w:bz2") as tar:
-        info, data = member(f"{directory}/test_wavs/0.wav", b"RIFF" * 10)
-        tar.addfile(info, io.BytesIO(data))
-        for name, data in files.items():
-            if name not in skip:
-                info, data = member(f"{directory}/{name}", data)
-                tar.addfile(info, io.BytesIO(data))
-        for info, data in extra_members:
-            tar.addfile(info, io.BytesIO(data) if info.isfile() else None)
-    return out.getvalue()
+    return {name: compress(data) for name, data in files.items()}
 
 
-def fake_catalog(archive: bytes, files=None, *, archive_bytes=None, sha=None, size=None,
-                 archive_sha=None):
+def fake_catalog(objects: dict[str, bytes], files=None, *, sha=None, size=None, zst_sha=None,
+                 zst_bytes=None):
     """The real catalog with tiny pinned files for both Nemotron engines."""
     files = FILES if files is None else files
-    sha, size = sha or {}, size or {}
+    sha, size, zst_sha, zst_bytes = sha or {}, size or {}, zst_sha or {}, zst_bytes or {}
     engines = dict(catalog.ENGINES)
     for engine_id in ("nemotron-en", "nemotron-multilingual"):
-        name = f"{engine_id}.tar.bz2"
         asset = catalog.ModelAsset(
-            archive=name,
-            url=f"https://example.test/{name}",
-            archive_bytes=len(archive) if archive_bytes is None else archive_bytes,
-            archive_sha256=archive_sha or hashlib.sha256(archive).hexdigest(),
-            directory=DIRECTORY,
+            model=engine_id,
             files=tuple(
                 catalog.ModelFile(
                     n,
                     sha.get(n, hashlib.sha256(d).hexdigest()),
                     size.get(n, len(d)),
+                    zst_sha.get(n, hashlib.sha256(objects[n]).hexdigest()),
+                    zst_bytes.get(n, len(objects[n])),
                 )
                 for n, d in files.items()
             ),
@@ -102,11 +86,12 @@ class FakeResponse:
 
 
 class FakeOpener:
-    """Serves one archive with Content-Length, Range and If-Range, like GitHub's CDN."""
+    """Serves .zst objects by file name with Content-Length, Range and If-Range, like the
+    dist Worker."""
 
-    def __init__(self, archive: bytes, *, etag='"v1"', chunk=97, status=None,
+    def __init__(self, objects: dict[str, bytes], *, etag='"v1"', chunk=97, status=None,
                  content_length=None, ignore_range=False, stall=None, on_read=None, gate=None):
-        self.archive, self.etag, self.chunk = archive, etag, chunk
+        self.objects, self.etag, self.chunk = objects, etag, chunk
         self.status, self.content_length, self.ignore_range = status, content_length, ignore_range
         self.stall, self.on_read, self.gate = stall, on_read, gate
         self.requests = []
@@ -120,16 +105,16 @@ class FakeOpener:
             raise urllib.error.HTTPError(request.full_url, self.status, "error", Message(), None)
         if request.get_method() == "HEAD":
             return FakeResponse(200, b"", {}, self.chunk)
+        body = self.objects[request.full_url.rsplit("/", 1)[1].removesuffix(".zst")]
+        length = self.content_length or len(body)
         rng, if_range = request.get_header("Range"), request.get_header("If-range")
         if rng and not self.ignore_range and if_range == self.etag:
             start = int(rng.removeprefix("bytes=").rstrip("-"))
-            body = self.archive[start:]
-            headers = {"Content-Range": f"bytes {start}-{len(self.archive) - 1}/"
-                       f"{self.content_length or len(self.archive)}",
-                       "Content-Length": len(body), "ETag": self.etag}
-            return FakeResponse(206, body, headers, self.chunk, self.on_read, self.stall)
-        headers = {"Content-Length": self.content_length or len(self.archive), "ETag": self.etag}
-        return FakeResponse(self.status or 200, self.archive, headers, self.chunk,
+            headers = {"Content-Range": f"bytes {start}-{len(body) - 1}/{length}",
+                       "Content-Length": len(body) - start, "ETag": self.etag}
+            return FakeResponse(206, body[start:], headers, self.chunk, self.on_read, self.stall)
+        headers = {"Content-Length": length, "ETag": self.etag}
+        return FakeResponse(self.status or 200, body, headers, self.chunk,
                             self.on_read, self.stall)
 
 

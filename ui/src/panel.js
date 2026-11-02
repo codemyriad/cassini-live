@@ -63,6 +63,12 @@ const CSS = `
 .dot.attached { background: #2d7b41; }
 .title { font-weight: 600; flex: 1 1 auto; min-width: 0; }
 .ai-label { font-size: 11px; color: var(--muted); flex: none; }
+.diagnostics {
+  flex: none; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--accent); font-size: 11px; text-decoration: none;
+}
+.diagnostics:hover { background: var(--accent-soft); }
+.diagnostics:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .body { position: relative; flex: 1 1 auto; display: flex; min-height: 0; }
 .scroll { flex: 1 1 auto; overflow-y: auto; padding: 8px 2px; overscroll-behavior: contain; }
 .hint { color: var(--muted); padding: 12px 4px; text-align: center; }
@@ -158,6 +164,20 @@ export function createTranscriptView({ store, names, shadow }) {
   const title = el('span', 'title', 'Live transcript')
   const aiLabel = el('span', 'ai-label', 'AI-generated')
   header.append(dot, title, aiLabel)
+  const diagnostics = el('a', 'diagnostics', 'diagnostics')
+  const diagnosticsPath = '/apps/app_api/proxy/live_transcription/diagnostics/'
+  diagnostics.href = '/index.php' + diagnosticsPath
+  try {
+    if (typeof window.OC?.generateUrl === 'function') {
+      diagnostics.href = window.OC.generateUrl(diagnosticsPath)
+    }
+  } catch {
+    /* keep the default AppAPI proxy URL */
+  }
+  diagnostics.target = '_blank'
+  diagnostics.rel = 'noopener noreferrer'
+  diagnostics.title = 'Open diagnostics in a new tab (administrators only)'
+  header.appendChild(diagnostics)
 
   const body = el('div', 'body')
   const scroll = el('div', 'scroll')

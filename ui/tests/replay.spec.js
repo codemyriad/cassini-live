@@ -39,6 +39,7 @@ test.afterAll(async () => {
 test.beforeEach(async () => {
   replayServer.clock.pause()
   replayServer.clock.seek(0)
+  replayServer.clock.setSpeed(1)
 })
 
 const url = (q = '') => `http://127.0.0.1:${PORT}/call/replay${q}`
@@ -84,7 +85,11 @@ test('the clock plays at a speed, pauses, seeks and stops at the end', async () 
 })
 
 test('mounts the panel as a Talk sidebar tab and shows the state at time zero', async ({ page }) => {
+  const enabled = page.waitForResponse((response) =>
+    response.url().endsWith('/live-transcription/replay') && response.request().method() === 'POST')
   await page.goto(url('?as=alice'))
+  expect((await enabled).status()).toBe(200)
+  await expect.poll(() => page.evaluate(() => window.__CASSINI_LIVE_PANEL__?.attached)).toBe(true)
   await expect(page.locator('#cassini-live-tab')).toBeVisible()
   await expect(markers(page)).toHaveText(['You joined here'], { timeout: 6000 })
   await expect(lines(page)).toHaveCount(0)
@@ -116,7 +121,8 @@ test('playing advances the panel without a remount', async ({ page }) => {
   await page.goto(url('?as=bob'))
   await seekTo(page, 2500)
   await expect(partials(page)).toHaveText(['Alice Lovelace:good'], { timeout: 6000 })
-  await page.selectOption('#tr-speed', '16')
+  // The panel fills history every 3 s; keep the two-final state visible for a poll.
+  await page.selectOption('#tr-speed', '4')
   await page.click('#tr-play')
   await expect(page.locator('#tr-play')).toHaveAttribute('aria-pressed', 'true')
   await expect(lines(page)).toHaveText(['good morning', 'hi alice'], { timeout: 10000 })
@@ -132,4 +138,17 @@ test('"view as" changes who is you', async ({ page }) => {
   await page.waitForURL(/as=bob/)
   await seekTo(page, 6000)
   await expect(markers(page)).toHaveText(['Alice Lovelace joined', 'You joined here'], { timeout: 6000 })
+})
+
+
+test('16x playback catches up all finals and joins without duplicates', async ({ page }) => {
+  await page.goto(url('?as=alice'))
+  await expect(markers(page)).toHaveText(['You joined here'], { timeout: 6000 })
+  await page.selectOption('#tr-speed', '16')
+  await page.click('#tr-play')
+  await expect(lines(page)).toHaveText(['good morning', 'hi alice', 'later on'], { timeout: 10000 })
+  await expect(markers(page)).toHaveText(['You joined here', 'Bob Babbage joined'])
+  await expect(page.locator('#tr-play')).toHaveAttribute('aria-pressed', 'false', { timeout: 6000 })
+  await seekTo(page, 4000)
+  await expect(lines(page)).toHaveText(['good morning'], { timeout: 6000 })
 })

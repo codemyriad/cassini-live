@@ -1,7 +1,7 @@
 # Install the development ExApp
 
 The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.9.0`. This checkout builds locally; it does not
+`ghcr.io/codemyriad/cassini-live:0.11.0`. This checkout builds locally; it does not
 publish to GHCR or the Nextcloud App Store.
 
 ## With an existing deploy daemon
@@ -13,7 +13,7 @@ publish to GHCR or the Nextcloud App Store.
 3. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.9.0 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.11.0 .
    ```
 
 4. For a dedicated development daemon, configure AppAPI's local registry
@@ -73,6 +73,10 @@ publish to GHCR or the Nextcloud App Store.
    See [load, admission and capacity](capacity.md) for recovery and configuration errors. Join a Talk
    call with another participant, enable captions from the call menu, and speak.
    Test your languages, a late joiner, microphone mute/unmute and stop/start.
+   Meanwhile, open **Live diagnostics** from the settings page's Status section
+   (`/index.php/apps/app_api/proxy/live_transcription/diagnostics/`): it should
+   read "Live · updated every second" and show your call's speakers and caption
+   lag. See [diagnostics page](diagnostics-page.md).
 
 If the public HPB URL is unreachable from the container, set the optional
 `CASSINI_TALK_HPB_URL` deploy variable to its reachable URL. Keep certificate
@@ -117,7 +121,8 @@ through AppAPI): a card per engine with accuracy, languages, requirements and
 license, live download and switch progress, cancel, removal of downloaded models,
 the caption status, the live speaker count and how far captions trail speech, and
 **Measure capacity** with the last result (only while no call has captions;
-captions pause for up to two minutes). The page refreshes itself.
+captions pause for up to two minutes). The page refreshes itself, and links to
+the live [diagnostics page](diagnostics-page.md).
 
 * Each option label in the form says whether the engine is in use, ready,
   available, or "unavailable:" followed by a short form of the first reason, for
@@ -148,8 +153,9 @@ captions pause for up to two minutes). The page refreshes itself.
   settings page (**Remove downloaded files** on its card).
 
 Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes for the settings page.
-Update with `occ app_api:app:update live_transcription` (or reinstall); AppAPI
-re-reads routes only on a version change.
+Upgrading from 0.10.0: 0.11.0 adds them for the diagnostics page. Update with
+`occ app_api:app:update live_transcription` (or reinstall); AppAPI re-reads
+routes only on a version change.
 
 An AppAPI update recreates the container without its swap and PID limits until
 you re-apply them. If Cassini Live starts in that state, it runs Whistle and

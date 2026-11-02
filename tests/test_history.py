@@ -5,7 +5,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from cassini_live.talk.client import HISTORY_MAX, SpreedClient
-from cassini_live.talk.types import HPBSettings, Transcript
+from cassini_live.talk.types import HPBSettings, Target, Transcript
 
 
 def make_client():
@@ -47,6 +47,29 @@ def test_since_returns_only_newer_entries():
     asyncio.run(run())
     assert [e["message"] for e in client.history_snapshot(since=1)] == ["two"]
     assert client.history_snapshot(since=2) == []
+
+
+def test_hpb_final_carries_the_buffer_seq_and_partials_do_not():
+    client = make_client()
+    client.targets["sess-target"] = Target()
+    sent = []
+    client.send_message = lambda msg: sent.append(msg) or _noop()
+
+    async def run():
+        await _send(client, final=True, lang_id="en", message="first", speaker_session_id="a")
+        await _send(client, final=False, lang_id="en", message="partial", speaker_session_id="a")
+        await _send(client, final=True, lang_id="en", message="second", speaker_session_id="a")
+
+    asyncio.run(run())
+    datas = [m["message"]["data"] for m in sent]
+    # the seq on each final matches its buffered seq; the partial carries none
+    assert [d.get("seq") for d in datas] == [1, None, 2]
+    assert [d["final"] for d in datas] == [True, False, True]
+    assert [e["seq"] for e in client.history_snapshot()] == [1, 2]  # partial not buffered
+
+
+async def _noop():
+    return None
 
 
 def test_joins_are_recorded_on_the_timeline():

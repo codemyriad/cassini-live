@@ -11,12 +11,13 @@ from nc_py_api import AsyncNextcloudApp
 from nc_py_api.ex_app import run_app, set_handlers
 from pydantic import BaseModel, Field
 
-from . import __version__, catalog, panel_page, settings_page, transcriber
+from . import __version__, catalog, diagnostics_page, panel_page, settings_page, transcriber
 from .auth import SafeAppAPIAuthMiddleware
 from .capacity import CapacityAssessment
 from .config import Config, state_dir
 from .eligibility import NetworkProbe
 from .engine_switch import EngineManager, SwitchRefused
+from .membership import RoomMembership
 from .model_store import ModelStore
 from .pool import WorkerPool
 from .recovery import RecoveryJournal
@@ -248,8 +249,9 @@ def create_app(
             raise HTTPException(
                 503, "Could not connect captions to Talk; please try again"
             ) from error
-        # AppAPI names the requesting user; the diagnostic video reads this room's
-        # participant names as them. Guests have no user id and are skipped.
+        # AppAPI names the requesting user; the diagnostics (the video, or the page for a
+        # member watching) read this room's participant names as them. Guests have no user
+        # id and are skipped.
         client = getattr(service, "clients", {}).get(req.roomToken)
         if req.enable and client is not None and hasattr(client, "note_user"):
             client.note_user(request.scope.get("username") or None)
@@ -296,42 +298,20 @@ def create_app(
             "engine": manager.engine_status(),
         }
 
+    membership = RoomMembership(nc_factory)
     app.include_router(settings_page.create_router(manager, status_body))
     app.include_router(panel_page.create_router())
+    app.include_router(
+        diagnostics_page.create_router(
+            service.diagnostic_feed, membership, service.diagnostics.status
+        )
+    )
     if production:
         sync = SettingsSync(manager, nc_factory, status_body, page_url=settings_page.page_url())
 
     @app.get("/status")
     async def status():
         return status_body()
-
-    # Membership is stable during a call, and the panel polls /history, so cache
-    # the OCS check briefly per (user, room) to spare Talk a round-trip per poll.
-    history_authz_cache: dict[tuple[str, str], float] = {}
-    HISTORY_AUTHZ_TTL = 30.0
-
-    async def _user_in_room(username: str, room_token: str) -> bool:
-        # Authorize catch-up by acting as the requesting user and asking Talk for
-        # the room's participants: Talk returns them only to members, so a 200 is
-        # proof of membership and a 403/404 is a clean deny. Talk's own room ACL
-        # is the gate; we keep no separate membership state. Guests (empty
-        # username) cannot be acted-as and are refused.
-        if not username or not room_token:
-            return False
-        now = asyncio.get_event_loop().time()
-        key = (username, room_token)
-        cached = history_authz_cache.get(key)
-        if cached is not None and cached > now:
-            return True
-        try:
-            nc = nc_factory()
-            await nc.set_user(username)
-            await nc.ocs("GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants")
-        except Exception:
-            history_authz_cache.pop(key, None)
-            return False
-        history_authz_cache[key] = now + HISTORY_AUTHZ_TTL
-        return True
 
     @app.get("/history")
     async def history(request: Request, token: str = "", since: int = 0):
@@ -346,7 +326,7 @@ def create_app(
         if client is None:
             # No active caption client — nothing has been transcribed to catch up on.
             return {"entries": [], "head": 0}
-        if not await _user_in_room(request.scope.get("username") or "", token):
+        if not await membership.check(request.scope.get("username") or "", token):
             raise HTTPException(403, "Not a participant of this call")
         return {"entries": client.history_snapshot(since), "head": client.history_head()}
 
