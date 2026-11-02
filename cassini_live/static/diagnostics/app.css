@@ -438,6 +438,9 @@ body.stale .video::after {
   overflow-wrap: normal;
 }
 .lane-name.other {
+  /* This fixed label must stay readable even when a quarter of a phone's band
+   * is narrower than its glyphs. Participant names keep the quarter-band cap. */
+  max-width: calc(100% - 6px);
   color: var(--text-dim);
   font-style: italic;
   font-weight: 400;
