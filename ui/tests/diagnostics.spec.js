@@ -515,6 +515,10 @@ test('long, emoji and right-to-left names fit a 375 px phone', async ({ page }, 
   await expect(page.locator('#lane-names .lane-name').first()).toHaveText('\u{1F600}'.repeat(40))
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(0)
+  // Use wider glyphs too: the system font on macOS hid Linux's clipped label.
+  await page.locator('#lane-names .lane-name').evaluateAll((nodes) => {
+    for (const node of nodes) node.style.fontFamily = 'monospace'
+  })
   const band = await page.locator('#band').boundingBox()
   const chips = await page.locator('#lane-names .lane-name').evaluateAll((nodes) => nodes.map((n) => {
     const style = getComputedStyle(n)
@@ -523,7 +527,10 @@ test('long, emoji and right-to-left names fit a 375 px phone', async ({ page }, 
   for (const box of chips) {
     // The name gets a quarter of the band (the chip its padding besides, as the video
     // fits it), so a long name never hides the recent history.
-    expect(box.width - box.padding).toBeLessThanOrEqual(band.width / 4 + 1)
+    if (box.text !== 'other call') {
+      expect(box.width - box.padding).toBeLessThanOrEqual(band.width / 4 + 1)
+    }
+    expect(box.right).toBeLessThanOrEqual(band.x + band.width)
     expect(box.left).toBeGreaterThanOrEqual(band.x)
   }
   // The page's own label for another call's speaker is shown whole.
