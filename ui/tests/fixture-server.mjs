@@ -16,12 +16,22 @@
  *
  * It also serves the built panel bundle at the AppAPI proxy path, so the
  * loader bookmarklet flavour is exercised against the same CSP.
+ *
+ * And the diagnostics page (dist/diagnostics/) at /diagnostics/, optionally under
+ * /diag/<id> and the AppAPI proxy path, with the ExApp's page CSP and a scripted
+ * feed that advances once a second. Each <id> is its own feed, so tests do not
+ * share one; POST /fixture-diagnostics/<id> steers it (see diagnosticsControl). Its
+ * columns follow the sample's lanes (diagnostics-fixtures.scriptedColumn): speakers
+ * talk in bursts, a paused, held or lost lane ends or passes a stretch in that state,
+ * and once a minute the lag rises past the shed line and a speaker is paused.
  */
 
+import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { governor, lagAt, sample, scriptedColumn } from './diagnostics-fixtures.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const distDir = join(here, '..', 'dist')
@@ -190,6 +200,96 @@ const page = `<!doctype html>
 </body>
 </html>`
 
+// cassini_live/settings_page.py CSP, which the diagnostics page is served with.
+const PAGE_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ')
+const DIAGNOSTICS = /^(?:\/diag\/([\w-]+))?(?:\/index\.php\/apps\/app_api\/proxy\/live_transcription)?\/diagnostics\/(.*)$/
+const DIAGNOSTICS_FILES = {
+  '': ['index.html', 'text/html; charset=utf-8'],
+  'index.html': ['index.html', 'text/html; charset=utf-8'],
+  'app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  'app.css': ['app.css', 'text/css; charset=utf-8'],
+}
+// A speaker name that would run script if the page ever parsed feed strings as HTML.
+export const HOSTILE_NAME = '<img src=x onerror=alert(1)>'
+
+// Scripted diagnostics feeds by id: server monotonic time starts at `base` seconds
+// and one column is added per second, as DiagnosticFeed does.
+const diagnosticsFeeds = new Map()
+// DiagnosticFeed.instance: a random token per Cassini Live process.
+const newInstance = () => randomBytes(8).toString('hex')
+
+function diagnosticsFeed(id) {
+  if (!diagnosticsFeeds.has(id)) {
+    diagnosticsFeeds.set(id, { start: Date.now(), base: 5000, from: 1, instance: newInstance(), status: null, html: false, overrides: {} })
+  }
+  return diagnosticsFeeds.get(id)
+}
+
+/**
+ * Steer a feed: {status: 403|503|null} answers every poll with that status (null:
+ * normally again) and the app's JSON error, {status: 404, html: true} with Nextcloud's
+ * HTML 404 page instead, as AppAPI's proxy refuses a request, {restart: true} restarts its clock lower and keeps its instance, so
+ * only the page's clock check can see it (a rebooted host, as an answer without an
+ * instance would show it), {relaunch: true} drops its columns, keeps its clock and gets a
+ * new instance (a restarted ExApp container: lane ids start over, and the first column
+ * comes over two seconds later, as DiagnosticFeed's does after priming), {idle: true}
+ * drops its columns and keeps its clock and instance (the feed stopped after 30 s without
+ * a poll and started again), {sample: {...}} overrides fields of every sample from now on,
+ * {history: s} moves its start s seconds back, so its first answer already holds that
+ * much history.
+ */
+function diagnosticsControl(feed, { status, html, restart, relaunch, idle, sample: overrides, history }) {
+  if (status !== undefined) Object.assign(feed, { status, html: Boolean(html) })
+  if (restart) Object.assign(feed, { start: Date.now(), base: 100, from: 1 })
+  if (relaunch || idle) feed.from = Math.floor((Date.now() - feed.start) / 1000) + 3
+  if (relaunch) feed.instance = newInstance()
+  if (overrides) feed.overrides = overrides
+  if (history) feed.start -= history * 1000
+}
+
+function diagnosticsBody(feed, since) {
+  const elapsed = (Date.now() - feed.start) / 1000
+  const ticks = Math.floor(elapsed)
+  const data = sample({
+    vadActive: 1 + (ticks % 3),
+    queuedChunks: ticks,
+    finals: 40 + Math.floor(ticks / 3),
+    admission: governor({ lagSeconds: lagAt(feed.base + ticks) }),
+    lanes: [
+      { id: 1, active: true, speech: 120 + ticks, lost: 0, scribe: 1, waiting: false, paused: false, lag: 0.3, name: HOSTILE_NAME },
+      { id: 2, active: false, speech: 80, lost: 0, scribe: 2, waiting: false, paused: false, lag: 0.0, name: 'Bo' },
+    ],
+    decision: { at: 1793212496.5, verb: 'admit', who: HOSTILE_NAME, text: 'seat 2 of 4 · lag 0.4 s < 1.0 · stall 6%' },
+    ...feed.overrides,
+  })
+  const columns = []
+  for (let k = Math.max(feed.from, ticks - 119); k <= ticks; k++) {
+    columns.push(scriptedColumn(Array.isArray(data.lanes) ? data.lanes : [], feed.base + k, feed.base + ticks))
+  }
+  return {
+    version: 'fixture',
+    window: 120,
+    presence: 30,
+    names: true,
+    instance: feed.instance,
+    head: columns.length ? columns[columns.length - 1].t : 0,
+    now: Math.round((feed.base + elapsed) * 1000) / 1000,
+    sample: data,
+    columns: columns.filter((column) => column.t > since),
+    error: null,
+    video: { enabled: false, state: 'disabled' },
+  }
+}
+
 // Per-conversation server-side timelines, mirroring cassini-live's buffer:
 // entries gain a monotonic seq, and /history returns those newer than `since`.
 const timelines = new Map() // token -> { entries: [], seq: 0 }
@@ -253,6 +353,47 @@ export function startFixtureServer(port = PORT) {
       res.end(JSON.stringify({ entries: tl.entries.filter((e) => e.seq > since), head: tl.seq }))
       return
     }
+    const control = url.pathname.match(/^\/fixture-diagnostics\/([\w-]+)$/)
+    if (control && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        diagnosticsControl(diagnosticsFeed(control[1]), JSON.parse(raw || '{}'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end('{}')
+      })
+      return
+    }
+    const diagnostics = url.pathname.match(DIAGNOSTICS)
+    if (diagnostics && diagnostics[2] === 'api/feed') {
+      const feed = diagnosticsFeed(diagnostics[1] || 'default')
+      const headers = { 'content-type': 'application/json', 'content-security-policy': PAGE_CSP, 'cache-control': 'no-store' }
+      if (feed.status && feed.html) {
+        res.writeHead(feed.status, { 'content-type': 'text/html; charset=UTF-8', 'cache-control': 'no-store' })
+        res.end('<!DOCTYPE html><html><body><h2>Page not found</h2></body></html>')
+        return
+      }
+      if (feed.status) {
+        res.writeHead(feed.status, headers)
+        res.end(JSON.stringify({ error: { code: feed.status === 403 ? 'forbidden' : 'unavailable', message: 'refused by the fixture', reasons: [] } }))
+        return
+      }
+      res.writeHead(200, headers)
+      res.end(JSON.stringify(diagnosticsBody(feed, Number(url.searchParams.get('since') || 0))))
+      return
+    }
+    if (diagnostics && Object.hasOwn(DIAGNOSTICS_FILES, diagnostics[2])) {
+      const [name, type] = DIAGNOSTICS_FILES[diagnostics[2]]
+      try {
+        const body = (await readFile(join(distDir, 'diagnostics', name), 'utf8')).replaceAll('{{VERSION}}', 'fixture')
+        res.writeHead(200, { 'content-type': type, 'content-security-policy': PAGE_CSP, 'cache-control': 'no-store' })
+        res.end(body)
+      } catch {
+        res.writeHead(404)
+        res.end('build dist/diagnostics/ first')
+      }
+      return
+    }
     if (url.pathname.endsWith('/panel/panel.js')) {
       try {
         const body = await readFile(join(distDir, 'panel.js'))
@@ -273,4 +414,5 @@ export function startFixtureServer(port = PORT) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   await startFixtureServer()
   console.log(`fixture Talk page: http://127.0.0.1:${PORT}/call/test`)
+  console.log(`fixture diagnostics page: http://127.0.0.1:${PORT}/diagnostics/`)
 }
