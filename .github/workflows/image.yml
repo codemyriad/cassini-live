@@ -1,9 +1,24 @@
-name: Publish image on request
+# Container image — build and push ghcr.io/codemyriad/cassini-live.
+#
+# A release tag v<version> pushes the immutable :<version> image that both
+# manifests pin as <image-tag>; the App Store release (release.yml) refuses to
+# publish until that image exists. Never move or delete a :<version> tag a store
+# release pins: AppAPI pulls exactly that tag on install and update.
+#
+# A manual run builds any branch and pushes only :sha-<commit>, so it can never
+# overwrite a released version.
+name: Publish image
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 permissions:
   contents: read
   packages: write
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   publish:
     runs-on: ubuntu-24.04
@@ -11,11 +26,33 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
+          version: '0.9.2'
           python-version: '3.12'
       - run: uv sync --frozen
       - run: uv run python scripts/check_manifest.py
       - id: version
         run: echo "value=$(uv run python -c 'import cassini_live; print(cassini_live.__version__)')" >> "$GITHUB_OUTPUT"
+      - name: Tag matches the version, on the branch it is cut on
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the manifest version $VERSION"; exit 1
+          fi
+          ./scripts/check-tag-branch.sh "$VERSION" "$GITHUB_SHA"
+      - id: tags
+        env:
+          EVENT: ${{ github.event_name }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cassini-live"
+          tags="${image}:sha-${GITHUB_SHA::12}"
+          if [[ "$EVENT" == push ]]; then tags="${image}:${VERSION},${tags}"; fi
+          echo "value=$tags" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -28,4 +65,5 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/codemyriad/cassini-live:${{ steps.version.outputs.value }}
+          tags: ${{ steps.tags.outputs.value }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}

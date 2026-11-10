@@ -20,11 +20,25 @@ jobs:
       - run: uv run pytest -m 'not integration'
       - run: uv run python scripts/prepare_model.py
       - run: uv run pytest -m integration
-      - run: uv run python scripts/package.py
+  release-tooling:
+    # The App Store package and the release scripts: shellcheck, the scripts'
+    # own tests, and an unsigned store archive built and validated the way the
+    # store reads it (pre-info.xslt, then info.xsd).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck xsltproc libxml2-utils
+      - run: shellcheck -x --source-path=SCRIPTDIR --severity=style scripts/*.sh
+      - run: ./scripts/test-release-tooling.sh
+      - run: |
+          version="$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' appstore/info.xml | head -n1)"
+          ./scripts/build-appstore-tarball.sh --version "$version"
+          ./scripts/validate-appstore-tarball.sh --version "$version" \
+            --tarball build/artifacts/appstore/cassini_live.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: cassini-live-package
-          path: dist/*.tar.gz
+          name: cassini-live-appstore-unsigned
+          path: build/artifacts/appstore/*.tar.gz
   ui:
     runs-on: ubuntu-24.04
     defaults:

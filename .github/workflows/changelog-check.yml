@@ -1,0 +1,100 @@
+# Changelog fragment gate — the non-Rush analog of `rush change --verify`.
+#
+# A PR passes when ANY of these hold:
+#   1. it adds/updates a fragment under changelog.d/ (excluding the README), OR
+#   2. it carries the `skip-changelog` label (the escape hatch), OR
+#   3. it touches only non-shipping paths (docs / planning / images).
+#
+# Otherwise it fails with instructions. This keeps release notes captured at PR
+# time (see changelog.d/README.md) without blocking note-free PRs. Start lenient:
+# the label makes any false positive a one-click override. Convention + skills
+# reference: codemyriad/development-os plans/changelog-system/ (ported from
+# codemyriad/gocassini)..
+name: Changelog
+
+on:
+  pull_request:
+    # `labeled`/`unlabeled` so toggling `skip-changelog` re-runs the gate.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fragment:
+    name: changelog fragment present
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a changelog.d fragment (or an exemption)
+        env:
+          # Comma-joined label names from the PR event payload (no API call).
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # 1. Escape hatch: `skip-changelog` label always passes.
+          case ",${LABELS}," in
+            *,skip-changelog,*)
+              echo "skip-changelog label present — gate skipped."
+              exit 0
+              ;;
+          esac
+
+          # Files changed by this PR (merge-base .. head).
+          mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "${BASE_SHA}...${HEAD_SHA}")
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "No changed files; nothing to enforce."
+            exit 0
+          fi
+
+          # 2. A new/updated changelog fragment satisfies the gate.
+          for f in "${changed[@]}"; do
+            case "$f" in
+              changelog.d/README.md) : ;;
+              changelog.d/*.md)
+                echo "Found changelog fragment: $f"
+                exit 0
+                ;;
+            esac
+          done
+
+          # 3. Exempt PRs that touch ONLY non-shipping paths (mirrors CI's
+          #    paths-ignore). `*` in bash `case` spans `/`, so `docs/*` matches
+          #    nested files and `*.md` matches markdown anywhere.
+          needs_entry=false
+          for f in "${changed[@]}"; do
+            case "$f" in
+              *.md|docs/*|img/*) : ;;
+              *) needs_entry=true; break ;;
+            esac
+          done
+
+          if [ "$needs_entry" = false ]; then
+            echo "Only docs/planning/asset files changed — no fragment required."
+            exit 0
+          fi
+
+          echo "::error::This PR changes shipping code/config but adds no changelog fragment."
+          {
+            echo "### Missing changelog fragment"
+            echo
+            echo "Add a fragment under \`changelog.d/\` (see \`changelog.d/README.md\`):"
+            echo '```'
+            echo "changelog.d/<issue-or-pr>.<slug>.md"
+            echo '```'
+            echo
+            echo "…or apply the **\`skip-changelog\`** label if this PR has no user- or"
+            echo "operator-facing change worth a release note."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
