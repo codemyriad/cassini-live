@@ -196,3 +196,37 @@ test('the loader flavour injects the ExApp-served bundle through the page CSP', 
   await expect(lines(page)).toHaveText(['served by the exapp'], { timeout: 3000 })
   expect(errors.filter((t) => t.includes('Content Security Policy'))).toHaveLength(0)
 })
+
+test('leading punctuation stays with the preceding caption from the same speaker', async ({ page }) => {
+  await clickBookmarklet(page)
+  await enterCall(page, 't-punctuation')
+  const bob = await full(page, 'bob')
+  await liveFinal(page, 1, bob, 'in my own time')
+  await liveFinal(page, 2, bob, ', I may do it')
+  await liveFinal(page, 3, bob, '.')
+  await liveFinal(page, 4, bob, 'Really')
+  await liveFinal(page, 5, bob, '?! Yes')
+  await expect(lines(page)).toHaveText(['in my own time,', 'I may do it.', 'Really?!', 'Yes'])
+  // Rendering an already populated store (sidebar remount) must agree.
+  await page.evaluate(() => window.__FIXTURE__.removeSidebar())
+  await expect(tabButton(page)).toHaveCount(0)
+  await page.evaluate(() => window.__FIXTURE__.addSidebar())
+  await expect(lines(page)).toHaveText(['in my own time,', 'I may do it.', 'Really?!', 'Yes'])
+})
+
+
+test('punctuation does not move across speaker or join boundaries', async ({ page }) => {
+  await clickBookmarklet(page)
+  await enterCall(page, 't-punctuation-boundaries')
+  const bob = await full(page, 'bob')
+  const alice = await full(page, 'alice')
+  await append(page, 't-punctuation-boundaries', [
+    fin(1, bob, 'First speaker'),
+    fin(2, alice, ', second speaker'),
+    joined(3, bob, 'Bob', 'bob'),
+    fin(4, alice, '. after a join'),
+    fin(5, alice, 'Next caption'),
+    fin(6, alice, '  …  More'),
+  ])
+  await expect(lines(page)).toHaveText(['First speaker', ', second speaker', '. after a join', 'Next caption…', 'More'], { timeout: 8000 })
+})

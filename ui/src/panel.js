@@ -266,11 +266,21 @@ export function createTranscriptView({ store, names, shadow }) {
     const resolved = renderSpeaker(entry, item)
     while (entry.lineCount < item.lines.length) {
       const line = item.lines[entry.lineCount]
-      const lineEl = el('p', 'line', line.text)
+      // An engine can commit punctuation at the start of its next chunk.
+      // Keep it with the preceding caption, within this speaker block only.
+      let text = line.text
+      const previous = entry.linesEl.lastElementChild
+      const leading = previous && text.match(/^\s*([,.;:!?…。，、；：！？)\]}»”’]+)\s*/u)
+      if (leading) {
+        previous.textContent = previous.textContent.trimEnd() + leading[1]
+        text = text.slice(leading[0].length)
+      }
+      entry.lineCount++
+      if (!text) continue
+      const lineEl = el('p', 'line', text)
       lineEl.setAttribute('dir', 'auto')
       if (line.lang) lineEl.lang = line.lang
       entry.linesEl.appendChild(lineEl)
-      entry.lineCount++
     }
     return resolved
   }
