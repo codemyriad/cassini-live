@@ -498,12 +498,13 @@ def test_parse_values():
     assert not hasattr(admin_form, "LICENSE_FIELD") and not hasattr(admin_form, "CLEANUP_FIELD")
 
 
-def test_top_menu_page_is_gone():
-    # The settings page is a standalone document served by the ExApp, not a top-menu page.
+def test_legacy_live_menu_page_is_gone():
+    # The settings page is a standalone document served by the ExApp, not 0.6.x's "live"
+    # menu page. The one menu entry is the home page (home_page.py), which links to it.
     static = ROOT / "cassini_live" / "static"
     assert not (static / "live.js").exists() and not (static / "live.css").exists()
     assert (ROOT / "img" / "app.svg").exists()
-    pattern = re.compile(r"live\.js|live\.css|top-menu|top menu", re.IGNORECASE)
+    pattern = re.compile(r"live\.js|live\.css", re.IGNORECASE)
     proposal = ROOT / "docs" / "proposals" / "engine-selection.md"
     files = [
         p
