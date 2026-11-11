@@ -1,10 +1,59 @@
-# Install the development ExApp
+# Install Cassini Live
 
-The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.11.0`. This checkout builds locally; it does not
-publish to GHCR or the Nextcloud App Store.
+Cassini Live installs in one of two ways:
 
-## With an existing deploy daemon
+- **From the Nextcloud App Store**, under the app id `cassini_live`. Start
+  here unless you are developing Cassini Live. Nextcloud's own Live
+  Transcription app can stay installed.
+- **[From a checkout](#from-a-checkout-as-live_transcription)**, registered by
+  hand as `live_transcription`, in place of Nextcloud's Live Transcription. Talk's
+  **Show captions** button drives this install.
+
+Both need Nextcloud 33 to 35 with Talk's High-performance backend (HPB), AppAPI
+with a Docker deploy daemon, and a Linux host with cgroup v2. See
+[known limitations](known-limitations.md) for how the two differ in use.
+
+## From the App Store
+
+1. Check that Talk calls work through the HPB. Obtain the HPB's internal secret
+   (the signalling server's `[clients] internalsecret`).
+2. As an administrator, open **Apps**, find **Cassini Live** and choose **Deploy
+   and enable**. If Nextcloud asks for deploy options, you can leave them empty.
+   Or, on the Nextcloud server:
+
+   ```sh
+   occ app_api:app:register cassini_live DAEMON_NAME --wait-finish
+   ```
+
+   AppAPI pulls `ghcr.io/codemyriad/cassini-live` at the released version, for
+   amd64 or arm64.
+3. [Set the container limits](#set-the-container-limits) on
+   `nc_app_cassini_live`. Until you do, Cassini Live stays blocked and loads no
+   speech engine.
+4. Enter the HPB internal secret: **Administration settings > Assistant**, then
+   **?** next to Cassini Live, section **Talk connection**. The section checks
+   that the HPB accepts the secret, and takes an HPB URL override if the
+   container cannot reach the public one.
+5. Reload the settings page until it shows "Captions are ready." (seconds once
+   the limits are set).
+6. Talk's **Show captions** button does not reach an App Store install, so
+   people turn captions on from Cassini Live's transcript panel. Each person
+   opens `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud
+   once per browser and drags the bookmark to their bookmarks bar. In a Talk
+   call, a click on the bookmark opens the panel and starts captions. Send your
+   users that link; guests cannot use it (see
+   [known limitations](known-limitations.md)).
+7. [Check the installation](#check-the-installation) in a call.
+
+Update from the **Apps** page or with `occ app_api:app:update cassini_live`,
+then re-apply the PID and swap limits: an update recreates the container
+without them.
+
+## From a checkout, as `live_transcription`
+
+For development, and for servers that registered Cassini Live before its App
+Store release. The image is built locally; the tag must match
+`appinfo/info.xml`, here `ghcr.io/codemyriad/cassini-live:0.11.0`.
 
 1. Check that Talk calls work through HPB. Obtain the HPB's internal secret.
 2. If the official `live_transcription` ExApp is installed, disable it and
@@ -45,46 +94,66 @@ publish to GHCR or the Nextcloud App Store.
    cannot be changed there. Do not paste the secret into screenshots, issues or
    logs.
 
-6. Apply enforced limits **before enabling captions**. A newly registered container
-   without these limits stays blocked and does not load recognition workers.
-   For an example host with at least eight available CPUs and 4 GiB RAM:
+6. [Set the container limits](#set-the-container-limits) on
+   `nc_app_live_transcription` **before enabling captions**.
+7. [Check the installation](#check-the-installation): here people turn captions
+   on with **Show captions** in Talk's call menu, or from the transcript panel
+   at `/index.php/apps/app_api/proxy/live_transcription/panel/`.
 
-   ```sh
-   docker update --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 nc_app_live_transcription
-   docker exec nc_app_live_transcription python -m cassini_live.capacity --installed
-   ```
+## Set the container limits
 
-   Equal memory and memory-swap values disable swap. Size the limits for your
-   host; we advise leaving it at least half its CPU and RAM ([load and
-   admission](capacity.md)), and a low CPU weight (`docker update --cpu-shares`)
-   makes the kernel take CPU from captions first when the host is busy.
-   Persist CPU and memory limits in the AppAPI daemon's deployment options.
-   AppAPI may not preserve PID and swap limits across container recreation;
-   reapply them after upgrades. Until then, captions refuse to start. Corrections
-   are detected automatically within 15 seconds.
+A newly created container without enforced limits stays blocked and does not
+load recognition workers. The container is named after the app id:
+`nc_app_cassini_live` from the App Store, `nc_app_live_transcription` when
+registered by hand. For an example host with at least eight available CPUs and
+4 GiB RAM:
 
-   Keep the recovery journal on persistent storage across container recreation
-   (see [recovery policy](capacity.md)). Give the app user write access.
+```sh
+docker update --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 nc_app_cassini_live
+docker exec nc_app_cassini_live python -m cassini_live.capacity --installed
+```
 
-   Configure Docker log rotation on the deployment host before container creation
-   (for example, the `local` logging driver with `max-size=10m`, `max-file=3`).
-   Changing daemon logging defaults only affects newly created containers.
-   Do not use an unbounded log driver on a shared server.
+Equal memory and memory-swap values disable swap. Size the limits for your
+host; we advise leaving it at least half its CPU and RAM ([load and
+admission](capacity.md)), and a low CPU weight (`docker update --cpu-shares`)
+makes the kernel take CPU from captions first when the host is busy.
+Persist CPU and memory limits in the AppAPI daemon's deployment options.
+AppAPI may not preserve PID and swap limits across container recreation;
+reapply them after upgrades. Until then, captions refuse to start. Corrections
+are detected automatically within 15 seconds.
 
-7. Wait for the engine to load (seconds once its files are on disk). As an
-   administrator, open **Administration settings → Assistant →
-   Cassini Live** and reload the page until it shows "Captions are ready.", or run
-   the `cassini_live.capacity --installed` command from step 6.
-   See [load, admission and capacity](capacity.md) for recovery and configuration errors. Join a Talk
-   call with another participant, enable captions from the call menu, and speak.
-   Test your languages, a late joiner, microphone mute/unmute and stop/start.
-   Meanwhile, open **Live diagnostics** from the settings page's Status section
-   (`/index.php/apps/app_api/proxy/live_transcription/diagnostics/`): it should
-   read "Live · updated every second" and show your call's speakers and caption
-   lag. See [diagnostics page](diagnostics-page.md).
+Keep the recovery journal on persistent storage across container recreation
+(see [recovery policy](capacity.md)). Give the app user write access.
+
+Configure Docker log rotation on the deployment host before container creation
+(for example, the `local` logging driver with `max-size=10m`, `max-file=3`).
+Changing daemon logging defaults only affects newly created containers.
+Do not use an unbounded log driver on a shared server.
+
+## Check the installation
+
+Wait for the engine to load (seconds once its files are on disk). As an
+administrator, open **Administration settings → Assistant → Cassini Live** and
+reload the page until it shows "Captions are ready.", or run the
+`cassini_live.capacity --installed` command above. See
+[load, admission and capacity](capacity.md) for recovery and configuration
+errors.
+
+Join a Talk call with another participant, turn captions on (the transcript
+panel's bookmark; with a hand-registered install, also **Show captions** in the
+call menu) and speak. Test your languages, a late joiner, microphone
+mute/unmute and stop/start. Meanwhile, open **Live diagnostics** from the
+settings page's Status section
+(`/index.php/apps/app_api/proxy/cassini_live/diagnostics/`, or under
+`live_transcription` when registered by hand): it should read "Live · updated
+every second" and show your call's speakers and caption lag. See
+[diagnostics page](diagnostics-page.md).
+
+## Network and deployment notes
 
 If the public HPB URL is unreachable from the container, set the optional
-`CASSINI_TALK_HPB_URL` deploy variable to its reachable URL. Keep certificate
+`CASSINI_TALK_HPB_URL` deploy variable to its reachable URL, or enter it in the
+settings page's **Talk connection** section. Keep certificate
 verification enabled. Network routing and TLS still need to be valid.
 
 The app uses ordinary WebRTC to receive HPB audio, using the STUN/TURN settings
@@ -159,8 +228,8 @@ the live [diagnostics page](diagnostics-page.md).
 
 Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes for the settings page.
 Upgrading from 0.10.0: 0.11.0 adds them for the diagnostics page. Update with
-`occ app_api:app:update live_transcription` (or reinstall); AppAPI re-reads
-routes only on a version change.
+`occ app_api:app:update cassini_live` (`live_transcription` when registered by
+hand), or reinstall; AppAPI re-reads routes only on a version change.
 
 An AppAPI update recreates the container without its swap and PID limits until
 you re-apply them. If Cassini Live starts in that state, it runs Whistle and
@@ -177,8 +246,10 @@ Raise the limits before you choose a Nemotron engine. For example, on a host
 with at least 6 GiB RAM and eight CPUs:
 
 ```sh
-docker update --cpus=4 --memory=3g --memory-swap=3g nc_app_live_transcription
+docker update --cpus=4 --memory=3g --memory-swap=3g nc_app_cassini_live
 ```
+
+(`nc_app_live_transcription` when registered by hand.)
 
 Persist the same values in the AppAPI daemon's deployment options. The number
 of simultaneous speakers follows the CPU limit; there is nothing else to set.
@@ -208,7 +279,13 @@ It disappears when the ExApp is registered again with this manifest.
 
 ## Rollback
 
-Disable and unregister Cassini Live through External Apps, then register the
-previous provider with its original image and deploy options. Cassini Live
-creates no room history, service account or recording configuration to undo.
-Keep `gocassini` installed if you use it for recordings.
+App Store install: disable and remove Cassini Live on the **Apps** page, or run
+`occ app_api:app:unregister cassini_live`. Nextcloud's Live Transcription, if
+installed, was never affected.
+
+Hand-registered install: disable and unregister Cassini Live through External
+Apps, then register the previous provider with its original image and deploy
+options.
+
+Either way, Cassini Live creates no room history, service account or recording
+configuration to undo. Keep `gocassini` installed if you use it for recordings.

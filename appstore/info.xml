@@ -14,20 +14,24 @@
 ## What you get
 
 - **Live captions with names.** Each speaker's words appear under their Talk name, including your own.
-- **A transcript panel in the call sidebar.** Scroll back through the call; people who join late see what was said before they arrived.
+- **A transcript panel in the call sidebar.** Scroll back through the call; people who join late see what was said before they arrived. Nothing is saved once the call's captions end.
 - **Seven languages on a CPU.** Whistle, bundled, recognises English, German, French, Spanish, Italian, Dutch and Polish, with automatic language detection.
 - **More accurate engines on request.** Administrators can switch the server to Nemotron English (NVIDIA Open Model License) or Nemotron Multilingual (OpenMDW-1.1). Their models are downloaded from dist.gocassini.com when chosen, not shipped in the image.
 - **Safe under load.** Cassini Live needs enforced CPU, memory and process limits, and captions fewer speakers rather than everyone late when the server can't keep up.
 
-## Before you install: Talk's caption button
+## Turning captions on
 
-Talk currently sends its **Show captions** button only to an app with the id `live_transcription`, Nextcloud's own Live Transcription app. Cassini Live from the App Store has its own id, so Talk's button does not drive it. People turn captions on from Cassini Live's transcript panel instead, which they add to Talk once with a bookmarklet from `/index.php/apps/app_api/proxy/cassini_live/panel/`. Cassini Live and Nextcloud's Live Transcription can be installed together; Talk's button keeps driving Nextcloud's app.
+People turn captions on from Cassini Live's transcript panel. Each person adds it to their browser once, as a bookmark from `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud. In a Talk call, a click on the bookmark opens the panel and starts captions for that person. This needs a Nextcloud login: guests can't start captions or open the panel.
+
+Talk's own **Show captions** button does not drive Cassini Live. Talk sends it only to the app id `live_transcription`, Nextcloud's own Live Transcription app. The two apps can be installed together; Talk's button keeps driving Nextcloud's app.
 
 ## Requirements
 
 - Nextcloud 33 to 35 with Talk's High-performance backend, AppAPI and a deploy daemon.
 - The HPB internal secret, entered once after installation on Cassini Live's settings page (Administration settings > Assistant, then ? next to Cassini Live). Its URL is discovered from Talk.
-- Linux with cgroup v2, and CPU, memory and PID limits on the container. Whistle needs about 2 GiB of container memory; Nemotron 2.25-3 GiB, and twice that on the host.
+- Linux with cgroup v2, and CPU, memory and PID limits set on the container (`nc_app_cassini_live`) after installation: until then Cassini Live loads no engine. The [installation guide](https://github.com/codemyriad/cassini-live/blob/main/docs/install.md) has the commands. Whistle needs about 2 GiB of container memory; Nemotron 2.25-3 GiB, and twice that on the host.
+
+More in the [known limitations](https://github.com/codemyriad/cassini-live/blob/main/docs/known-limitations.md).
 
 ## Support
 

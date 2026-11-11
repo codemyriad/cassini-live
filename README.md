@@ -2,8 +2,9 @@
 
 Live captions for Nextcloud Talk, running on your own server.
 
-Turn on **Show captions** in Talk's call menu. Cassini Live receives each
-speaker's audio and sends captions back to Talk, with their name attached.
+In a Talk call, open Cassini Live's transcript panel and captions start.
+Cassini Live receives each speaker's audio and shows what they say under their
+name, in a transcript panel beside the call.
 Audio stays on your infrastructure. There is no speech API subscription,
 saved transcript or recording to clean up afterward.
 
@@ -145,11 +146,22 @@ Whistle and runs offline after installation. Only an optional Nemotron engine
 needs a download (from dist.gocassini.com), when an administrator chooses it. An administrator must supply the
 HPB internal secret.
 
-Follow the [installation instructions](docs/install.md). There is no published
-App Store release. Talk currently fixes the caption provider ID to
-`live_transcription`, so this replaces the official caption ExApp. They cannot
-run together. [Cassini](https://github.com/codemyriad/gocassini) can stay installed
-for recordings.
+Follow the [installation instructions](docs/install.md). There are two ways to
+install:
+
+* **From the Nextcloud App Store**, as `cassini_live`. The first store release,
+  0.12.0-alpha.1, is being prepared (see the
+  [App Store checklist](docs/appstore-checklist.md)). Talk sends its **Show
+  captions** button only to the app id `live_transcription`, so people turn
+  captions on from the transcript panel instead. Nextcloud's own Live
+  Transcription app can stay installed.
+* **From a checkout**, registered by hand as `live_transcription`. This replaces
+  Nextcloud's Live Transcription app (they cannot run together), and Talk's
+  **Show captions** button drives it.
+
+[Known limitations](docs/known-limitations.md) lists what differs between the
+two. [Cassini](https://github.com/codemyriad/gocassini) can stay installed for
+recordings.
 
 ## Development
 

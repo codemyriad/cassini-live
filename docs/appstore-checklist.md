@@ -98,8 +98,12 @@ yet:
       Cassini does) under `img/screenshots/`, listed in `appstore/info.xml`. The
       PNGs in `docs/` don't fit: one is the removed status page, the other a
       test harness.
-- [ ] Re-read the store description in `appstore/info.xml` once store mode
-      exists; it describes the bookmarklet flow.
+- [x] The store description in `appstore/info.xml` describes store mode: the
+      panel's bookmark starts captions, logged-in users only, and the container
+      limits are set after installation.
+- [x] `docs/install.md` (the store's admin documentation link) starts with the
+      App Store install; the panel's install page and the README no longer
+      describe only the hand-registered install.
 
 ## 4. Outside the repository (not done; each needs a person)
 
