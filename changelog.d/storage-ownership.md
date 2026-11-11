@@ -1,0 +1,2 @@
+### Fixed
+- Cassini Live can write to its persistent volume. AppAPI creates `nc_app_<app id>_data` owned by root, and the services run as the unprivileged `cassini` user inside the container, so the HPB secret from the settings page, engine settings, downloaded models and the recovery journal could not be saved (`Could not persist engine settings (PermissionError)`). The entrypoint now hands the volume to that user before dropping root.
