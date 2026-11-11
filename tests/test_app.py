@@ -13,13 +13,13 @@ from cassini_live.service import CaptionService
 from tests.test_streaming import FakeWorker
 
 
-def make_app():
+def make_app(app_id=None):
     config = Config(None, 2, "secret", "")
     service = CaptionService(config)
     service.enabled = True
     service.settings = object()
     service.request = AsyncMock()
-    app = create_app(config, WorkerPool(2), service)
+    app = create_app(config, WorkerPool(2), service, app_id=app_id)
     app.state.safety.state = "ready"
     return app, service
 

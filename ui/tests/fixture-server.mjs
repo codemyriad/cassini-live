@@ -396,7 +396,10 @@ export function startFixtureServer(port = PORT) {
     }
     if (url.pathname.endsWith('/panel/panel.js')) {
       try {
-        const body = await readFile(join(distDir, 'panel.js'))
+        // The ExApp fills in its app id when it serves the bundle (panel_page.py); so
+        // does this fixture, with the id its routes use.
+        const body = (await readFile(join(distDir, 'panel.js'), 'utf8'))
+          .replaceAll('__CASSINI_LIVE_APP_ID__', 'live_transcription')
         res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
         res.end(body)
       } catch {

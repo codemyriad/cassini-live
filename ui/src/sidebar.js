@@ -36,7 +36,7 @@ function el(tag, className, text) {
   return node
 }
 
-export function createSidebarPanel({ store, names }) {
+export function createSidebarPanel({ store, names, appId }) {
   let destroyed = false
   let tabButton = null
   let overlay = null
@@ -133,7 +133,7 @@ export function createSidebarPanel({ store, names }) {
     shadowHost.style.height = '100%'
     const shadow = shadowHost.attachShadow({ mode: 'open' })
     box.appendChild(shadowHost)
-    view = createTranscriptView({ store, names, shadow })
+    view = createTranscriptView({ store, names, shadow, appId })
     view.setStatus(lastStatus)
     return box
   }

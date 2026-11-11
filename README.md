@@ -176,6 +176,6 @@ This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish
 production readiness or replace human review.
 
-[Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Privacy](docs/privacy.md) ·
+[Known limitations](docs/known-limitations.md) · [Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Privacy](docs/privacy.md) ·
 [Releasing](docs/release.md) · [App Store checklist](docs/appstore-checklist.md) ·
 [Third-party notices](NOTICE.md) · [AGPL-3.0-or-later](LICENSE)

@@ -1239,7 +1239,7 @@ class SpreedClient:
 				# own session for the existing last-user-left comparison.
 				users_update = [user for user in users_update
 					if not user.get("internal", False) or user.get("sessionId") == self.sessionid]
-				# the last user just left the call, live_transcription is the only one left
+				# the last user just left the call; only this caption client is left
 				if (len(users_update) == 2):
 					if (
 						users_update[0].get("sessionId") != self.sessionid

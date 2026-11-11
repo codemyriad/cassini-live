@@ -20,6 +20,7 @@ import { createStore } from './store.js'
 import { createTap } from './tap.js'
 import { createNames } from './names.js'
 import { createSession } from './session.js'
+import { APP_ID } from './app-id.js'
 import { fetchHistory } from './history.js'
 import { enableCaptions } from './captions.js'
 import { createSidebarPanel } from './sidebar.js'
@@ -44,7 +45,12 @@ function mount() {
   const names = createNames({ tap })
   // Scope per conversation/call, poll /history for gaps, and turn captions on
   // for this session when a call starts so it is on the HPB feed.
-  const session = createSession({ tap, store, fetchHistory, onCallStart: enableCaptions })
+  const session = createSession({
+    tap,
+    store,
+    fetchHistory: (room, since) => fetchHistory(APP_ID, room, since),
+    onCallStart: enableCaptions,
+  })
 
   function destroy() {
     session.destroy()
@@ -58,7 +64,7 @@ function mount() {
     }
   }
 
-  panel = createSidebarPanel({ store, names })
+  panel = createSidebarPanel({ store, names, appId: APP_ID })
   panel.setStatus(lastStatus)
 
   window[GLOBAL] = {

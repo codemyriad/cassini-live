@@ -18,12 +18,10 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from . import __version__, admin_form, catalog, model_store
+from . import __version__, appapi, catalog, model_store
 from .engine_switch import EngineManager, SwitchRefused
 from .model_store import ModelError
 
-APP_ID = "live_transcription"
-PROXY_PATH = admin_form.PAGE_PATH
 ADMIN_SETTINGS_PATH = "/index.php/settings/admin/ai"
 DOCS_URL = (
     "https://github.com/codemyriad/cassini-live/blob/main/docs/install.md#choose-a-speech-engine"
@@ -54,10 +52,11 @@ def webroot() -> str:
     return path.rstrip("/")
 
 
-def page_url() -> str:
+def page_url(app_id: str) -> str:
+    """The settings page through the AppAPI proxy, for the admin form's ? link."""
     # Root-relative on purpose: it resolves against the browser's origin, so an internal
     # NEXTCLOUD_URL host cannot break the link, while a sub-directory install keeps its prefix.
-    return webroot() + PROXY_PATH
+    return webroot() + appapi.proxy_path(app_id, "settings/index.html")
 
 
 def admin_settings_url() -> str:

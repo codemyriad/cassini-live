@@ -69,6 +69,7 @@ def main():
     user_patterns = [
         "^/?status$",
         "^/?history$",
+        "^/?captions/transcribe$",
         r"^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$",
     ]
     for pattern, verb, level in table:
@@ -76,6 +77,8 @@ def main():
             assert level == "USER", pattern
             if pattern.startswith("^/?panel/"):
                 assert verb == "GET", "the panel serves read-only static content"
+            if pattern == "^/?captions/transcribe$":
+                assert verb == "POST", "the caption toggle is POST only"
         else:
             assert level == "ADMIN", pattern
             assert pattern.startswith(("^/?settings/", "^/?diagnostics/")), pattern
@@ -99,6 +102,7 @@ def main():
         assert not matches(path), f"{path} must stay server-to-server"
     public = {
         "status": "GET",
+        "captions/transcribe": "POST",
         "settings/index.html": "GET",
         "settings/app.js": "GET",
         "settings/app.css": "GET",
@@ -118,6 +122,7 @@ def main():
         assert matches(path, verb), f"{verb} {path} is not routed"
     assert not matches("diagnostics/api/feed", "POST"), "POST diagnostics/api/feed is routed"
     assert not matches("diagnostics/other.js"), "diagnostics/other.js is routed"
+    assert not matches("captions/transcribe", "GET"), "GET captions/transcribe is routed"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 
 

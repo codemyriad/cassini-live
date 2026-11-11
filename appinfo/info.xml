@@ -63,6 +63,12 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
            current call's finals; membership is re-checked in the handler by acting
            as the caller over Talk's OCS API. -->
       <route><url>^/?history$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <!-- USER: start/stop captions from the transcript panel, for app ids Talk's caption
+           button does not reach. The body Talk sends to /api/v1/call/transcribe; the
+           handler re-checks what Talk would have, acting as the caller over Talk's OCS API:
+           the caller's own session (in the call, to start), past the lobby. It also
+           requires a same-origin JSON request with X-Cassini-Request and rate-limits. -->
+      <route><url>^/?captions/transcribe$</url><verb>POST</verb><access_level>USER</access_level></route>
       <!-- The transcript panel bundle and its bookmarklet install page: read-only
            static content for any logged-in user. Same-origin serving is what lets
            the bookmarklet pass Talk's CSP and the panel reach future ExApp routes. -->

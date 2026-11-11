@@ -9,7 +9,13 @@ const distDir = join(here, '..', 'dist')
 async function bookmarkletCode(name) {
   const url = (await readFile(join(distDir, name), 'utf8')).trim()
   expect(url.startsWith('javascript:')).toBe(true)
-  return decodeURIComponent(url.slice('javascript:'.length))
+  // The ExApp fills in its app id when it serves the bookmarklets (panel_page.py);
+  // the fixture server's routes use this one.
+  expect(url).toContain('__CASSINI_LIVE_APP_ID__')
+  return decodeURIComponent(url.slice('javascript:'.length)).replaceAll(
+    '__CASSINI_LIVE_APP_ID__',
+    'live_transcription',
+  )
 }
 
 // page.evaluate goes through CDP, which is CSP-exempt — the same way a real

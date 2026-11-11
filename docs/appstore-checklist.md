@@ -67,17 +67,27 @@ steps through lxml stand-ins for `xmllint`/`xsltproc`), shellcheck clean,
 The store package installs, but under `cassini_live` nothing starts captions
 yet:
 
-- [ ] `cassini_live/app.py:167` refuses any `APP_ID` but `live_transcription`.
-      Accept both; native mode when it is `live_transcription`.
-- [ ] Store mode: a USER route that starts and stops captions, checking room
-      membership, the caller's own in-call session, the lobby, CSRF and a rate
-      limit (Talk did these when it called `/api/v1/call/transcribe`). Add it to
-      both manifests' `<routes>` and to `check_manifest.py`'s route table.
+- [x] Either app id runs: `cassini_live/appapi.py` reads `APP_ID` once
+      (`create_app`, and the `capacity` CLI) and everything below gets it
+      passed in. Native mode is `appapi.is_talk_provider(app_id)`; under
+      another id the app logs that Talk's button does not reach it.
+- [x] Store mode: the USER route `POST /captions/transcribe` (`cassini_live/app.py`,
+      checks in `cassini_live/call_access.py`). Same body and core as Talk's
+      `/api/v1/call/transcribe`; re-checks, as the caller, room membership and
+      the lobby, that the session is the caller's own (and in the call, to
+      start), CSRF (`X-Cassini-Request`, same origin, JSON) and 10 toggles a
+      minute per user. In both manifests and `check_manifest.py`. Guests can't
+      use it: USER proxy routes need a Nextcloud login.
 - [ ] `ui/src/captions.js` posts to that route instead of Talk's
-      `/live-transcription/{token}` when the app id isn't `live_transcription`.
-- [ ] Proxy paths from the app id, not the literal: `ui/src/loader.js:23`,
-      `ui/src/history.js:12`, `cassini_live/admin_form.py:24`,
-      `cassini_live/settings_page.py:25`, `cassini_live/replay.py:283`.
+      `/live-transcription/{token}` when the app id isn't `live_transcription`,
+      with its own Talk session id as `ncSessionId` and the `X-Cassini-Request: 1`
+      header.
+- [x] Proxy paths from the app id, not the literal: the settings form's
+      link (`settings_page.page_url(app_id)`), the auth middleware's
+      `EX-APP-ID` check, and the panel bundles and bookmarklets, which the
+      build leaves with a placeholder (`ui/src/app-id.js`) that
+      `panel_page.create_router(app_id)` fills in. `replay.py` finds models
+      under `APP_PERSISTENT_STORAGE` instead of `/nc_app_live_transcription_data`.
 - [x] PR #8 (0.11.0, diagnostics page) is on main through #12, and its routes
       are in both manifests.
 - [ ] Screenshots: up to 10 HTTPS URLs (raw.githubusercontent.com from main, as

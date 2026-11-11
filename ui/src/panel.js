@@ -9,6 +9,8 @@
  * are missing — it then shows session ids and a status hint instead of failing.
  */
 
+import { proxyUrl } from './app-id.js'
+
 const FOLLOW_SLACK_PX = 48
 const RERESOLVE_MS = 2000 // re-check names, so late roster fills replace short ids
 
@@ -143,7 +145,7 @@ function currentUid() {
   }
 }
 
-export function createTranscriptView({ store, names, shadow }) {
+export function createTranscriptView({ store, names, shadow, appId }) {
   try {
     const sheet = new CSSStyleSheet()
     sheet.replaceSync(CSS)
@@ -165,15 +167,7 @@ export function createTranscriptView({ store, names, shadow }) {
   const aiLabel = el('span', 'ai-label', 'AI-generated')
   header.append(dot, title, aiLabel)
   const diagnostics = el('a', 'diagnostics', 'diagnostics')
-  const diagnosticsPath = '/apps/app_api/proxy/live_transcription/diagnostics/'
-  diagnostics.href = '/index.php' + diagnosticsPath
-  try {
-    if (typeof window.OC?.generateUrl === 'function') {
-      diagnostics.href = window.OC.generateUrl(diagnosticsPath)
-    }
-  } catch {
-    /* keep the default AppAPI proxy URL */
-  }
+  diagnostics.href = proxyUrl(appId, 'diagnostics/')
   diagnostics.target = '_blank'
   diagnostics.rel = 'noopener noreferrer'
   diagnostics.title = 'Open diagnostics in a new tab (administrators only)'

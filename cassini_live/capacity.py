@@ -17,7 +17,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import __version__, catalog, engines
+from . import __version__, appapi, catalog, engines
 from .calibration import scenario
 from .config import Config
 from .resources import limits
@@ -130,7 +130,8 @@ class ServiceRefused(RuntimeError):
         self.status, self.detail = status, detail
 
 
-def installed_request(method, path):
+def installed_request(method, path, app_id):
+    """Call the running service in this container as AppAPI would, under `app_id`."""
     connection = http.client.HTTPConnection(
         "127.0.0.1", int(os.environ.get("APP_PORT", "8080")), timeout=15
     )
@@ -143,7 +144,7 @@ def installed_request(method, path):
             method,
             path,
             headers={
-                "EX-APP-ID": os.environ["APP_ID"],
+                "EX-APP-ID": app_id,
                 "EX-APP-VERSION": os.environ["APP_VERSION"],
                 "AUTHORIZATION-APP-API": base64.b64encode(
                     (":" + os.environ["APP_SECRET"]).encode()
@@ -209,7 +210,7 @@ def watch_line(status, error=None):
     }
 
 
-async def watch(seconds):
+async def watch(seconds, app_id):
     """Print one JSON line per second from the running service; exit 0 iff still ready.
     A read the service fails (restarting after a trip, timing out, truncating the body)
     prints an error line and the run goes on: the seconds after a trip are the ones the
@@ -218,7 +219,7 @@ async def watch(seconds):
     ready = False
     for remaining in range(max(1, seconds), 0, -1):
         try:
-            line = watch_line(installed_request("GET", "/status"))
+            line = watch_line(installed_request("GET", "/status", app_id))
         except READ_FAILURES as error:
             line = watch_line({}, error=f"{type(error).__name__}: {error}")
         ready = line["state"] == "ready"
@@ -231,11 +232,11 @@ async def watch(seconds):
     return 0 if ready else 1
 
 
-async def measure_installed():
+async def measure_installed(app_id):
     """Ask the running service for a measurement, then wait for its result. Exit 0 iff
     at least one speaker passed."""
     try:
-        installed_request("POST", "/capacity/check")
+        installed_request("POST", "/capacity/check", app_id)
     except ServiceRefused as refused:
         if refused.status != 409:
             raise
@@ -247,7 +248,7 @@ async def measure_installed():
         return 1
     started = time.monotonic()
     while True:
-        status = installed_request("GET", "/status")
+        status = installed_request("GET", "/status", app_id)
         result = {**status["capacityAssessment"], "resourceSafety": status["resourceSafety"]}
         if result["state"] != "checking":
             break
@@ -260,13 +261,14 @@ async def measure_installed():
 
 async def main(args):
     if args.watch:
-        return await watch(args.watch)
+        return await watch(args.watch, appapi.app_id_from_env())
     if args.installed and args.measure:
-        return await measure_installed()
+        return await measure_installed(appapi.app_id_from_env())
     if args.installed:
+        app_id = appapi.app_id_from_env()
         started = time.monotonic()
         while True:
-            status = installed_request("GET", "/status")
+            status = installed_request("GET", "/status", app_id)
             safety = status["resourceSafety"]
             result = {**status["capacityAssessment"], "resourceSafety": safety}
             if safety["state"] in {"ready", "blocked", "disabled"}:
