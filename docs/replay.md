@@ -60,14 +60,14 @@ Engines: Whistle needs `models/whistle.cact` and `models/libneedle3.so`
 ```json
 {
   "format": "cassini-live-replay/1",
-  "source": { "path": "…mkv", "title": "Cassini Go Recording mczuc3mb", "sessionId": "…", "startedAt": "2026-03-13T11:29:34Z" },
+  "source": { "path": "…mkv", "title": "Weekly standup", "sessionId": "…", "startedAt": "2026-03-13T09:00:00Z" },
   "window": { "fromMs": 600000, "toMs": 720000 },
   "engine": { "id": "whistle", "seats": 2, "language": "en", "speed": 0 },
-  "participants": [ { "sid": "silviot", "name": "Silvio", "userId": "silviot", "joinMs": 200 }, … ],
+  "participants": [ { "sid": "priya", "name": "Priya", "userId": "priya", "joinMs": 200 }, … ],
   "events": [
-    { "at": 600000, "type": "join", "speakerSessionId": "silviot" },
-    { "at": 605300, "type": "partial", "speakerSessionId": "Chris", "message": "a push", "langId": "en" },
-    { "at": 605300, "type": "final", "speakerSessionId": "Chris", "message": "a push which was a few small fixes.", "langId": "en" },
+    { "at": 600000, "type": "join", "speakerSessionId": "priya" },
+    { "at": 605300, "type": "partial", "speakerSessionId": "alex", "message": "The packaging fix", "langId": "en" },
+    { "at": 605300, "type": "final", "speakerSessionId": "alex", "message": "The packaging fix went in yesterday afternoon.", "langId": "en" },
     …
   ],
   "stats": { "finals": 72, "partials": 102, "elapsedS": 31.6, "framesDelivered": { … }, "backend": { …/status counters… } }
@@ -85,7 +85,7 @@ diff two of them to compare engines, or feed one to the viewer.
 ```sh
 cd ui && npm ci && npm run build
 npm run replay -- ../standup-whistle.json           # open http://127.0.0.1:4318/call/replay
-npm run replay -- ../standup-whistle.json --as Chris --port 4319
+npm run replay -- ../standup-whistle.json --as Alex --port 4319
 ```
 
 The page has Nextcloud's CSP posture and the sidebar structure the panel
@@ -109,7 +109,7 @@ way the loader bookmarklet mounts it. The server owns the meeting clock:
   `you` chip and their join reads "You joined here". `?t=mm:ss` in the URL
   opens at that time.
 
-![The replay viewer at 10:40 of a standup](replay-viewer.png)
+![The replay viewer at 10:42 of a standup, with example names and lines](replay-viewer.png)
 
 ## What it is for
 
