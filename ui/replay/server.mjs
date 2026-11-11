@@ -226,7 +226,7 @@ export async function startReplayServer({ replay, port = 4318, host = '127.0.0.1
       }
       // The real panel enables captions when it joins. Replay is already local
       // and captioned: acknowledge the request without contacting Talk.
-      if (path === `/index.php/ocs/v2.php/apps/spreed/api/v1/live-transcription/${TOKEN}` && req.method === 'POST') {
+      if (path === `${PROXY}/captions/transcribe` && req.method === 'POST') {
         return json(res, 200, { ocs: { meta: { status: 'ok', statuscode: 200 }, data: {} } })
       }
       if (path === `${PROXY}/history`) {

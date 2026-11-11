@@ -31,7 +31,7 @@ was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
 - [x] `CHANGELOG.md`, `changelog.d/` with its README, and the PR gate
       `.github/workflows/changelog-check.yml`.
 - [x] `.github/workflows/image.yml`: a `v*` tag pushes `:<version>` (amd64 +
-      arm64) after checking the tag equals the version and sits on its branch; a
+      arm64, each built and smoke-tested natively) after checking the tag equals the version and sits on its branch; a
       manual run pushes only `:sha-<commit>`.
 - [x] `.github/workflows/release.yml`: validate, unsigned package, then one
       approval in the `release` environment; waits for the image, signs,
@@ -46,21 +46,24 @@ steps through lxml stand-ins for `xmllint`/`xsltproc`), shellcheck clean,
 `check_manifest.py` passes. **Not verified:** none of the workflows has run;
 `occ-nextcloud.sh` signing was not run here (it needs Docker and the real key).
 
-## 2. Decisions
+## 2. Decisions (settled 2026-11-11)
 
-- [ ] **The store app id.** `cassini_live` is scaffolded. It can't be renamed
-      after the certificate is issued.
-- [ ] **The first store version.** The internal line reached 0.11.0 (deployed,
-      on main since #12). Proposed: `0.12.0-alpha.1` or `-beta.1`. A restart at
-      `0.1.0-beta.1` also works under the new id, but the hosts still hold old
-      `cassini-live:0.1.0` images that a `ghcr.io → local` mapping would pick up.
-- [ ] **Main's version.** Cassini's convention is that main carries the next
-      untagged `X.Y.0-alpha.0`. Main is at 0.11.0, the deployed version, so the
-      first cut is `prepare-release.sh --bump minor` → `0.12.0-alpha.1`.
-- [ ] **Release branches.** Ported as in Cassini (betas onward on
-      `release/X.Y`). Keep, or cut every tag from main.
-- [ ] **arm64.** `image.yml` builds arm64 under QEMU. Cassini builds natively on
-      `ubuntu-24.04-arm` and merges digests; switch if the QEMU build is too slow.
+- [x] **The store app id: `cassini_live`.** It can't be renamed after the
+      certificate is issued. `live_transcription` stays supported, registered by
+      hand from `appinfo/info.xml`, for local testing until the transition.
+- [x] **The first store version: `0.12.0-alpha.1`.** Not a restart at 0.1.0:
+      the hosts still hold old `cassini-live:0.1.0` images that a
+      `ghcr.io → local` mapping would pick up.
+- [x] **Main's version.** Main is at 0.11.0, the deployed version, so the first
+      cut is `prepare-release.sh --bump minor` → `0.12.0-alpha.1`. After the first
+      beta, main carries the next untagged `X.Y.0-alpha.0`, as in Cassini.
+- [x] **Release branches: Cassini's model.** Alphas on main; `release/X.Y`
+      from the first beta, carrying the rest of the X.Y line; fixes land on main
+      and are cherry-picked.
+- [x] **arm64: native runners, as in Cassini.** `image.yml` builds and
+      smoke-tests each platform on its own runner (`ubuntu-24.04`,
+      `ubuntu-24.04-arm`), pushes by digest, and joins the digests into one
+      tagged multi-arch image. Not yet run.
 
 ## 3. Code before the first store release
 
@@ -78,10 +81,11 @@ yet:
       start), CSRF (`X-Cassini-Request`, same origin, JSON) and 10 toggles a
       minute per user. In both manifests and `check_manifest.py`. Guests can't
       use it: USER proxy routes need a Nextcloud login.
-- [ ] `ui/src/captions.js` posts to that route instead of Talk's
-      `/live-transcription/{token}` when the app id isn't `live_transcription`,
-      with its own Talk session id as `ncSessionId` and the `X-Cassini-Request: 1`
-      header.
+- [x] `ui/src/captions.js` posts to that route instead of Talk's
+      `/live-transcription/{token}`, under either app id, with the tab's Talk
+      session id (the signalling connection's `nextcloudSessionId`) as
+      `ncSessionId`, `langId: auto` and the `X-Cassini-Request: 1` header. The
+      UI fixture server accepts only that request.
 - [x] Proxy paths from the app id, not the literal: the settings form's
       link (`settings_page.page_url(app_id)`), the auth middleware's
       `EX-APP-ID` check, and the panel bundles and bookmarklets, which the

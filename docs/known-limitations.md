@@ -29,6 +29,9 @@ Cassini Live installs in one of two ways, and some entries apply to only one:
   turn captions on for itself.** Talk reports whether a user is in the call,
   not each of their sessions, so the check cannot tell a user's tabs apart.
   Captions go only to that user's own session; nobody else is affected.
+- **The transcript panel starts captions with automatic language detection,**
+  not the conversation's caption language set in Talk. Once a call's captions
+  are running, later starts keep the language they began with.
 - **App Store: at most 10 caption on/off requests a minute per user.** More
   are refused for a short wait. This protects the server, since each start
   connects to Talk's signalling server.

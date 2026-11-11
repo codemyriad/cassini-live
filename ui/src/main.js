@@ -49,7 +49,7 @@ function mount() {
     tap,
     store,
     fetchHistory: (room, since) => fetchHistory(APP_ID, room, since),
-    onCallStart: enableCaptions,
+    onCallStart: (room) => enableCaptions(APP_ID, room, tap.nextcloudSessionId()),
   })
 
   function destroy() {

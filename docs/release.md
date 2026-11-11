@@ -70,7 +70,10 @@ Add `--push` to push the commit and tag in one go; without it, nothing leaves
 your machine. The tag push starts two workflows:
 
 1. `image.yml` builds `ghcr.io/codemyriad/cassini-live:<version>` for amd64
-   and arm64. A manual run of it pushes only `:sha-<commit>`, never a version.
+   and arm64, each on a native runner, smoke-tests both images (Whistle loads
+   offline; no engine loads without cgroup limits) and tags them as one
+   multi-arch image. A manual run of it pushes only `:sha-<commit>`, never a
+   version.
 2. `release.yml` validates the tag and both manifests, builds and validates an
    unsigned package, then waits for **one approval** in the `release`
    environment. After approval it waits for the image, signs the package with

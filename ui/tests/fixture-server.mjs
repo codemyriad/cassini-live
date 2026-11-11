@@ -76,6 +76,7 @@ const pageScript = `
     getSessionId: () => ${JSON.stringify(FULL.me)},
     currentRoomToken: 'room-1',
     currentCallToken: 'room-1',
+    nextcloudSessionId: 'nc-session-me',
     on(name, cb) { bucket('conn:' + name).add(cb) },
     off(name, cb) { bucket('conn:' + name).delete(cb) },
     // the authoritative roster: full session id -> {userid, user.displayname}
@@ -299,7 +300,7 @@ function timeline(token) {
   return timelines.get(token)
 }
 
-// Conversations the panel enabled captions for (Talk's live-transcription POST).
+// Conversations the panel enabled captions for (the ExApp's captions/transcribe POST).
 const enabled = []
 
 export function startFixtureServer(port = PORT) {
@@ -310,12 +311,32 @@ export function startFixtureServer(port = PORT) {
       res.end(page)
       return
     }
-    // Talk's "turn captions on" endpoint — record which conversation was enabled.
-    const enableMatch = url.pathname.match(/\/apps\/spreed\/api\/v1\/live-transcription\/([^/]+)$/)
-    if (enableMatch && req.method === 'POST') {
-      if (!enabled.includes(enableMatch[1])) enabled.push(enableMatch[1])
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ocs: { meta: { status: 'ok' } } }))
+    // The ExApp's "turn captions on" route — check the request is what the
+    // ExApp accepts (cassini_live/app.py), and record which conversation.
+    if (url.pathname.endsWith('/live_transcription/captions/transcribe') && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        let body = null
+        try {
+          body = JSON.parse(raw)
+        } catch {
+          /* refused below */
+        }
+        const ok =
+          req.headers['x-cassini-request'] === '1' &&
+          (req.headers['content-type'] || '').startsWith('application/json') &&
+          body && typeof body.roomToken === 'string' && body.ncSessionId === 'nc-session-me' &&
+          body.enable === true && body.langId === 'auto'
+        if (!ok) {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ detail: 'not the request the ExApp accepts' }))
+          return
+        }
+        if (!enabled.includes(body.roomToken)) enabled.push(body.roomToken)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ message: 'Captions enabled' }))
+      })
       return
     }
     if (url.pathname === '/fixture-enabled') {
