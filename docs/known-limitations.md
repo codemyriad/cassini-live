@@ -43,7 +43,10 @@ Cassini Live installs in one of two ways, and some entries apply to only one:
   does not come from the App Store. The App Store install has neither
   restriction.
 - **Talk's High-performance backend is required**, with its internal secret
-  entered once in the deploy options.
+  entered once: on Cassini Live's settings page after installation, or in the
+  deploy options where Nextcloud still offers them. Nextcloud 34 and later do
+  not show deploy options when installing from the Apps page. A value set in
+  deploy options takes precedence, and the settings page cannot change it.
 - **Linux with cgroup v2 and enforced CPU, memory and process limits, swap
   off.** Without them Cassini Live stays blocked and does not load an engine.
   See [install](install.md).

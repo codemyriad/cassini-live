@@ -37,8 +37,13 @@ publish to GHCR or the Nextcloud App Store.
        --wait-finish
    ```
 
-   Prefer External Apps deploy options when you want to avoid placing the secret
-   in shell history. Do not paste it into screenshots, issues or logs.
+   To keep the secret out of shell history, leave out `--env` and enter it after
+   registration on the settings page instead: **Administration settings >
+   Assistant**, then **?** next to Cassini Live, section **Talk connection**. The
+   same section takes an HPB URL override and checks that the HPB accepts the
+   secret. A value given with `--env` (or in deploy options) takes precedence and
+   cannot be changed there. Do not paste the secret into screenshots, issues or
+   logs.
 
 6. Apply enforced limits **before enabling captions**. A newly registered container
    without these limits stays blocked and does not load recognition workers.
