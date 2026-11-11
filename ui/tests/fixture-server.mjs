@@ -132,6 +132,10 @@ const pageScript = `
     enabledTokens() {
       return fetch('/fixture-enabled').then((r) => r.json())
     },
+    // queue refusals for the next captions/transcribe POSTs: [{ status, detail }]
+    refuseCaptions(list) {
+      return fetch('/fixture-refuse-captions', { method: 'POST', body: JSON.stringify(list) })
+    },
     // sidebar presence, for the reactive show/hide
     removeSidebar() { document.getElementById('app-sidebar-vue')?.remove() },
     addSidebar() { if (!document.getElementById('app-sidebar-vue')) document.body.appendChild(window.__SIDEBAR__.cloneNode(true)) },
@@ -302,6 +306,9 @@ function timeline(token) {
 
 // Conversations the panel enabled captions for (the ExApp's captions/transcribe POST).
 const enabled = []
+// Refusals queued for the next captions/transcribe POSTs: { status, detail }, as the
+// ExApp answers when Talk has not seen the join yet (403) or it is not ready (503).
+const refusals = []
 
 export function startFixtureServer(port = PORT) {
   const server = createServer(async (req, res) => {
@@ -333,9 +340,25 @@ export function startFixtureServer(port = PORT) {
           res.end(JSON.stringify({ detail: 'not the request the ExApp accepts' }))
           return
         }
+        const refusal = refusals.shift()
+        if (refusal) {
+          res.writeHead(refusal.status, { 'content-type': 'application/json', 'retry-after': '1' })
+          res.end(JSON.stringify({ detail: refusal.detail }))
+          return
+        }
         if (!enabled.includes(body.roomToken)) enabled.push(body.roomToken)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ message: 'Captions enabled' }))
+      })
+      return
+    }
+    if (url.pathname === '/fixture-refuse-captions' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        refusals.push(...JSON.parse(raw))
+        res.writeHead(204)
+        res.end()
       })
       return
     }

@@ -20,10 +20,20 @@
 
 import { proxyUrl } from './app-id.js'
 
+// What the panel shows when the ExApp itself is unreachable under this id.
+const UNREACHABLE = 'Cassini Live is not reachable here: is it installed and enabled?'
+
+/**
+ * One attempt. Resolves to { ok, retry, retryAfterMs, message }: `retry` says a later
+ * attempt can succeed (not in the call yet, captions not ready, rate-limited,
+ * network); `message` is the server's reason, for the panel to show.
+ */
 export async function enableCaptions(appId, token, ncSessionId) {
-  if (!token || !ncSessionId) return
+  // Talk sets the session id when the room is joined: try again shortly.
+  if (!token || !ncSessionId) return { ok: false, retry: true, retryAfterMs: null, message: null }
+  let response
   try {
-    await fetch(proxyUrl(appId, 'captions/transcribe'), {
+    response = await fetch(proxyUrl(appId, 'captions/transcribe'), {
       method: 'POST',
       credentials: 'same-origin',
       headers: {
@@ -35,6 +45,24 @@ export async function enableCaptions(appId, token, ncSessionId) {
       body: JSON.stringify({ roomToken: token, ncSessionId, enable: true, langId: 'auto' }),
     })
   } catch {
-    /* best-effort: the poll still delivers the transcript */
+    return { ok: false, retry: true, retryAfterMs: null, message: null }
   }
+  if (response.ok) return { ok: true, retry: false, retryAfterMs: null, message: null }
+  let message = null
+  try {
+    const body = await response.json()
+    if (typeof body?.detail === 'string') message = body.detail
+  } catch {
+    /* not the ExApp's JSON: AppAPI's or Nextcloud's own error page */
+  }
+  const seconds = Number(response.headers.get('Retry-After'))
+  const retryAfterMs = seconds > 0 ? seconds * 1000 : null
+  const status = response.status
+  if (status === 401 || status === 404 || (!message && status === 403)) {
+    return { ok: false, retry: false, retryAfterMs: null, message: UNREACHABLE }
+  }
+  // 403: Talk has not seen this session join the call yet; 429: rate limit;
+  // 5xx: captions not ready (Talk not connected yet, engine loading, overloaded).
+  const retry = status === 403 || status === 429 || status >= 500
+  return { ok: false, retry, retryAfterMs, message }
 }

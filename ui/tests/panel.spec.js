@@ -71,6 +71,24 @@ test('activating the panel turns Talk live captions on for the conversation', as
     .toContain('t-enable')
 })
 
+test('captions that cannot start yet show the reason, retry, and clear once started', async ({ page }) => {
+  await page.evaluate(() => window.__FIXTURE__.refuseCaptions([
+    { status: 503, detail: 'Cassini Live is not enabled or Talk is not ready' },
+  ]))
+  await clickBookmarklet(page)
+  await setCall(page, 't-retry', 't-retry')
+  const problem = panel(page).locator('.problem')
+  await expect(problem).toHaveText(
+    "Captions can't start: Cassini Live is not enabled or Talk is not ready. Retrying while you are in the call.",
+  )
+  // Retry-After: 1 — the second attempt goes through and the reason disappears.
+  await expect
+    .poll(() => page.evaluate(() => window.__FIXTURE__.enabledTokens()), { timeout: 8000 })
+    .toContain('t-retry')
+  await expect(problem).toBeHidden()
+  await expect(panel(page).locator('.hint')).not.toContainText('closed captions')
+})
+
 test('the live HPB feed renders finals (with seq) near-instantly, names resolved', async ({ page }) => {
   await clickBookmarklet(page)
   await enterCall(page, 't-live')

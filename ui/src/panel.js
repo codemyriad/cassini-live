@@ -74,6 +74,10 @@ const CSS = `
 .body { position: relative; flex: 1 1 auto; display: flex; min-height: 0; }
 .scroll { flex: 1 1 auto; overflow-y: auto; padding: 8px 2px; overscroll-behavior: contain; }
 .hint { color: var(--muted); padding: 12px 4px; text-align: center; }
+.problem {
+  margin: 4px 2px 8px; padding: 6px 8px; border-radius: 6px;
+  border-left: 3px solid #c9190b; background: rgba(201, 25, 11, 0.08); font-size: 12px;
+}
 .marker {
   display: flex; align-items: center; gap: 8px;
   color: var(--muted); font-size: 11px; margin: 6px 0 8px;
@@ -178,9 +182,13 @@ export function createTranscriptView({ store, names, shadow, appId }) {
   scroll.setAttribute('role', 'log')
   scroll.setAttribute('aria-label', 'Live transcript')
   const hint = el('div', 'hint', 'Waiting for a Talk call on this page…')
+  // Why captions could not start, from the ExApp (retried while the call is on).
+  const problem = el('div', 'problem')
+  problem.setAttribute('role', 'status')
+  problem.hidden = true
   const itemsHostEl = el('div')
   const partialsEl = el('div', 'partials')
-  scroll.append(hint, itemsHostEl, partialsEl)
+  scroll.append(problem, hint, itemsHostEl, partialsEl)
   const jump = el('button', 'jump', '↓ Jump to live')
   jump.hidden = true
   const liveRegion = el('div', 'sr-only')
@@ -373,8 +381,16 @@ export function createTranscriptView({ store, names, shadow, appId }) {
     hint.hidden = false
     hint.textContent =
       status.state === 'attached'
-        ? 'Connected. Turn on captions in the call (⋯ → closed captions) to see the transcript. Lines appear here for everyone once Cassini Live starts listening.'
-        : 'Waiting for a Talk call on this page — join the call, then turn on captions.'
+        ? 'Connected. Captions start for you when you join the call; lines appear here for everyone once Cassini Live starts listening.'
+        : 'Waiting for a Talk call on this page — join the call to start captions.'
+  }
+
+  function setCaptionProblem(message, retrying = false) {
+    problem.hidden = !message
+    problem.textContent = message
+      ? `Captions can't start: ${message.replace(/[.\s]+$/, '')}.` +
+        (retrying ? ' Retrying while you are in the call.' : '')
+      : ''
   }
 
   function destroy() {
@@ -384,5 +400,5 @@ export function createTranscriptView({ store, names, shadow, appId }) {
     view.remove()
   }
 
-  return { setStatus, destroy }
+  return { setStatus, setCaptionProblem, destroy }
 }

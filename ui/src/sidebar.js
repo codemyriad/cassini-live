@@ -46,6 +46,7 @@ export function createSidebarPanel({ store, names, appId }) {
   let selectedClassName = null // cached from a live native selected tab button
   let unselectedClassName = null
   let lastStatus = { state: 'waiting' }
+  let lastProblem = [null, false]
   const suppressed = new Set() // native caption nodes we hid, with their old display
 
   const sidebar = () => document.querySelector('#app-sidebar-vue')
@@ -135,6 +136,7 @@ export function createSidebarPanel({ store, names, appId }) {
     box.appendChild(shadowHost)
     view = createTranscriptView({ store, names, shadow, appId })
     view.setStatus(lastStatus)
+    view.setCaptionProblem(...lastProblem)
     return box
   }
 
@@ -268,6 +270,11 @@ export function createSidebarPanel({ store, names, appId }) {
     if (view) view.setStatus(status)
   }
 
+  function setCaptionProblem(message, retrying) {
+    lastProblem = [message, retrying]
+    if (view) view.setCaptionProblem(message, retrying)
+  }
+
   function destroy() {
     destroyed = true
     clearInterval(timer)
@@ -275,5 +282,5 @@ export function createSidebarPanel({ store, names, appId }) {
     removeInjected()
   }
 
-  return { setStatus, destroy }
+  return { setStatus, setCaptionProblem, destroy }
 }
