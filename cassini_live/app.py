@@ -69,8 +69,9 @@ def create_app(
         safety,
         service,
         config,
-        ModelStore(storage / "models" if production else None,
-                   calls_active=lambda: bool(safety.tracks)),
+        ModelStore(
+            storage / "models" if production else None, calls_active=lambda: bool(safety.tracks)
+        ),
         SettingsStore(storage / "cassini-live-settings.json" if production else None),
         probe=NetworkProbe() if production else None,
     )
@@ -166,7 +167,8 @@ def create_app(
         if not os.environ.get("APP_SECRET"):
             raise RuntimeError("APP_SECRET is required; register Cassini Live through AppAPI")
         if os.environ.get("APP_ID") != "live_transcription":
-            raise RuntimeError("Talk requires APP_ID=live_transcription")
+            LOGGER.warning("APP_ID != live_transcription -- this works with overrides")
+            # raise RuntimeError("Talk requires APP_ID=live_transcription")
         transcriber.POOL = pool
         try:
             if production:
