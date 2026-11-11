@@ -267,11 +267,11 @@ def default_weights() -> str | None:
     return None
 
 
-# Reference copies in local/stt-eval/models keep the sherpa-onnx release names; the catalog
-# no longer records them, since the app downloads single files from dist.gocassini.com.
+# Reference copies in local/stt-eval/models match the dist.gocassini.com model IDs pinned in
+# catalog.py.
 REFERENCE_DIRS = {
-    "nemotron-en": "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25",
-    "nemotron-multilingual": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
+    "nemotron-en": "nemotron-speech-streaming-en-0.6b-int8-v2",
+    "nemotron-multilingual": "nemotron-3.5-asr-streaming-0.6b-int8-v2",
 }
 
 

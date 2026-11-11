@@ -111,16 +111,17 @@ def _asset(model, files):
     return ModelAsset(model=model, files=tuple(ModelFile(*f) for f in files))
 
 
-# Uncompressed hashes and sizes are those of the files in the sherpa-onnx release archives
-# (sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2, sha256
-# 78e2b79f..., and sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2,
-# sha256 c6bf5e0d...), so installs made from those archives stay valid.
+# Encoders are Cassini's 560 ms ONNX exports of NVIDIA's .nemo checkpoints quantized with
+# the 29 depthwise and /pre_encode/ subsampling convolutions kept in fp32 (D-925,
+# k2-fsa/sherpa-onnx#4179). Decoders, joiners and tokens come unchanged from the sherpa-onnx
+# release archives (sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2
+# and sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2).
 NEMOTRON_EN_ASSET = _asset(
-    "nemotron-speech-streaming-en-0.6b-int8",
+    "nemotron-speech-streaming-en-0.6b-int8-v2",
     (
         ("encoder.int8.onnx",
-         "7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8", 652916849,
-         "21a5c9eaa1f2494427b1da0ccef7fc07fd75a13b638b09cf0410cf97debbb075", 438902401),
+         "bf223b98e59faae4c3871663de130039c2273dd82da1ac81eb6a093ee66cbfc0", 653930107,
+         "afc82e33524a8d0aa2713ba4f5d7b48163f8b4a0a9e9adfe65d99ecd91f40481", 439348396),
         ("decoder.int8.onnx",
          "0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98", 7257753,
          "caf4a8887d81bdb5b2f75de794f4376a5700c5582b838a2480b4cc12da437beb", 5105864),
@@ -133,11 +134,11 @@ NEMOTRON_EN_ASSET = _asset(
     ),
 )
 NEMOTRON_MULTILINGUAL_ASSET = _asset(
-    "nemotron-3.5-asr-streaming-0.6b-int8",
+    "nemotron-3.5-asr-streaming-0.6b-int8-v2",
     (
         ("encoder.int8.onnx",
-         "012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68", 657601403,
-         "8a329067c3c0499fa767102e51102aaf17f300572e2ad979bbc99c4cf0cc4e0a", 438377949),
+         "2ba9902fff5bbe4a792fcbbcc12a1858ae8969c654feb89205a36531d60e05a6", 658611969,
+         "17205ad40fd388a4223b848fdd725d0d03b5fa42275b436b0ec700083a76b556", 439393595),
         ("decoder.int8.onnx",
          "19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0", 14978075,
          "e0ab803b260711c37e0a4bd96ae32cd114d4bfd93a94fe704c83e791ca5f6302", 11269868),
@@ -247,7 +248,7 @@ ENGINES: dict[str, Engine] = {
         summary="Most accurate. English only.",
         languages=("en",),
         automatic_language=False,
-        meeting_wer=0.089,
+        meeting_wer=0.086,
         accuracy_note="Word error rate on our recorded English meetings; lower is better.",
         asset=NEMOTRON_EN_ASSET,
         license=NVIDIA_OML,

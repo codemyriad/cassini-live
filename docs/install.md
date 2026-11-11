@@ -100,8 +100,8 @@ chooses one.
 | Engine | Languages | Word errors on our English meetings | Container memory | Download |
 |---|---|---|---|---|
 | Whistle (default) | 7, automatic detection | 19% | 384 MiB + 192 MiB per worker; 2 GiB recommended | none, bundled |
-| Nemotron English | English only | 8.9% | at least 2.25 GiB; 3 GiB recommended | 442 MiB |
-| Nemotron Multilingual | 7, automatic detection | 12.8% | at least 2.25 GiB; 3 GiB recommended | 453 MiB |
+| Nemotron English | English only | 8.6% | at least 2.25 GiB; 3 GiB recommended | 425 MiB |
+| Nemotron Multilingual | 7, automatic detection | 12.8% | at least 2.25 GiB; 3 GiB recommended | 435 MiB |
 
 Both Nemotron engines also need a CPU quota of at least one CPU, AVX2 on x86_64
 processors, host RAM of at least twice the container memory limit (so at least

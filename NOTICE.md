@@ -32,26 +32,34 @@ not modify it and never opens an audio device.
 
 The Nemotron model weights are **not** in the image. They are downloaded only when
 an administrator chooses a Nemotron engine, from Cassini's mirror at https://dist.gocassini.com
-(Zstandard-compressed copies of the files in the k2-fsa/sherpa-onnx `asr-models` release
-archives named below), into the app's persistent storage. Each decompressed file is
-checked against the SHA-256 below, and the license text (and notice) is stored next to it.
+(Zstandard-compressed model files: Cassini's conv-fp32 int8 ONNX exports of the encoders
+from NVIDIA's `.nemo` checkpoints, paired with the `decoder.int8.onnx`, `joiner.int8.onnx`
+and `tokens.txt` files of the k2-fsa/sherpa-onnx `asr-models` release archives named below),
+into the app's persistent storage. Each decompressed file is checked against the SHA-256
+below, and the license text (and notice) is stored next to it.
 
-* **Nemotron English**: [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b),
-  files of the sherpa-onnx export `sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2`.
+* **Nemotron English** (`nemotron-speech-streaming-en-0.6b-int8-v2`):
+  [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+  (revision `ebe59e5a817142986528bbbee5dba8db7b38ed50`, encoder exported and int8-quantized
+  by Cassini with depthwise and subsampling convolutions kept in fp32; decoder, joiner and
+  tokens from `sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2`).
   NVIDIA Open Model License (version of 2025-10-24,
   `LICENSES/NVIDIA-Open-Model-License.txt`), shown with its full text on the
   settings page. Notice: "Licensed by NVIDIA Corporation under the NVIDIA Open Model
   License" (`LICENSES/NVIDIA-Open-Model-License-NOTICE.txt`).
-  * `encoder.int8.onnx` `7d932213491ad355c6e5576705dc3494731a52af87d7a1b954559340147909d8`
+  * `encoder.int8.onnx` `bf223b98e59faae4c3871663de130039c2273dd82da1ac81eb6a093ee66cbfc0`
   * `decoder.int8.onnx` `0be9702c2f427a2b6bb241d298e0d3836a558de1f5b9fd3018f1cce6e2b3fa98`
   * `joiner.int8.onnx` `a35eac38a22ebceb04d230ed7afe0d68f446ba6914a036b97f14fece95967e23`
   * `tokens.txt` `dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff`
-* **Nemotron Multilingual**: [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b),
-  files of the sherpa-onnx export `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2`.
+* **Nemotron Multilingual** (`nemotron-3.5-asr-streaming-0.6b-int8-v2`):
+  [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+  (revision `ea30d66debe3740a08b573244286791d423d6b3e`, encoder exported and int8-quantized
+  by Cassini with depthwise and subsampling convolutions kept in fp32; decoder, joiner and
+  tokens from `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2`).
   OpenMDW-1.1 (`LICENSES/OpenMDW-1.1.txt`). Origin notice: "nvidia/nemotron-3.5-asr-streaming-0.6b
   by NVIDIA Corporation, exported to ONNX by the k2-fsa/sherpa-onnx project. Licensed
   under OpenMDW-1.1."
-  * `encoder.int8.onnx` `012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68`
+  * `encoder.int8.onnx` `2ba9902fff5bbe4a792fcbbcc12a1858ae8969c654feb89205a36531d60e05a6`
   * `decoder.int8.onnx` `19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0`
   * `joiner.int8.onnx` `4101c7c679a0bc30483794b27a059e34e79232aa2068d78d51231a22c8b0d7ce`
   * `tokens.txt` `729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a`
