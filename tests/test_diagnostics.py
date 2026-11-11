@@ -156,7 +156,9 @@ async def test_pressure_stops_and_reaps_only_optional_child(monkeypatch, pressur
         return child
 
     settings = SimpleNamespace(
-        server="wss://example.invalid", model_dump=lambda: {"stunservers": [], "turnservers": []}
+        server="wss://example.invalid",
+        secret="test-hpb",
+        model_dump=lambda: {"stunservers": [], "turnservers": []},
     )
     service = SimpleNamespace(
         settings=settings,
@@ -256,7 +258,6 @@ async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
             stderr=asyncio.subprocess.PIPE,
             env={
                 **os.environ,
-                "CASSINI_TALK_SIGNALING_INTERNAL_SECRET": "test-hpb",
                 "OPENBLAS_NUM_THREADS": "1",
                 "OMP_NUM_THREADS": "1",
             },
@@ -267,6 +268,7 @@ async def test_diagnostic_publisher_sends_bye_on_stop(monkeypatch):
             "server": f"ws://127.0.0.1:{port}/spreed",
             "stunservers": [],
             "turnservers": [],
+            "secret": "test-hpb",
         }
         proc.stdin.write((json.dumps(config) + "\n").encode())
         await proc.stdin.drain()
@@ -954,7 +956,9 @@ async def test_worst_case_sample_line_fits_the_child_limit(monkeypatch, reason):
         lag=SimpleNamespace(p95=lambda: -1.2345678901234567e-300),
     )
     settings = SimpleNamespace(
-        server="wss://example.invalid", model_dump=lambda: {"stunservers": [], "turnservers": []}
+        server="wss://example.invalid",
+        secret="test-hpb",
+        model_dump=lambda: {"stunservers": [], "turnservers": []},
     )
     service = SimpleNamespace(
         settings=settings,

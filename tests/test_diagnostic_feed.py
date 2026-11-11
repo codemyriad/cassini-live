@@ -256,7 +256,9 @@ async def test_the_video_ending_keeps_names_the_page_still_holds(monkeypatch):
     room = Room("Ana Ferreira")
     service = service_with(room=room)
     service.settings = SimpleNamespace(
-        server="wss://example.invalid", model_dump=lambda: {"stunservers": [], "turnservers": []}
+        server="wss://example.invalid",
+        secret="test-hpb",
+        model_dump=lambda: {"stunservers": [], "turnservers": []},
     )
     holds = NameHolds()
     feed = without_ticker(make_feed(monkeypatch, service, holds))

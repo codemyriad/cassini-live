@@ -41,13 +41,14 @@ This is an initial development release, not yet published to the Nextcloud App S
       <variable>
         <name>CASSINI_TALK_SIGNALING_INTERNAL_SECRET</name>
         <display-name>Talk HPB internal secret</display-name>
-        <description>One-time installation value. The signalling server's [clients] internalsecret,
-not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk printenv INTERNAL_SECRET.</description>
+        <description>The signalling server's [clients] internalsecret, not the shared secret in Talk
+settings. On AIO: docker exec nextcloud-aio-talk printenv INTERNAL_SECRET. Alternatively, leave this
+empty and enter it on the Cassini Live settings page after installation.</description>
       </variable>
       <variable>
         <name>CASSINI_TALK_HPB_URL</name>
         <display-name>HPB URL override (optional)</display-name>
-        <description>Leave empty to discover from Talk. Override only when the container needs a different address.</description>
+        <description>Leave empty to discover from Talk. Override only when the container needs a different address. Can also be set on the Cassini Live settings page.</description>
       </variable>
       <variable>
         <name>CASSINI_LIVE_DEBUG_VIDEO</name>
@@ -79,6 +80,9 @@ not the shared secret in Talk settings. On AIO: docker exec nextcloud-aio-talk p
       <route><url>^/?settings/api/engine$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/cancel$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/capacity$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <!-- The HPB internal secret and URL override, for installs without deploy options
+           (the App Store on Nextcloud 34+), and a check that the HPB accepts the secret. -->
+      <route><url>^/?settings/api/talk(/check)?$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/models/[a-z0-9-]+$</url><verb>DELETE</verb><access_level>ADMIN</access_level></route>
       <!-- The live diagnostics page: read-only static content for administrators. -->
       <route><url>^/?diagnostics/(index\.html|app\.js|app\.css)?$</url><verb>GET</verb><access_level>ADMIN</access_level></route>

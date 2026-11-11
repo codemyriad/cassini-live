@@ -234,7 +234,7 @@ def test_state(page):
     assert response.status_code == 200
     assert_secure(response)
     body = response.json()
-    assert set(body) == {"version", "panel", "status", "links"}
+    assert set(body) == {"version", "panel", "status", "links", "talk"}
     assert body["version"] == __version__
     assert body["panel"]["active"] == "whistle" and len(body["panel"]["engines"]) == 3
     assert body["status"]["name"] == "Cassini Live"

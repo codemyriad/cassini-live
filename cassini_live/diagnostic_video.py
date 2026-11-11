@@ -925,7 +925,7 @@ async def main(nice=19):
     )
     nonce = token_urlsafe(48)
     token = hmac.new(
-        os.environ["CASSINI_TALK_SIGNALING_INTERNAL_SECRET"].encode(),
+        config["secret"].encode(),
         nonce.encode(),
         hashlib.sha256,
     ).hexdigest()

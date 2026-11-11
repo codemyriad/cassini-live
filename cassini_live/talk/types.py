@@ -21,6 +21,9 @@ class HPBSettings(BaseModel):
 	server: str
 	stunservers: list[StunServer]
 	turnservers: list[TurnServer]
+	# The HPB internal secret resolved at discovery (deploy options, else the settings
+	# page). Never dumped or printed with the settings.
+	secret: str = Field(default="", exclude=True, repr=False)
 
 
 class TranscribeRequest(BaseModel):

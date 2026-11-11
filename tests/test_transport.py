@@ -74,7 +74,8 @@ async def test_handshake_targeting_reconnect_and_final_before_bye(monkeypatch):
     async with serve(hpb, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
         settings = HPBSettings(
-            server=f"ws://127.0.0.1:{port}/spreed", stunservers=[], turnservers=[]
+            server=f"ws://127.0.0.1:{port}/spreed", stunservers=[], turnservers=[],
+            secret="test-hpb",
         )
         client = transport.SpreedClient("room", settings, "en", None)
         try:

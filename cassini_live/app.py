@@ -29,6 +29,7 @@ from .service import CaptionService
 from .settings import SettingsStore
 from .settings_sync import SettingsSync
 from .talk.types import SpreedClientException, VoskException
+from .talk_setup import SECRET_MISSING, TalkSetup
 
 LOGGER = logging.getLogger(__name__)
 Language = Literal["auto", "en", "de", "fr", "es", "it", "nl", "pl"]
@@ -64,10 +65,14 @@ def create_app(
     # Production wiring builds its own pool; tests inject one and get no settings sync.
     production = pool is None
     pool = pool or WorkerPool(config.workers, config.weights)
-    service = service or CaptionService(config)
+    storage = state_dir()
+    if service is None:
+        # The HPB secret and URL: deploy options first, then the settings page's file.
+        talk_file = storage / "cassini-live-talk.json" if production else None
+        talk = TalkSetup.from_config(config, talk_file)
+        service = CaptionService(config, talk=talk)
     assessment = CapacityAssessment(pool)
     safety = safety_factory(pool, assessment, service)
-    storage = state_dir()
     if safety_factory is SafetyController:
         safety.journal = RecoveryJournal(storage / "cassini-live-recovery.json")
     service.admission = safety
@@ -109,9 +114,9 @@ def create_app(
         while True:
             safety.state, safety.phase = "recovering", "waiting_talk"
             safety.reason = "Waiting for Nextcloud and Talk; connection will retry automatically"
-            if not config.secret:
+            if not service.talk.secret()[0]:
                 safety.state, safety.phase = "blocked", "configuration"
-                safety.reason = "Configure the Talk HPB internal secret in deploy options"
+                safety.reason = SECRET_MISSING
                 safety.admin_action = True
             await asyncio.sleep(delay)
             try:
@@ -129,6 +134,28 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await discovery_task
             discovery_task = None
+
+    async def reconnect_talk():
+        """After the settings page changed the HPB secret or URL: discover again now rather
+        than at the next retry, then check that the HPB accepts the secret. Rooms already
+        captioned keep their connection; new rooms use the new values."""
+        nonlocal discovery_task
+        await stop_discovery()
+        try:
+            async with asyncio.timeout(10):
+                await service.discover(nc_factory())
+        except Exception as error:
+            service.enabled = False
+            service.settings = None
+            LOGGER.warning(
+                "Talk is not ready after the HPB setting changed (%s)", type(error).__name__
+            )
+            discovery_task = asyncio.create_task(retry_connection())
+            return
+        service.enabled = True
+        await service.check_hpb()
+        if not safety.desired_enabled:
+            discovery_task = asyncio.create_task(manager.start_safety())
 
     async def remove_legacy_page(nc):
         # 0.6.x registered a menu page; the engine choice now lives in admin settings.
@@ -354,7 +381,9 @@ def create_app(
         }
 
     membership = RoomMembership(nc_factory)
-    app.include_router(settings_page.create_router(manager, status_body))
+    app.include_router(
+        settings_page.create_router(manager, status_body, service.talk, reconnect_talk)
+    )
     app.include_router(panel_page.create_router(app_id))
     app.include_router(
         diagnostics_page.create_router(

@@ -110,6 +110,8 @@ def main():
         "settings/api/engine": "POST",
         "settings/api/cancel": "POST",
         "settings/api/capacity": "POST",
+        "settings/api/talk": "POST",
+        "settings/api/talk/check": "POST",
         "settings/api/models/nemotron-en": "DELETE",
         "settings/licenses/NVIDIA-OML.txt": "GET",
         "diagnostics/": "GET",
@@ -123,6 +125,7 @@ def main():
     assert not matches("diagnostics/api/feed", "POST"), "POST diagnostics/api/feed is routed"
     assert not matches("diagnostics/other.js"), "diagnostics/other.js is routed"
     assert not matches("captions/transcribe", "GET"), "GET captions/transcribe is routed"
+    assert not matches("settings/api/talk", "GET"), "GET settings/api/talk is routed"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 
 
