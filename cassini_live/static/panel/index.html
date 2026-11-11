@@ -10,6 +10,10 @@
 </head>
 <body>
   <main class="wrap">
+    <!-- The script points this at the Nextcloud root from the page's own URL, which
+         also works under a sub-directory or without index.php; the relative href is
+         the fallback for /index.php/apps/app_api/proxy/<app id>/panel/. -->
+    <p class="back-row"><a id="back" class="back" href="../../../../../">← Back to Nextcloud</a></p>
     <h1>Cassini Live transcript panel</h1>
     <p class="subtitle">A scrollable live transcript for Talk calls — including your own lines.</p>
 

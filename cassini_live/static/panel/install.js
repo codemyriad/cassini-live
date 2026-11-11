@@ -8,6 +8,12 @@ window.CASSINI_LIVE_BOOKMARKLETS = {
 // Appended by the build after a `window.CASSINI_LIVE_BOOKMARKLETS` preamble
 // holding { version, loader, inline }.
 ;(() => {
+  // Back to Nextcloud: everything before the AppAPI proxy path, so a sub-directory
+  // install (/nc/index.php/...) and one without index.php both land on their root.
+  const back = document.getElementById('back')
+  const root = window.location.pathname.replace(/\/apps\/app_api\/proxy\/.*$/, '/')
+  if (back && root !== window.location.pathname) back.setAttribute('href', root)
+
   const data = window.CASSINI_LIVE_BOOKMARKLETS
   if (!data) return
 
