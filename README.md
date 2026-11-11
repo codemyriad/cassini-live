@@ -96,8 +96,8 @@ Changes in 0.9.0:
 
 * New transcript panel for Talk calls, delivered as a bookmarklet and served by
   the app at `/panel/` (any logged-in user): a scrollable, speaker-grouped live
-  transcript that also shows your own lines. Pick up the bookmarklet on
-  `/index.php/apps/app_api/proxy/cassini_live/panel/`. See [ui/](ui/).
+  transcript that also shows your own lines. Pick up the bookmarklet on the
+  **Cassini Live** page in Nextcloud's app menu. See [ui/](ui/).
 
 Changes in 0.8.2:
 

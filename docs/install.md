@@ -33,12 +33,12 @@ Live Transcription app can stay installed. See
 5. Reload the settings page until it shows "Captions are ready." (seconds once
    the limits are set).
 6. Talk's **Show captions** button does not reach Cassini Live, so people
-   turn captions on from Cassini Live's transcript panel. Each person
-   opens `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud
-   once per browser and drags the bookmark to their bookmarks bar. In a Talk
-   call, a click on the bookmark opens the panel and starts captions. Send your
-   users that link; guests cannot use it (see
-   [known limitations](known-limitations.md)).
+   turn captions on from Cassini Live's transcript panel. Each person opens
+   the **Cassini Live** page in Nextcloud's app menu once per browser and
+   drags the "Live transcript" bookmark to their bookmarks bar. In a Talk call,
+   a click on the bookmark opens the panel and starts captions. Guests cannot
+   use it (see [known limitations](known-limitations.md)). Administrators also
+   see on that page what is left to set up.
 7. [Check the installation](#check-the-installation) in a call.
 
 Update from the **Apps** page or with `occ app_api:app:update cassini_live`,
