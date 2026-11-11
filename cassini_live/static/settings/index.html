@@ -49,6 +49,34 @@
       </div>
     </section>
 
+    <section id="talk" aria-labelledby="talk-title">
+      <h2 id="talk-title" tabindex="-1">Talk connection</h2>
+      <p class="muted">Cassini Live joins calls through Talk's high-performance backend (HPB) and needs that server's internal secret: <code>internalsecret</code> under <code>[clients]</code> in the signalling server's configuration, not the shared secret in Talk's settings. On Nextcloud All-in-One, print it with <code>docker exec nextcloud-aio-talk printenv INTERNAL_SECRET</code>.</p>
+      <div id="talk-missing" class="message warning" hidden><p>Captions stay off until the internal secret is saved here.</p></div>
+      <div id="talk-unreadable" class="message error" hidden><p id="talk-unreadable-text"></p></div>
+      <dl class="facts">
+        <div><dt>Internal secret</dt><dd id="talk-secret">–</dd></div>
+        <div><dt>HPB address</dt><dd id="talk-url">–</dd></div>
+        <div><dt>Last check</dt><dd><span id="talk-check-spinner" class="spinner" aria-hidden="true" hidden></span><span id="talk-check">–</span></dd></div>
+      </dl>
+      <form id="talk-form" class="fields" novalidate>
+        <div class="field">
+          <label for="talk-secret-input">Internal secret</label>
+          <input id="talk-secret-input" name="secret" type="password" autocomplete="off" spellcheck="false" maxlength="256" aria-describedby="talk-secret-hint">
+          <p id="talk-secret-hint" class="muted hint">Stored on Cassini Live's persistent volume and never shown again.</p>
+        </div>
+        <div class="field">
+          <label for="talk-url-input">HPB URL override (optional)</label>
+          <input id="talk-url-input" name="hpbUrl" type="url" autocomplete="off" spellcheck="false" maxlength="512" placeholder="Discovered from Talk" aria-describedby="talk-url-hint">
+          <p id="talk-url-hint" class="muted hint">Leave empty to use the address configured in Talk. Set it only when this container reaches the HPB at a different address than browsers do.</p>
+        </div>
+        <div class="actions">
+          <button type="submit" id="talk-save" class="primary"><span class="spinner" aria-hidden="true" hidden></span><span class="label">Save and check</span></button>
+          <button type="button" id="talk-recheck" class="secondary"><span class="spinner" aria-hidden="true" hidden></span><span class="label">Check the connection</span></button>
+        </div>
+      </form>
+    </section>
+
     <section id="change" aria-labelledby="change-title" hidden>
       <h2 id="change-title" tabindex="-1">Current change</h2>
       <ol id="steps" class="steps">

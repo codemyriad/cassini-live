@@ -46,6 +46,8 @@
   var cancelPending = false;
   var measurePending = false;
   var cancelPendingFor = null;
+  var talkPending = null;   // "save" or "check" while its request runs
+  var talkUrlDirty = false; // the administrator edited the URL field: do not overwrite it
 
   function $(id) { return document.getElementById(id); }
 
@@ -349,6 +351,7 @@
     renderNotice();
     renderLinks();
     renderOverview();
+    renderTalk();
     renderChange();
     renderEngines();
     renderServer();
@@ -1023,9 +1026,140 @@
     }).then(refresh);
   }
 
+  /* ---------- Talk connection ---------- */
+
+  var SOURCE_TEXT = {
+    deploy_options: "Set in the app's deploy options",
+    settings_page: "Saved on this page",
+    unset: "Not set"
+  };
+
+  function checkText(check) {
+    if (!check) { return "Not checked since Cassini Live started"; }
+    var when = localTime(check.checkedAt);
+    var label = check.state === "passed" ? "Passed" :
+      check.state === "failed" ? "Failed" : "HPB unreachable";
+    return label + ": " + sentence(check.message) + (when ? " (" + when + ")" : "");
+  }
+
+  function renderTalk() {
+    var talk = state.talk;
+    if (!talk) { return; }
+    var secretFromDeploy = talk.secretSource === "deploy_options";
+    var urlFromDeploy = talk.hpbUrlSource === "deploy_options";
+    var locked = talk.unreadable || !talk.storage;
+    setText($("talk-secret"), SOURCE_TEXT[talk.secretSource] || talk.secretSource);
+    setText($("talk-url"), talk.hpbUrl
+      ? talk.hpbUrl + " (" + (urlFromDeploy ? "deploy options" : "saved on this page") + ")"
+      : "The address configured in Talk");
+    var check = $("talk-check");
+    setText(check, talkPending ? "Checking…" : checkText(talk.check));
+    setAttr(check, "class", !talkPending && talk.check
+      ? (talk.check.state === "passed" ? "check-passed" : "check-failed") : null);
+    show($("talk-check-spinner"), !!talkPending);
+    show($("talk-missing"), !talk.secretConfigured && !talk.unreadable);
+    show($("talk-unreadable"), !!talk.unreadable);
+    setText($("talk-unreadable-text"), talk.unreadable
+      ? "Cassini Live could not read its saved Talk connection (cassini-live-talk.json on " +
+        "its persistent volume). Restore the file from a backup, or remove it to enter " +
+        "the values again." : "");
+
+    var secretInput = $("talk-secret-input");
+    setDisabled(secretInput, secretFromDeploy || locked);
+    setAttr(secretInput, "placeholder", secretFromDeploy ? "Set in deploy options"
+      : talk.secretSource === "settings_page" ? "Saved; type a new one to replace it" : null);
+    setText($("talk-secret-hint"), secretFromDeploy
+      ? "Set in the app's deploy options, which take precedence; it cannot be changed here."
+      : "Stored on Cassini Live's persistent volume and never shown again.");
+
+    var urlInput = $("talk-url-input");
+    setDisabled(urlInput, urlFromDeploy || locked);
+    if (!talkUrlDirty && document.activeElement !== urlInput) {
+      var saved = talk.hpbUrlSource === "settings_page" ? talk.hpbUrl : "";
+      if (urlInput.value !== saved) { urlInput.value = saved; }
+    }
+
+    var nothingEditable = (secretFromDeploy && urlFromDeploy) || locked;
+    setControl($("talk-save"), nothingEditable || !!talkPending, talkPending === "save");
+    show($("talk-save"), !(secretFromDeploy && urlFromDeploy));
+    show($("talk-save").querySelector(".spinner"), talkPending === "save");
+    setControl($("talk-recheck"), !talk.secretConfigured || !!talkPending, talkPending === "check");
+    show($("talk-recheck").querySelector(".spinner"), talkPending === "check");
+  }
+
+  function talkOutcome(talk, saved) {
+    var prefix = saved ? "Saved. " : "";
+    var check = talk && talk.check;
+    if (!talk || !talk.secretConfigured) {
+      showActionResult(prefix + "Enter the internal secret to turn captions on.");
+    } else if (!check) {
+      showActionResult(prefix + "Cassini Live could not load Talk's signalling settings yet " +
+        "and keeps retrying.");
+    } else if (check.state === "passed") {
+      showActionResult(prefix + "The HPB accepted the internal secret. Captions are ready " +
+        "to start once the speech engine has loaded.");
+    } else {
+      actionNotice = { message: prefix + checkText(check), reasons: [] };
+      renderNotice();
+    }
+  }
+
+  function talkRequest(kind, path, body) {
+    clearActionNotice();
+    talkPending = kind;
+    render();
+    request("POST", path, body).then(function (data) {
+      talkPending = null;
+      if (kind === "save") {
+        $("talk-secret-input").value = "";
+        talkUrlDirty = false;
+      }
+      if (data && state) {
+        if (data.talk) { state.talk = data.talk; }
+        if (data.status) { state.status = data.status; }
+        render();
+      }
+      talkOutcome(data && data.talk, kind === "save");
+      $("talk-title").focus();
+    }, function (error) {
+      talkPending = null;
+      actionFailed(kind === "save" ? "Could not save the Talk connection."
+        : "Could not check the Talk connection.", error);
+      if (state) { render(); }
+    }).then(refresh);
+  }
+
+  function onTalkSave(event) {
+    event.preventDefault();
+    if (!state || !state.talk || isInert($("talk-save"))) { return; }
+    var talk = state.talk;
+    var body = {};
+    var secret = $("talk-secret-input").value.trim();
+    if (secret && talk.secretSource !== "deploy_options") { body.secret = secret; }
+    var url = $("talk-url-input").value.trim();
+    var savedUrl = talk.hpbUrlSource === "settings_page" ? talk.hpbUrl : "";
+    if (talk.hpbUrlSource !== "deploy_options" && url !== savedUrl) { body.hpbUrl = url; }
+    if (!Object.keys(body).length) {
+      if (talk.secretConfigured) { onTalkCheck(); return; }
+      actionNotice = { message: "Enter the internal secret first.", reasons: [] };
+      renderNotice();
+      $("talk-secret-input").focus();
+      return;
+    }
+    talkRequest("save", "api/talk", body);
+  }
+
+  function onTalkCheck() {
+    if (!state || isInert($("talk-recheck"))) { return; }
+    talkRequest("check", "api/talk/check", {});
+  }
+
   function start() {
     $("cancel").addEventListener("click", onCancel);
     $("measure").addEventListener("click", onMeasure);
+    $("talk-form").addEventListener("submit", onTalkSave);
+    $("talk-recheck").addEventListener("click", onTalkCheck);
+    $("talk-url-input").addEventListener("input", function () { talkUrlDirty = true; });
     refresh();
   }
 
