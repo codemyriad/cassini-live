@@ -11,17 +11,16 @@ A release ships two things, kept in lockstep by one version: the Docker image
 
 Before the first release, work through the [App Store checklist](appstore-checklist.md).
 
-## Two manifests
+## The manifest
 
-| File | App id | Installed by | Talk's caption button |
-|---|---|---|---|
-| `appstore/info.xml` | `cassini_live` | the App Store | does not drive it; the transcript panel does |
-| `appinfo/info.xml` | `live_transcription` | `occ app_api:app:register … --info-xml` (by hand) | drives it, replacing Nextcloud's own app |
+Cassini Live is released under the app id `cassini_live`, from
+`appstore/info.xml`. Talk sends its caption button only to Nextcloud's own Live
+Transcription app, so captions start from the transcript panel.
 
-Talk sends its caption button only to the app id `live_transcription`, and
-Nextcloud's own Live Transcription app owns that id on the store, so the store
-package uses its own. The store package contains `appstore/info.xml` as
-`appinfo/info.xml`. `scripts/check_manifest.py` keeps the two files' runtime
+The store package contains `appstore/info.xml` as `appinfo/info.xml`. The
+repository's own `appinfo/info.xml` is an older manifest, kept for a short
+time for installs made before the store release; it will be removed. Until
+then `scripts/check_manifest.py` keeps the two files' runtime
 sections (`<dependencies>`, `<external-app>`: image, deploy options, routes)
 identical, and both manifests' versions equal to `pyproject.toml` and
 `cassini_live/__init__.py`.

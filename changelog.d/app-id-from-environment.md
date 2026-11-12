@@ -1,2 +1,2 @@
 ### Changed
-- Cassini Live runs under whichever app id AppAPI registered it with (`cassini_live` from the App Store, or `live_transcription` registered by hand): the settings link, the transcript panel, its bookmarklets and the diagnostics link use that id instead of `live_transcription`. Under an id other than `live_transcription` the app starts, and logs that Talk's caption button does not reach it.
+- Cassini Live takes its app id from AppAPI's registration (`cassini_live` from the App Store) instead of a fixed one: the settings link, the transcript panel, its bookmarklets and the diagnostics link use that id. As `cassini_live` the app logs at startup that Talk's caption button does not reach it.

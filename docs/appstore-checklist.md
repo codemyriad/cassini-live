@@ -1,8 +1,12 @@
 # App Store checklist
 
 What publishing Cassini Live to the Nextcloud App Store needs, in order, and
-where each item stands. The release mechanics are in [release.md](release.md).
-Tick items here as they land.
+where each item stands as of 2026-11-12. The release mechanics are in
+[release.md](release.md). Tick items here as they land.
+
+In short: the code is ready except for the screenshots; the certificate is
+requested and not yet issued; the GitHub and store setup in section 4 is not
+done; nothing has been released.
 
 Cassini (`gocassini`) went through the same steps: its first App Store release
 was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
@@ -24,7 +28,7 @@ was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
       `img/app.svg`, `CHANGELOG.md`, `LICENSE`; signing via `occ-nextcloud.sh`)
       and `validate-appstore-tarball.sh` (single `cassini_live/` root, id,
       version, image tag, size limits, store schema, no key material, refuses
-      the `live_transcription` id).
+      any app id but the store's).
 - [x] `scripts/appstore-keys.sh`: the CSR and the registration signature, run
       by hand outside CI. It refuses to write a key inside the repo.
 - [x] `.gitignore` refuses `*.key`, `*.crt`, `*.csr` and `build/`.
@@ -37,20 +41,24 @@ was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
       approval in the `release` environment; waits for the image, signs,
       creates the GitHub release, posts to apps.nextcloud.com.
 - [x] `check.yml` gains a `release-tooling` job: shellcheck, the scripts' tests,
-      an unsigned package built and validated. `scripts/package.py` (a source
-      tarball rooted at `live_transcription/`) is retired.
+      an unsigned package built and validated. `scripts/package.py` (the old
+      source tarball) is retired.
 - [x] `docs/release.md`.
 
 Verified locally: `./scripts/test-release-tooling.sh` 168/168 (the store-schema
 steps through lxml stand-ins for `xmllint`/`xsltproc`), shellcheck clean,
-`check_manifest.py` passes. **Not verified:** none of the workflows has run;
-`occ-nextcloud.sh` signing was not run here (it needs Docker and the real key).
+`check_manifest.py` passes; `check.yml`, with its `release-tooling` job, passes
+in CI on this branch. **Not verified:** `image.yml` and `release.yml` have never
+run (they need the branch on `main`, and `release.yml` the `release`
+environment); `occ-nextcloud.sh` signing ran only with a stand-in key, in the
+local store rehearsal.
 
 ## 2. Decisions (settled 2026-11-11)
 
 - [x] **The store app id: `cassini_live`.** It can't be renamed after the
-      certificate is issued. `live_transcription` stays supported, registered by
-      hand from `appinfo/info.xml`, for local testing until the transition.
+      certificate is issued. The older manifest `appinfo/info.xml` stays for a
+      short time, for installs made before the store release, and will be
+      removed.
 - [x] **The first store version: `0.12.0-alpha.1`.** Not a restart at 0.1.0:
       the hosts still hold old `cassini-live:0.1.0` images that a
       `ghcr.io → local` mapping would pick up.
@@ -67,14 +75,13 @@ steps through lxml stand-ins for `xmllint`/`xsltproc`), shellcheck clean,
 
 ## 3. Code before the first store release
 
-The store package installs, but under `cassini_live` nothing starts captions
-yet:
+Everything is done except the screenshots.
 
-- [x] Either app id runs: `cassini_live/appapi.py` reads `APP_ID` once
-      (`create_app`, and the `capacity` CLI) and everything below gets it
-      passed in. Native mode is `appapi.is_talk_provider(app_id)`; under
-      another id the app logs that Talk's button does not reach it.
-- [x] Store mode: the USER route `POST /captions/transcribe` (`cassini_live/app.py`,
+- [x] The app id comes from AppAPI: `cassini_live/appapi.py` reads `APP_ID`
+      once (`create_app`, and the `capacity` CLI) and everything below gets it
+      passed in. As `cassini_live` the app logs that Talk's caption button
+      does not reach it.
+- [x] Captions start from the panel: the USER route `POST /captions/transcribe` (`cassini_live/app.py`,
       checks in `cassini_live/call_access.py`). Same body and core as Talk's
       `/api/v1/call/transcribe`; re-checks, as the caller, room membership and
       the lobby, that the session is the caller's own (and in the call, to
@@ -82,7 +89,7 @@ yet:
       minute per user. In both manifests and `check_manifest.py`. Guests can't
       use it: USER proxy routes need a Nextcloud login.
 - [x] `ui/src/captions.js` posts to that route instead of Talk's
-      `/live-transcription/{token}`, under either app id, with the tab's Talk
+      `/live-transcription/{token}`, with the tab's Talk
       session id (the signalling connection's `nextcloudSessionId`) as
       `ncSessionId`, `langId: auto` and the `X-Cassini-Request: 1` header. The
       UI fixture server accepts only that request.
@@ -91,47 +98,81 @@ yet:
       `EX-APP-ID` check, and the panel bundles and bookmarklets, which the
       build leaves with a placeholder (`ui/src/app-id.js`) that
       `panel_page.create_router(app_id)` fills in. `replay.py` finds models
-      under `APP_PERSISTENT_STORAGE` instead of `/nc_app_live_transcription_data`.
+      under `APP_PERSISTENT_STORAGE` instead of a fixed volume path.
 - [x] PR #8 (0.11.0, diagnostics page) is on main through #12, and its routes
       are in both manifests.
+- [x] The HPB secret can be entered after installation, on the settings
+      page's **Talk connection** section: Nextcloud 34 and later show no deploy
+      options on the Apps page.
+- [x] The entrypoint gives the persistent volume, which AppAPI creates owned
+      by root, to the unprivileged account the app runs as.
+- [x] The panel retries starting captions while the call is on and shows the
+      server's reason until they start.
 - [ ] Screenshots: up to 10 HTTPS URLs (raw.githubusercontent.com from main, as
-      Cassini does) under `img/screenshots/`, listed in `appstore/info.xml`. The
-      PNGs in `docs/` don't fit: one is the removed status page, the other a
-      test harness.
+      Cassini does) under `img/screenshots/`, listed in `appstore/info.xml`.
+      Candidates exist (a four-person call with the panel, the settings page,
+      the diagnostics page), made on a local Nextcloud with made-up users;
+      none is chosen or committed. The URLs resolve only once the files are on
+      `main`, and the Apps page shows only the first.
 - [x] The store description in `appstore/info.xml` describes store mode: the
       panel's bookmark starts captions, logged-in users only, and the container
       limits are set after installation.
 - [x] `docs/install.md` (the store's admin documentation link) starts with the
-      App Store install; the panel's install page and the README no longer
-      describe only the hand-registered install.
+      App Store install, and the README, the panel's install page and the other
+      docs name only `cassini_live`.
 
-## 4. Outside the repository (not done; each needs a person)
+Stacked on this branch, not needed for the release:
 
-- [ ] Generate the key and CSR on a trusted machine:
+- `feat/home-page`: a **Cassini Live** entry in Nextcloud's app menu, with the
+  transcript bookmark and, for administrators, what is left to set up.
+- `docs/appstore-install-verified`: the record of a full install from a local
+  stand-in store on Nextcloud 35, in `docs/verification.md`.
+
+## 4. Outside the repository (each needs a person)
+
+- [x] Generate the key and CSR on a trusted machine:
       `./scripts/appstore-keys.sh csr ~/secure/cassini_live`.
-- [ ] Open a PR with `cassini_live.csr` to
-      [nextcloud/app-certificate-requests](https://github.com/nextcloud/app-certificate-requests)
-      and wait for the signed `cassini_live.crt` (a manual review).
+- [x] Open a PR with `cassini_live.csr` to
+      [nextcloud/app-certificate-requests](https://github.com/nextcloud/app-certificate-requests):
+      [#1437](https://github.com/nextcloud/app-certificate-requests/pull/1437).
+- [ ] Receive the signed `cassini_live.crt` (a manual review). The PR is open,
+      with no review yet. Everything below that needs the certificate waits
+      for this.
 - [ ] Register the app on apps.nextcloud.com (**Register app**) with the
       certificate and `./scripts/appstore-keys.sh register-signature <key>`.
+      Needs the certificate.
 - [ ] Create an App Store API token for the account that owns the app.
-- [ ] GitHub: create the `release` environment with required reviewers and the
-      secrets `APP_PRIVATE_KEY`, `APP_PUBLIC_CRT`, `APPSTORE_TOKEN`
-      (all environment secrets; Cassini keeps two at repo level).
-- [ ] GitHub: add the `skip-changelog` label.
+- [ ] GitHub: create the `release` environment with required reviewers. Can be
+      done now.
+- [ ] GitHub: add the secrets `APP_PRIVATE_KEY`, `APP_PUBLIC_CRT`,
+      `APPSTORE_TOKEN` to that environment (all environment secrets; Cassini
+      keeps two at repo level). Needs the certificate and the token.
+- [ ] GitHub: add the `skip-changelog` label. Can be done now.
 - [ ] GHCR: make `ghcr.io/codemyriad/cassini-live` public after its first
-      push; AppAPI pulls without credentials.
-- [ ] Confirm `codemyriad/cassini-live` is public: the store links to it, and
+      push; AppAPI pulls without credentials. The package does not exist yet:
+      a manual run of `image.yml` on `main` creates it (it pushes only a
+      `sha-` tag) and is the first test of the amd64 and arm64 builds.
+- [x] `codemyriad/cassini-live` is public: the store links to it, and
       screenshot URLs must resolve.
 
 ## 5. First release
 
-- [ ] Cut the first pre-release with `prepare-release.sh`, push, approve.
-- [ ] Rehearse first with `release.yml` `dry_run=true` on that tag.
-- [ ] Install from the store on a clean Nextcloud 33 and 34 with HaRP; run a
-      captioned call through the transcript panel.
-- [ ] Then switch staging, and later production, from the hand-registered
-      `live_transcription` to the store's `cassini_live`, following the
-      Cassini Live runbook in `codemyriad/systems`
+In this order:
+
+- [ ] Merge this branch to `main` (and, if they are to ship, the branches
+      stacked on it), with the screenshots.
+- [ ] Run `image.yml` by hand on `main`; make the GHCR package public.
+- [ ] Cut the first pre-release on `main`:
+      `./scripts/prepare-release.sh --bump minor --push` (0.11.0 →
+      0.12.0-alpha.1). It folds the changelog fragments and pushes the tag,
+      which starts `image.yml` and `release.yml`; `release.yml` then waits
+      for approval in the `release` environment.
+- [ ] Before approving, rehearse with a manual `release.yml` run on that tag
+      with `dry_run=true`. Then approve.
+- [ ] Install from the store on a clean Nextcloud 33, 34 and 35 with HaRP; run
+      a captioned call through the transcript panel.
+- [ ] Then switch staging, and later production, from their current
+      hand-made installs to the store's `cassini_live`, following the Cassini
+      Live runbook in `codemyriad/systems`
       (`systems/codemyriad/cassini-live/`). That runbook's scripts default to
-      `nc_app_live_transcription` and need the new names first.
+      the old container name and need the new one first.

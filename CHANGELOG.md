@@ -15,5 +15,5 @@ sections below are script-managed: `scripts/fold-changelog.sh` (run by
 version and removes the consumed fragments. Edit released sections only to fix
 mistakes; add new entries as fragments. See [`docs/release.md`](docs/release.md).
 
-Versions up to 0.11.0 were internal builds, deployed by hand as
-`live_transcription` and never published; their notes are in the README.
+Versions up to 0.11.0 were internal builds, deployed by hand and never
+published; their notes are in the README.
