@@ -48,10 +48,11 @@ Questions and bugs: [GitHub issues](https://github.com/codemyriad/cassini-live/i
   <website>https://gocassini.com</website>
   <bugs>https://github.com/codemyriad/cassini-live/issues</bugs>
   <repository type="git">https://github.com/codemyriad/cassini-live</repository>
-  <!-- Store screenshots: HTTPS, at most 10, fetched by the store at listing time
-       (not bundled). TODO before the first store release: add them under
-       img/screenshots/ and list raw.githubusercontent.com URLs from main here.
-       See docs/appstore-checklist.md. -->
+  <!-- Store screenshots: HTTPS, at most 10, at most 2 MiB each. The store fetches
+       these URLs at listing time; they are not in the package. The files are in
+       img/screenshots/ and are served from main, so a URL resolves once its file
+       is on main. The Apps page shows only the first. -->
+  <screenshot>https://raw.githubusercontent.com/codemyriad/cassini-live/main/img/screenshots/01-talk-transcript-panel.png</screenshot>
   <dependencies><nextcloud min-version="33" max-version="35"/></dependencies>
   <external-app>
     <docker-install>

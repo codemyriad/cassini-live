@@ -4,7 +4,7 @@ What publishing Cassini Live to the Nextcloud App Store needs, in order, and
 where each item stands as of 2026-11-12. The release mechanics are in
 [release.md](release.md). Tick items here as they land.
 
-In short: the code is ready except for the screenshots; the certificate is
+In short: the code is ready; the certificate is
 requested and not yet issued; the GitHub and store setup in section 4 is not
 done; nothing has been released.
 
@@ -75,7 +75,7 @@ local store rehearsal.
 
 ## 3. Code before the first store release
 
-Everything is done except the screenshots.
+Everything here is done.
 
 - [x] The app id comes from AppAPI: `cassini_live/appapi.py` reads `APP_ID`
       once (`create_app`, and the `capacity` CLI) and everything below gets it
@@ -108,12 +108,12 @@ Everything is done except the screenshots.
       by root, to the unprivileged account the app runs as.
 - [x] The panel retries starting captions while the call is on and shows the
       server's reason until they start.
-- [ ] Screenshots: up to 10 HTTPS URLs (raw.githubusercontent.com from main, as
-      Cassini does) under `img/screenshots/`, listed in `appstore/info.xml`.
-      Candidates exist (a four-person call with the panel, the settings page,
-      the diagnostics page), made on a local Nextcloud with made-up users;
-      none is chosen or committed. The URLs resolve only once the files are on
-      `main`, and the Apps page shows only the first.
+- [x] Screenshot: `img/screenshots/01-talk-transcript-panel.png` (a Talk call
+      with the transcript panel; made on a local Nextcloud with made-up users
+      and synthetic speech), listed in `appstore/info.xml` by its
+      raw.githubusercontent.com URL on `main`, as Cassini does. The URL
+      resolves only once the file is on `main`. Up to 10 are allowed; the Apps
+      page shows only the first.
 - [x] The store description in `appstore/info.xml` describes store mode: the
       panel's bookmark starts captions, logged-in users only, and the container
       limits are set after installation.
@@ -160,7 +160,7 @@ Stacked on this branch, not needed for the release:
 In this order:
 
 - [ ] Merge this branch to `main` (and, if they are to ship, the branches
-      stacked on it), with the screenshots.
+      stacked on it). The screenshot URL resolves from then on.
 - [ ] Run `image.yml` by hand on `main`; make the GHCR package public.
 - [ ] Cut the first pre-release on `main`:
       `./scripts/prepare-release.sh --bump minor --push` (0.11.0 →
