@@ -1,6 +1,6 @@
 # Known limitations
 
-What Cassini Live does not do, or does only partly, as of 0.11.0 and the first
+What Cassini Live does not do, or does only partly, as of 0.11.1 and the first
 App Store release (not yet published). Each entry says who it affects and the
 workaround, if there is one. Add an entry when a limitation is found; remove it
 in the pull request that lifts it.

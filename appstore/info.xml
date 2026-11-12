@@ -43,7 +43,7 @@ Nextcloud's Live Transcription app can stay installed; Talk's **Show captions** 
 ## Related
 
 Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
-  <version>0.11.0</version>
+  <version>0.11.1</version>
   <licence>agpl</licence>
   <author homepage="https://codemyriad.io">Codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -65,7 +65,7 @@ Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassi
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.11.0</image-tag>
+      <image-tag>0.11.1</image-tag>
     </docker-install>
     <environment-variables>
       <variable>

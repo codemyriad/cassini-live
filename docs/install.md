@@ -50,13 +50,13 @@ without them.
 For development, and until the first store release is published. The steps are
 those of the App Store install, except that the image is built locally and the
 app is registered from the manifest in the checkout. The image tag must match
-`appstore/info.xml`, here `ghcr.io/codemyriad/cassini-live:0.11.0`.
+`appstore/info.xml`, here `ghcr.io/codemyriad/cassini-live:0.11.1`.
 
 1. Check that Talk calls work through the HPB. Obtain the HPB's internal secret.
 2. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
-   docker build -t ghcr.io/codemyriad/cassini-live:0.11.0 .
+   docker build -t ghcr.io/codemyriad/cassini-live:0.11.1 .
    ```
 
 3. For a dedicated development daemon, configure AppAPI's local registry
