@@ -13,7 +13,16 @@ from nc_py_api import AsyncNextcloudApp
 from nc_py_api.ex_app import run_app, set_handlers
 from pydantic import BaseModel, Field, ValidationError
 
-from . import __version__, appapi, catalog, diagnostics_page, panel_page, settings_page, transcriber
+from . import (
+    __version__,
+    appapi,
+    catalog,
+    diagnostics_page,
+    home_page,
+    panel_page,
+    settings_page,
+    transcriber,
+)
 from .auth import SafeAppAPIAuthMiddleware
 from .call_access import ROOM_TOKEN, CallSessions, RateLimit
 from .capacity import CapacityAssessment
@@ -171,6 +180,7 @@ def create_app(
         generation = enable_generation
         await stop_discovery()
         if not enabled:
+            await home_page.unregister(nc)
             await manager.stop()
             if sync:
                 await sync.stop(final=DISABLED_NOTE)
@@ -179,9 +189,12 @@ def create_app(
             return ""
         if sync:
             await sync.start()
+        # Before discovery: the menu entry is how an administrator reaches the page
+        # that says what is still missing, so it must not wait for Talk.
+        await remove_legacy_page(nc)
+        await home_page.register(nc)
         try:
             await service.discover(nc)
-            await remove_legacy_page(nc)
             if generation != enable_generation:
                 return ""
             service.enabled = True
@@ -385,6 +398,7 @@ def create_app(
         settings_page.create_router(manager, status_body, service.talk, reconnect_talk)
     )
     app.include_router(panel_page.create_router(app_id))
+    app.include_router(home_page.create_router(app_id))
     app.include_router(
         diagnostics_page.create_router(
             service.diagnostic_feed, membership, service.diagnostics.status

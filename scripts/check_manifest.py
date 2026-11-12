@@ -70,13 +70,15 @@ def main():
         "^/?status$",
         "^/?history$",
         "^/?captions/transcribe$",
-        r"^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$",
+        r"^/?panel/panel\.js$",
+        r"^/?ui/home\.js$",
+        r"^/?img/app\.svg$",
     ]
     for pattern, verb, level in table:
         if pattern in user_patterns:
             assert level == "USER", pattern
-            if pattern.startswith("^/?panel/"):
-                assert verb == "GET", "the panel serves read-only static content"
+            if pattern.startswith(("^/?panel/", "^/?ui/", "^/?img/")):
+                assert verb == "GET", "the panel and the home page serve read-only static content"
             if pattern == "^/?captions/transcribe$":
                 assert verb == "POST", "the caption toggle is POST only"
         else:
@@ -96,13 +98,15 @@ def main():
 
     private = (
         "api/v1/call/transcribe", "api/v1/call/leave", "api/v1/call/set-language", "enabled",
-        "init", "capacity/check", "ui/live.js", "ui/live.css", "img/app.svg", "heartbeat",
+        "init", "capacity/check", "ui/live.js", "ui/live.css", "img/other.svg", "heartbeat",
     )
     for path in private:
         assert not matches(path), f"{path} must stay server-to-server"
     public = {
         "status": "GET",
         "captions/transcribe": "POST",
+        "ui/home.js": "GET",
+        "img/app.svg": "GET",
         "settings/index.html": "GET",
         "settings/app.js": "GET",
         "settings/app.css": "GET",

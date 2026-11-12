@@ -249,22 +249,24 @@ def test_capacity_check_waits_for_an_engine_switch(headers):
     assert response.status_code == 409
 
 
-def test_enable_removes_the_legacy_page_and_registers_no_menu(headers):
+def test_enable_removes_the_legacy_page_and_registers_the_home_entry(headers):
     app, service = make_app()
     service.discover = AsyncMock()
     nc = AsyncMock()
     nc.ui.top_menu.unregister.side_effect = OSError("Not registered")
     app.dependency_overrides[anc_app] = lambda: nc
     client = TestClient(app)
-    for path in ("/ui/live.js", "/ui/live.css", "/img/app.svg"):
+    for path in ("/ui/live.js", "/ui/live.css"):
         assert client.get(path, headers=headers).status_code == 404
     response = client.put("/enabled?enabled=true", headers=headers)
     assert response.json() == {"error": ""}
     assert service.enabled
     nc.ui.resources.delete_script.assert_awaited_once_with("top_menu", "live", "ui/live")
     nc.ui.top_menu.unregister.assert_awaited_once_with("live")
-    paths = [call.args[1] for call in nc.ocs.await_args_list]
-    assert not any("ui/top-menu" in p or "ui/script" in p for p in paths)
+    # 0.6.x's "live" page is gone; the home page (home_page.py) is the one menu entry.
+    nc.ui.top_menu.register.assert_awaited_once_with(
+        "home", "Cassini Live", "img/app.svg", admin_required=False
+    )
 
 
 def test_manifest_routes():

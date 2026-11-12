@@ -95,9 +95,9 @@ Changes in 0.10.0:
 Changes in 0.9.0:
 
 * New transcript panel for Talk calls, delivered as a bookmarklet and served by
-  the app at `/panel/` (any logged-in user): a scrollable, speaker-grouped live
-  transcript that also shows your own lines. Pick up the bookmarklet on
-  `/index.php/apps/app_api/proxy/cassini_live/panel/`. See [ui/](ui/).
+  the app (any logged-in user): a scrollable, speaker-grouped live
+  transcript that also shows your own lines. Pick up the bookmarklet on the
+  **Cassini Live** page in Nextcloud's app menu. See [ui/](ui/).
 
 Changes in 0.8.2:
 
@@ -175,7 +175,7 @@ uv run pytest -m 'not integration'
 
 For real recognition tests, run `uv run python scripts/prepare_model.py`, then
 `uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.11.0 .`.
+`docker build -t cassini-live:0.11.1 .`.
 
 To see what the transcript panel would have shown at any moment of a past
 meeting, replay one of Cassini's archived recordings through the pipeline and

@@ -1,6 +1,6 @@
 # Known limitations
 
-What Cassini Live does not do, or does only partly, as of 0.11.0 and the first
+What Cassini Live does not do, or does only partly, as of 0.11.1 and the first
 App Store release (not yet published). Each entry says who it affects and the
 workaround, if there is one. Add an entry when a limitation is found; remove it
 in the pull request that lifts it.
@@ -11,9 +11,10 @@ in the pull request that lifts it.
   that button only to Nextcloud's own Live Transcription app. People turn
   captions on from Cassini Live's transcript panel instead. If Nextcloud's
   app is also installed, Talk's button keeps driving it.
-- **Each person adds the transcript panel once per browser.** It
-  is a bookmarklet, picked up at
-  `/index.php/apps/app_api/proxy/cassini_live/panel/`.
+- **Each person adds the transcript panel once per browser.** It is a bookmark
+  ("Live transcript"), dragged to the bookmarks bar from the **Cassini Live**
+  page in Nextcloud's app menu. Phones and tablets cannot drag it: there the
+  page offers to copy it, to paste as a new bookmark's address.
 - **Guests cannot start or stop captions, or open the transcript panel.** The
   panel and its routes need a Nextcloud login, so people who joined from a
   public link are left out. Workaround: a logged-in participant turns captions
