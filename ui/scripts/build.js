@@ -1,13 +1,13 @@
 /**
- * Build the panel bundle and both bookmarklet flavours, and the diagnostics
- * page, and stage the files the ExApp serves (cassini_live/static/).
+ * Build the panel bundle and both bookmarklet flavours, the home page and the
+ * diagnostics page, and stage the files the ExApp serves (cassini_live/static/).
  *
  * Outputs:
  *   dist/panel.js                 minified IIFE bundle (also ExApp-served)
  *   dist/bookmarklet-inline.txt   whole bundle as one javascript: URL
  *   dist/bookmarklet-loader.txt   nonce loader as a javascript: URL
  *   dist/diagnostics/{index.html,app.js,app.css}   for the fixture server
- *   ../cassini_live/static/panel/{panel.js,index.html,install.js,install.css}
+ *   ../cassini_live/static/panel/panel.js
  *   ../cassini_live/static/diagnostics/{index.html,app.js,app.css}
  *   dist/home.js and ../cassini_live/static/home/home.js   the app-menu home page
  *
@@ -70,16 +70,6 @@ const panelJs = banner + panelBundle
 const inlineBookmarklet = toBookmarklet(await squeeze(panelBundle)) + '\n'
 const loaderBookmarklet = toBookmarklet(await squeeze(loaderBundle)) + '\n'
 
-const installJs = [
-  banner,
-  `window.CASSINI_LIVE_BOOKMARKLETS = {`,
-  `  version: ${JSON.stringify(pkg.version)},`,
-  `  loader: ${JSON.stringify(loaderBookmarklet.trim())},`,
-  `  inline: ${JSON.stringify(inlineBookmarklet.trim())},`,
-  `};`,
-  await readFile(join(uiRoot, 'src', 'install-page.js'), 'utf8'),
-].join('\n')
-
 // The home page (the app-menu entry) carries the loader bookmarklet as the address
 // of its "Live transcript" bookmark.
 const homeJs =
@@ -87,9 +77,6 @@ const homeJs =
   (await bundle('src/home/main.js', {
     define: { __CASSINI_LIVE_LOADER__: JSON.stringify(loaderBookmarklet.trim()) },
   }))
-
-const installHtml = await readFile(join(uiRoot, 'src', 'install-page.html'), 'utf8')
-const installCss = await readFile(join(uiRoot, 'src', 'install-page.css'), 'utf8')
 
 const diagnosticsBanner = `/* Cassini Live diagnostics page v${pkg.version} — https://github.com/codemyriad/cassini-live */\n`
 const diagnosticsJs = diagnosticsBanner + (await bundle('src/diagnostics/main.js'))
@@ -106,9 +93,6 @@ const diagnostics = [
 // `--check` judges only the committed set.
 const committed = [
   [join(staticPanelDir, 'panel.js'), panelJs],
-  [join(staticPanelDir, 'install.js'), installJs],
-  [join(staticPanelDir, 'install.css'), installCss],
-  [join(staticPanelDir, 'index.html'), installHtml],
   [join(staticHomeDir, 'home.js'), homeJs],
   ...diagnostics.map(([name, content]) => [join(staticDiagnosticsDir, name), content]),
 ]

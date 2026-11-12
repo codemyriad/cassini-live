@@ -70,7 +70,7 @@ def main():
         "^/?status$",
         "^/?history$",
         "^/?captions/transcribe$",
-        r"^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$",
+        r"^/?panel/panel\.js$",
         r"^/?ui/home\.js$",
         r"^/?img/app\.svg$",
     ]

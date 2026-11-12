@@ -12,20 +12,20 @@ without clicking the CC button.
 
 ## How it reaches the page
 
-Talk pages ship a strict CSP, so the panel arrives one of two ways:
+Talk pages ship a strict CSP, so the panel arrives through a bookmarklet: the
+"Live transcript" bookmark. It is a ~0.6 KB `javascript:` URL that reads the
+page's CSP nonce and injects `<script src>` for the bundle this app serves at
+`…/apps/app_api/proxy/cassini_live/panel/panel.js`. Same-origin, so the script
+load passes `script-src 'nonce-…' 'strict-dynamic'` and future panel fetches
+stay inside `connect-src 'self'`. Users add it once; the panel updates with the
+app.
 
-- **Loader bookmarklet (default).** A ~0.6 KB `javascript:` URL that reads the
-  page's CSP nonce and injects `<script src>` for the bundle this app serves at
-  `…/apps/app_api/proxy/cassini_live/panel/panel.js`. Same-origin, so the
-  script load passes `script-src 'nonce-…' 'strict-dynamic'` and future panel
-  fetches stay inside `connect-src 'self'`. Users drag it once; the panel
-  updates with the app.
-- **Standalone bookmarklet.** The whole bundle in one `javascript:` URL
-  (~12 KB). No loading step and no dependency on this app being reachable, at
-  the cost of being frozen at the copied version.
+People pick the bookmark up on the **Cassini Live** page in Nextcloud's app
+menu (`src/home/`).
 
-People pick both up on the install page the app serves at
-`/index.php/apps/app_api/proxy/cassini_live/panel/`.
+The build also writes the whole bundle as one `javascript:` URL,
+`dist/bookmarklet-inline.txt` (~20 KB). The app does not serve it; it is for
+tests and for trying the panel against the fixture server.
 
 ## How it gets the words
 
@@ -100,7 +100,8 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
   `window.__CASSINI_LIVE_PANEL__` (destroy, injectTranscript, attached).
 - `src/loader.js` — the loader bookmarklet source.
 - `scripts/build.js` — builds `dist/` and stages the served files into
-  `../cassini_live/static/panel/` and `../cassini_live/static/diagnostics/`
+  `../cassini_live/static/panel/`, `../cassini_live/static/home/` and
+  `../cassini_live/static/diagnostics/`
   (committed; `--check` fails when stale).
 
 ## Diagnostics page

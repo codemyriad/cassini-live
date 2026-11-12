@@ -118,8 +118,8 @@ Everything here is done.
       panel's bookmark starts captions, logged-in users only, and the container
       limits are set after installation.
 - [x] `docs/install.md` (the store's admin documentation link) starts with the
-      App Store install, and the README, the panel's install page and the other
-      docs name only `cassini_live`.
+      App Store install, and the README and the other docs name only
+      `cassini_live`.
 
 Stacked on this branch, not needed for the release:
 

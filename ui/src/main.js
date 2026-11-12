@@ -8,8 +8,8 @@
  *   - panel already mounted → tear it down (the bookmarklet is its own off
  *     switch, like the waveforms one)
  *
- * The public API lives on window.__CASSINI_LIVE_PANEL__ so tests, the
- * install page and curious people can drive it:
+ * The public API lives on window.__CASSINI_LIVE_PANEL__ so tests and
+ * curious people can drive it:
  *
  *   __CASSINI_LIVE_PANEL__.destroy()               tear down
  *   __CASSINI_LIVE_PANEL__.injectTranscript(evt)   feed one event through the

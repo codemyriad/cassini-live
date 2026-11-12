@@ -35,7 +35,7 @@ python3 scripts/dev_harness.py
 
 Use the links printed by the script. Join a Talk call with another participant
 and turn on captions in the call menu. The transcript panel requires the
-bookmarklet from the printed panel link.
+bookmark from the printed Cassini Live page.
 
 `--check-only` performs read-only configuration, harness and ownership checks;
 it does not build, deploy, or test the supplied HPB credential. A full run checks
