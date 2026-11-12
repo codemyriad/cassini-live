@@ -8,8 +8,17 @@
        everything below <dependencies> identical in both files. -->
   <id>cassini_live</id>
   <name>Cassini Live</name>
-  <summary>Private live captions for Nextcloud Talk, with a choice of speech engines.</summary>
-  <description><![CDATA[Follow a Talk call in real time with live captions, in a transcript panel beside the call. Audio and captions stay on your infrastructure: no account, API key, GPU, recording or saved transcript.
+  <summary>Private live captions for Nextcloud Talk, recognised on your own server. Early release.</summary>
+  <description><![CDATA[Live captions for Talk calls, recognised on your own server and shown in a transcript panel beside the call. Audio and captions stay on your infrastructure: no account, API key, GPU, recording or saved transcript.
+
+## An early release
+
+Cassini Live is a work in progress, and it is not yet a native part of Talk. Talk connects its **Show captions** button to one fixed app, Nextcloud's own Live Transcription, and no other app can take that place. So Cassini Live works beside Talk:
+
+- **In the browser**, it adds its own transcript panel to the Talk page. Each person opens it from a bookmark, and captions start from there, not from Talk's button.
+- **On the server**, it listens to the call through Talk's High-performance backend, recognises the speech and delivers the captions.
+
+Expect rough edges. Please read the [known limitations](https://github.com/codemyriad/cassini-live/blob/main/docs/known-limitations.md) before you install. Feedback is welcome and decides what we fix first: tell us what works and what doesn't in [GitHub issues](https://github.com/codemyriad/cassini-live/issues).
 
 ## What you get
 
@@ -21,9 +30,9 @@
 
 ## Turning captions on
 
-People turn captions on from Cassini Live's transcript panel. Each person adds it to their browser once, as a bookmark from `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud. In a Talk call, a click on the bookmark opens the panel and starts captions for that person. This needs a Nextcloud login: guests can't start captions or open the panel.
+Each person adds the transcript panel to their browser once, as a bookmark from `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud. In a Talk call, a click on the bookmark opens the panel and starts captions for that person. This needs a Nextcloud login: guests can't start captions or open the panel.
 
-Talk's own **Show captions** button does not drive Cassini Live. Talk sends it only to Nextcloud's own Live Transcription app. The two apps can be installed together; Talk's button keeps driving Nextcloud's app.
+Nextcloud's Live Transcription app can stay installed; Talk's **Show captions** button keeps driving it.
 
 ## Requirements
 
@@ -31,11 +40,9 @@ Talk's own **Show captions** button does not drive Cassini Live. Talk sends it o
 - The HPB internal secret, entered once after installation on Cassini Live's settings page (Administration settings > Assistant, then ? next to Cassini Live). Its URL is discovered from Talk.
 - Linux with cgroup v2, and CPU, memory and PID limits set on the container (`nc_app_cassini_live`) after installation: until then Cassini Live loads no engine. The [installation guide](https://github.com/codemyriad/cassini-live/blob/main/docs/install.md) has the commands. Whistle needs about 2 GiB of container memory; Nemotron 2.25-3 GiB, and twice that on the host.
 
-More in the [known limitations](https://github.com/codemyriad/cassini-live/blob/main/docs/known-limitations.md).
+## Related
 
-## Support
-
-Questions and bugs: [GitHub issues](https://github.com/codemyriad/cassini-live/issues). Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
+Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
   <version>0.11.0</version>
   <licence>agpl</licence>
   <author homepage="https://codemyriad.io">Codemyriad</author>
