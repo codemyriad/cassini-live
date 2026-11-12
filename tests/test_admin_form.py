@@ -181,7 +181,7 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
         (
             "nemotron-multilingual",
             {},
-            "Nemotron Multilingual — available · 7 languages, 0.42 GiB download",
+            "Nemotron Multilingual — available · 7 languages, 0.43 GiB download",
         ),
         (
             "nemotron-multilingual",
@@ -189,7 +189,7 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
                 "nemotron-multilingual", model={"state": "partial"}, advisory=True,
                 reasons=ADVISORY,
             )}},
-            "Nemotron Multilingual — available · 7 languages, 0.42 GiB download · warning",
+            "Nemotron Multilingual — available · 7 languages, 0.43 GiB download · warning",
         ),
         (
             "nemotron-en",

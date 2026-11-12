@@ -91,10 +91,10 @@ def test_license_files_and_exact_notices():
 
 
 REFERENCE = ROOT / "local/stt-eval/models"
-# The unpacked sherpa-onnx release archives the dist objects were made from.
+# Local reference copies matching the dist.gocassini.com model IDs pinned in catalog.py.
 REFERENCE_DIRS = {
-    "nemotron-en": "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25",
-    "nemotron-multilingual": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
+    "nemotron-en": "nemotron-speech-streaming-en-0.6b-int8-v2",
+    "nemotron-multilingual": "nemotron-3.5-asr-streaming-0.6b-int8-v2",
 }
 
 

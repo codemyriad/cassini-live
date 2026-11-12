@@ -38,7 +38,7 @@ reports what it would do under `resourceSafety.admission` in `/status`.
   Spanish, Italian, Dutch and Polish. Broad accuracy testing across these
   languages is still missing.
 * Two optional NVIDIA Nemotron engines are more accurate on our English
-  meetings (8.9% and 12.8% word errors, against 19% for Whistle). Nemotron
+  meetings (8.6% and 12.8% word errors, against 19% for Whistle). Nemotron
   English is English only; Nemotron Multilingual covers the same seven
   languages. Each needs 2.25-3 GiB of container memory and twice that on the
   host. They are not in the image: Cassini Live downloads one (about 450 MiB)
