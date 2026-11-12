@@ -5,8 +5,8 @@ where each item stands as of 2026-11-12. The release mechanics are in
 [release.md](release.md). Tick items here as they land.
 
 In short: the code is ready; the certificate is
-requested and not yet issued; the GitHub and store setup in section 4 is not
-done; nothing has been released.
+requested and not yet issued; of the setup in section 4, what does not need
+the certificate is mostly done; nothing has been released.
 
 Cassini (`gocassini`) went through the same steps: its first App Store release
 was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
@@ -135,18 +135,19 @@ Stacked on this branch, not needed for the release:
 - [x] Open a PR with `cassini_live.csr` to
       [nextcloud/app-certificate-requests](https://github.com/nextcloud/app-certificate-requests):
       [#1437](https://github.com/nextcloud/app-certificate-requests/pull/1437).
-- [ ] Receive the signed `cassini_live.crt` (a manual review). The PR is open,
-      with no review yet. Everything below that needs the certificate waits
-      for this.
+- [ ] Receive the signed `cassini_live.crt` (a manual review). The reviewer
+      requested changes on the PR: its description must keep the template's AI
+      disclosure section, filled in. Everything below that needs the
+      certificate waits for this.
 - [ ] Register the app on apps.nextcloud.com (**Register app**) with the
       certificate and `./scripts/appstore-keys.sh register-signature <key>`.
       Needs the certificate.
-- [ ] Create an App Store API token for the account that owns the app.
-- [ ] GitHub: create the `Release` environment with required reviewers. Can be
-      done now.
-- [ ] GitHub: add the secrets `APP_PRIVATE_KEY`, `APP_PUBLIC_CRT`,
-      `APPSTORE_TOKEN` to that environment (all environment secrets; Cassini
-      keeps two at repo level). Needs the certificate and the token.
+- [x] App Store API token: the token belongs to the store account, not to an
+      app, so the release account's existing token is used.
+- [x] GitHub: the `Release` environment exists, set up as Cassini's: required
+      reviewers, deployments from `main` and `v*` tags.
+- [x] GitHub: `APP_PRIVATE_KEY` and `APPSTORE_TOKEN` are in that environment.
+- [ ] GitHub: add `APP_PUBLIC_CRT` to that environment. Needs the certificate.
 - [ ] GitHub: add the `skip-changelog` label. Can be done now.
 - [ ] GHCR: make `ghcr.io/codemyriad/cassini-live` public after its first
       push; AppAPI pulls without credentials. The package does not exist yet:
