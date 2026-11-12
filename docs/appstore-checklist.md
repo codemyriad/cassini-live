@@ -38,7 +38,7 @@ was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
       arm64, each built and smoke-tested natively) after checking the tag equals the version and sits on its branch; a
       manual run pushes only `:sha-<commit>`.
 - [x] `.github/workflows/release.yml`: validate, unsigned package, then one
-      approval in the `release` environment; waits for the image, signs,
+      approval in the `Release` environment; waits for the image, signs,
       creates the GitHub release, posts to apps.nextcloud.com.
 - [x] `check.yml` gains a `release-tooling` job: shellcheck, the scripts' tests,
       an unsigned package built and validated. `scripts/package.py` (the old
@@ -49,7 +49,7 @@ Verified locally: `./scripts/test-release-tooling.sh` 168/168 (the store-schema
 steps through lxml stand-ins for `xmllint`/`xsltproc`), shellcheck clean,
 `check_manifest.py` passes; `check.yml`, with its `release-tooling` job, passes
 in CI on this branch. **Not verified:** `image.yml` and `release.yml` have never
-run (they need the branch on `main`, and `release.yml` the `release`
+run (they need the branch on `main`, and `release.yml` the `Release`
 environment); `occ-nextcloud.sh` signing ran only with a stand-in key, in the
 local store rehearsal.
 
@@ -142,7 +142,7 @@ Stacked on this branch, not needed for the release:
       certificate and `./scripts/appstore-keys.sh register-signature <key>`.
       Needs the certificate.
 - [ ] Create an App Store API token for the account that owns the app.
-- [ ] GitHub: create the `release` environment with required reviewers. Can be
+- [ ] GitHub: create the `Release` environment with required reviewers. Can be
       done now.
 - [ ] GitHub: add the secrets `APP_PRIVATE_KEY`, `APP_PUBLIC_CRT`,
       `APPSTORE_TOKEN` to that environment (all environment secrets; Cassini
@@ -166,7 +166,7 @@ In this order:
       `./scripts/prepare-release.sh --bump minor --push` (0.11.0 →
       0.12.0-alpha.1). It folds the changelog fragments and pushes the tag,
       which starts `image.yml` and `release.yml`; `release.yml` then waits
-      for approval in the `release` environment.
+      for approval in the `Release` environment.
 - [ ] Before approving, rehearse with a manual `release.yml` run on that tag
       with `dry_run=true`. Then approve.
 - [ ] Install from the store on a clean Nextcloud 33, 34 and 35 with HaRP; run

@@ -74,7 +74,7 @@ your machine. The tag push starts two workflows:
    multi-arch image. A manual run of it pushes only `:sha-<commit>`, never a
    version.
 2. `release.yml` validates the tag and both manifests, builds and validates an
-   unsigned package, then waits for **one approval** in the `release`
+   unsigned package, then waits for **one approval** in the `Release`
    environment. After approval it waits for the image, signs the package with
    `occ integrity:sign-app` in a throwaway Nextcloud container, creates the
    GitHub release with the package attached, and posts it to
@@ -91,10 +91,12 @@ Changes are captured per pull request as fragments in
 one (or the `skip-changelog` label) on any PR that changes shipping files.
 `prepare-release.sh` folds them into `CHANGELOG.md`.
 
-## The `release` environment (one-time setup)
+## The `Release` environment (one-time setup)
 
-**Settings → Environments → `release`**, with **required reviewers** and these
-environment secrets:
+**Settings → Environments → `Release`**, set up as Cassini's environment of the
+same name: **required reviewers** (any one approves; the person who cut the
+release may), and deployments limited to the branch `main` and tags `v*`. These
+are its environment secrets:
 
 | Secret | What |
 |---|---|

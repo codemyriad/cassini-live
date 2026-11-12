@@ -13,7 +13,7 @@
 #     store (publish_appstore), or rehearse with dry_run.
 #
 # Flow: validate -> package (unsigned candidate) -> publish. `publish` is the
-# single `release`-environment job, so the signed release + store push pause for
+# single `Release`-environment job, so the signed release + store push pause for
 # ONE approval; declining it aborts the release (the image still builds).
 #
 # The packaged manifest is appstore/info.xml, under the store app id
@@ -158,9 +158,9 @@ jobs:
     needs: [validate, package]
     if: needs.validate.outputs.dry_run != 'true'
     # The single gated job: signing keys and the App Store token live in the
-    # protected `release` environment, so the whole signed release + store push
+    # protected `Release` environment, so the whole signed release + store push
     # pauses for ONE approval here.
-    environment: release
+    environment: Release
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       TAG: ${{ needs.validate.outputs.tag }}
