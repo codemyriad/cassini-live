@@ -50,8 +50,8 @@ Questions and bugs: [GitHub issues](https://github.com/codemyriad/cassini-live/i
   <repository type="git">https://github.com/codemyriad/cassini-live</repository>
   <!-- Store screenshots: HTTPS, at most 10, at most 2 MiB each. The store fetches
        these URLs at listing time; they are not in the package. The files are in
-       img/screenshots/ and are served from main, so a URL resolves once its file
-       is on main. The Apps page shows only the first. -->
+       img/screenshots/ and are served from main, so a file must be on main before
+       its URL is listed here. The Apps page shows only the first. -->
   <screenshot>https://raw.githubusercontent.com/codemyriad/cassini-live/main/img/screenshots/01-talk-transcript-panel.png</screenshot>
   <dependencies><nextcloud min-version="33" max-version="35"/></dependencies>
   <external-app>

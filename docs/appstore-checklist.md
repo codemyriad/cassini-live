@@ -111,8 +111,8 @@ Everything here is done.
 - [x] Screenshot: `img/screenshots/01-talk-transcript-panel.png` (a Talk call
       with the transcript panel; made on a local Nextcloud with made-up users
       and synthetic speech), listed in `appstore/info.xml` by its
-      raw.githubusercontent.com URL on `main`, as Cassini does. The URL
-      resolves only once the file is on `main`. Up to 10 are allowed; the Apps
+      raw.githubusercontent.com URL on `main`, as Cassini does. The file is on
+      `main` (PR #15) and the URL resolves. Up to 10 are allowed; the Apps
       page shows only the first.
 - [x] The store description in `appstore/info.xml` describes store mode: the
       panel's bookmark starts captions, logged-in users only, and the container
@@ -160,7 +160,7 @@ Stacked on this branch, not needed for the release:
 In this order:
 
 - [ ] Merge this branch to `main` (and, if they are to ship, the branches
-      stacked on it). The screenshot URL resolves from then on.
+      stacked on it).
 - [ ] Run `image.yml` by hand on `main`; make the GHCR package public.
 - [ ] Cut the first pre-release on `main`:
       `./scripts/prepare-release.sh --bump minor --push` (0.11.0 →
