@@ -86,7 +86,7 @@ test('the clock plays at a speed, pauses, seeks and stops at the end', async () 
 
 test('mounts the panel as a Talk sidebar tab and shows the state at time zero', async ({ page }) => {
   const enabled = page.waitForResponse((response) =>
-    response.url().endsWith('/live-transcription/replay') && response.request().method() === 'POST')
+    response.url().endsWith('/captions/transcribe') && response.request().method() === 'POST')
   await page.goto(url('?as=alice'))
   expect((await enabled).status()).toBe(200)
   await expect.poll(() => page.evaluate(() => window.__CASSINI_LIVE_PANEL__?.attached)).toBe(true)

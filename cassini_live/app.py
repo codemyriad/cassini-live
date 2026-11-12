@@ -2,17 +2,20 @@
 
 import asyncio
 import logging
+import math
 import os
 from contextlib import asynccontextmanager, suppress
 from typing import Literal
 
 from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from nc_py_api import AsyncNextcloudApp
 from nc_py_api.ex_app import run_app, set_handlers
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from . import __version__, catalog, diagnostics_page, panel_page, settings_page, transcriber
+from . import __version__, appapi, catalog, diagnostics_page, panel_page, settings_page, transcriber
 from .auth import SafeAppAPIAuthMiddleware
+from .call_access import ROOM_TOKEN, CallSessions, RateLimit
 from .capacity import CapacityAssessment
 from .config import Config, state_dir
 from .eligibility import NetworkProbe
@@ -26,6 +29,7 @@ from .service import CaptionService
 from .settings import SettingsStore
 from .settings_sync import SettingsSync
 from .talk.types import SpreedClientException, VoskException
+from .talk_setup import SECRET_MISSING, TalkSetup
 
 LOGGER = logging.getLogger(__name__)
 Language = Literal["auto", "en", "de", "fr", "es", "it", "nl", "pl"]
@@ -53,15 +57,22 @@ def create_app(
     nc_factory=AsyncNextcloudApp,
     safety_factory=SafetyController,
     discovery_delay=15,
+    app_id=None,
 ):
     config = config or Config.from_env()
+    # The one read of the app id (see appapi): everything below gets it passed in.
+    app_id = app_id or appapi.app_id_from_env()
     # Production wiring builds its own pool; tests inject one and get no settings sync.
     production = pool is None
     pool = pool or WorkerPool(config.workers, config.weights)
-    service = service or CaptionService(config)
+    storage = state_dir()
+    if service is None:
+        # The HPB secret and URL: deploy options first, then the settings page's file.
+        talk_file = storage / "cassini-live-talk.json" if production else None
+        talk = TalkSetup.from_config(config, talk_file)
+        service = CaptionService(config, talk=talk)
     assessment = CapacityAssessment(pool)
     safety = safety_factory(pool, assessment, service)
-    storage = state_dir()
     if safety_factory is SafetyController:
         safety.journal = RecoveryJournal(storage / "cassini-live-recovery.json")
     service.admission = safety
@@ -69,8 +80,9 @@ def create_app(
         safety,
         service,
         config,
-        ModelStore(storage / "models" if production else None,
-                   calls_active=lambda: bool(safety.tracks)),
+        ModelStore(
+            storage / "models" if production else None, calls_active=lambda: bool(safety.tracks)
+        ),
         SettingsStore(storage / "cassini-live-settings.json" if production else None),
         probe=NetworkProbe() if production else None,
     )
@@ -78,6 +90,9 @@ def create_app(
     call_starts = 0
     # A measurement must not start while a call's captions are being set up.
     manager.calls_starting = lambda: call_starts
+    # The panel's start/stop route: Talk's checks, asked of Talk as the caller.
+    call_sessions = CallSessions(nc_factory)
+    caption_toggles = RateLimit()
     discovery_task = None
     enable_generation = 0
 
@@ -99,9 +114,9 @@ def create_app(
         while True:
             safety.state, safety.phase = "recovering", "waiting_talk"
             safety.reason = "Waiting for Nextcloud and Talk; connection will retry automatically"
-            if not config.secret:
+            if not service.talk.secret()[0]:
                 safety.state, safety.phase = "blocked", "configuration"
-                safety.reason = "Configure the Talk HPB internal secret in deploy options"
+                safety.reason = SECRET_MISSING
                 safety.admin_action = True
             await asyncio.sleep(delay)
             try:
@@ -119,6 +134,28 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await discovery_task
             discovery_task = None
+
+    async def reconnect_talk():
+        """After the settings page changed the HPB secret or URL: discover again now rather
+        than at the next retry, then check that the HPB accepts the secret. Rooms already
+        captioned keep their connection; new rooms use the new values."""
+        nonlocal discovery_task
+        await stop_discovery()
+        try:
+            async with asyncio.timeout(10):
+                await service.discover(nc_factory())
+        except Exception as error:
+            service.enabled = False
+            service.settings = None
+            LOGGER.warning(
+                "Talk is not ready after the HPB setting changed (%s)", type(error).__name__
+            )
+            discovery_task = asyncio.create_task(retry_connection())
+            return
+        service.enabled = True
+        await service.check_hpb()
+        if not safety.desired_enabled:
+            discovery_task = asyncio.create_task(manager.start_safety())
 
     async def remove_legacy_page(nc):
         # 0.6.x registered a menu page; the engine choice now lives in admin settings.
@@ -165,8 +202,12 @@ def create_app(
         nonlocal discovery_task
         if not os.environ.get("APP_SECRET"):
             raise RuntimeError("APP_SECRET is required; register Cassini Live through AppAPI")
-        if os.environ.get("APP_ID") != "live_transcription":
-            raise RuntimeError("Talk requires APP_ID=live_transcription")
+        if not appapi.is_talk_provider(app_id):
+            LOGGER.info(
+                "Registered as %s: Talk's caption button does not reach this app; "
+                "captions start from the transcript panel",
+                app_id,
+            )
         transcriber.POOL = pool
         try:
             if production:
@@ -190,7 +231,7 @@ def create_app(
     app = FastAPI(
         title="Cassini Live", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
     )
-    app.add_middleware(SafeAppAPIAuthMiddleware)
+    app.add_middleware(SafeAppAPIAuthMiddleware, app_id=app_id)
     set_handlers(app, enabled_handler, map_app_static=False)
     app.state.pool = pool
     app.state.service = service
@@ -208,6 +249,7 @@ def create_app(
 
     @app.get("/capabilities")
     async def capabilities():
+        # Talk's capability and feature names for a caption provider, not an app id.
         return {
             "live_transcription": {
                 "version": __version__,
@@ -226,6 +268,46 @@ def create_app(
 
     @app.post("/api/v1/call/transcribe")
     async def transcribe_call(req: TranscribeRequest, request: Request):
+        # Talk, server to server, after it authorized its caption button (native mode).
+        return await transcribe(req, request.scope.get("username") or None)
+
+    @app.post("/captions/transcribe")
+    async def transcribe_from_panel(request: Request):
+        # The transcript panel, through the AppAPI proxy (USER), with the body Talk would
+        # have sent: for app ids Talk's caption button does not reach. AppAPI checked
+        # only that the caller is logged in; call_access re-checks what Talk would have.
+        username = request.scope.get("username") or ""
+        if not username:
+            raise HTTPException(403, "Turn captions on from Nextcloud")
+        try:
+            data = await settings_page.require_same_origin(request)
+        except settings_page.Refused as refused:
+            raise HTTPException(refused.status, str(refused)) from None
+        try:
+            req = TranscribeRequest.model_validate(data)
+        except ValidationError as error:
+            raise RequestValidationError(error.errors()) from None
+        if not ROOM_TOKEN.fullmatch(req.roomToken):
+            raise HTTPException(400, "Invalid room token")
+        retry = caption_toggles.retry_after(username)
+        if retry:
+            raise HTTPException(
+                429,
+                "Too many caption requests; try again shortly",
+                headers={"Retry-After": str(max(1, math.ceil(retry)))},
+            )
+        if not await call_sessions.may_toggle(
+            username, req.roomToken, req.ncSessionId, req.enable
+        ):
+            raise HTTPException(
+                403,
+                "Join the call to turn captions on"
+                if req.enable
+                else "Not your session in this call",
+            )
+        return await transcribe(req, username)
+
+    async def transcribe(req: TranscribeRequest, username: str | None):
         nonlocal call_starts
         require_enabled()
         if req.translationTargetLangId:
@@ -254,7 +336,7 @@ def create_app(
         # id and are skipped.
         client = getattr(service, "clients", {}).get(req.roomToken)
         if req.enable and client is not None and hasattr(client, "note_user"):
-            client.note_user(request.scope.get("username") or None)
+            client.note_user(username)
         return {"message": "Captions enabled" if req.enable else "Captions disabled"}
 
     @app.post("/api/v1/call/set-language")
@@ -299,15 +381,19 @@ def create_app(
         }
 
     membership = RoomMembership(nc_factory)
-    app.include_router(settings_page.create_router(manager, status_body))
-    app.include_router(panel_page.create_router())
+    app.include_router(
+        settings_page.create_router(manager, status_body, service.talk, reconnect_talk)
+    )
+    app.include_router(panel_page.create_router(app_id))
     app.include_router(
         diagnostics_page.create_router(
             service.diagnostic_feed, membership, service.diagnostics.status
         )
     )
     if production:
-        sync = SettingsSync(manager, nc_factory, status_body, page_url=settings_page.page_url())
+        sync = SettingsSync(
+            manager, nc_factory, status_body, page_url=settings_page.page_url(app_id)
+        )
 
     @app.get("/status")
     async def status():

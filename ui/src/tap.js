@@ -102,6 +102,9 @@ export function createTap({ onFinal, onPartial, onStatus }) {
   }
 
   const callToken = () => readConn('currentCallToken')
+  // Talk's Nextcloud session id for this tab (what its participant list calls
+  // sessionIds), set when the room is joined; ownSessionId() is the HPB one.
+  const nextcloudSessionId = () => readConn('nextcloudSessionId')
 
   function destroy() {
     stopped = true
@@ -117,6 +120,7 @@ export function createTap({ onFinal, onPartial, onStatus }) {
     ownSessionId,
     roomToken,
     callToken,
+    nextcloudSessionId,
     get attached() {
       return connection !== null
     },

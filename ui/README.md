@@ -16,7 +16,7 @@ Talk pages ship a strict CSP, so the panel arrives one of two ways:
 
 - **Loader bookmarklet (default).** A ~0.6 KB `javascript:` URL that reads the
   page's CSP nonce and injects `<script src>` for the bundle this app serves at
-  `…/apps/app_api/proxy/live_transcription/panel/panel.js`. Same-origin, so the
+  `…/apps/app_api/proxy/cassini_live/panel/panel.js`. Same-origin, so the
   script load passes `script-src 'nonce-…' 'strict-dynamic'` and future panel
   fetches stay inside `connect-src 'self'`. Users drag it once; the panel
   updates with the app.
@@ -25,7 +25,7 @@ Talk pages ship a strict CSP, so the panel arrives one of two ways:
   the cost of being frozen at the copied version.
 
 People pick both up on the install page the app serves at
-`/index.php/apps/app_api/proxy/live_transcription/panel/`.
+`/index.php/apps/app_api/proxy/cassini_live/panel/`.
 
 ## How it gets the words
 
@@ -108,7 +108,7 @@ roster → peer `nick` → `nick` events → participant card DOM → shortened 
 The package builds three bundles: the panel (`src/main.js`), its loader
 bookmarklet (`src/loader.js`) and the administrators' live diagnostics page
 (`src/diagnostics/main.js`). The page is a plain static page the app serves at
-`…/apps/app_api/proxy/live_transcription/diagnostics/` (ADMIN), under the
+`…/apps/app_api/proxy/cassini_live/diagnostics/` (ADMIN), under the
 settings page's CSP (`script-src 'self'; style-src 'self'`): no inline styles,
 sizes through CSSOM. It polls `api/feed` a second after each answer and draws
 the diagnostic video's two views from the samples and history columns. See

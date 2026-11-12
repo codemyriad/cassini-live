@@ -1,0 +1,125 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+  <!-- The App Store manifest. scripts/build-appstore-tarball.sh packages this file
+       as appinfo/info.xml. appinfo/info.xml next to it is the native drop-in that
+       registers by hand as Talk's hardcoded live_transcription; the store id can't
+       be that one (Nextcloud's own ExApp owns it). scripts/check_manifest.py keeps
+       everything below <dependencies> identical in both files. -->
+  <id>cassini_live</id>
+  <name>Cassini Live</name>
+  <summary>Private live captions for Nextcloud Talk, recognised on your own server. Early release.</summary>
+  <description><![CDATA[Live captions for Talk calls, recognised on your own server and shown in a transcript panel beside the call. Audio and captions stay on your infrastructure: no account, API key, GPU, recording or saved transcript.
+
+## An early release
+
+Cassini Live is a work in progress, and it is not yet a native part of Talk. Talk connects its **Show captions** button to one fixed app, Nextcloud's own Live Transcription, and no other app can take that place. So Cassini Live works beside Talk:
+
+- **In the browser**, it adds its own transcript panel to the Talk page. Each person opens it from a bookmark, and captions start from there, not from Talk's button.
+- **On the server**, it listens to the call through Talk's High-performance backend, recognises the speech and delivers the captions.
+
+Expect rough edges. Please read the [known limitations](https://github.com/codemyriad/cassini-live/blob/main/docs/known-limitations.md) before you install. Feedback is welcome and decides what we fix first: tell us what works and what doesn't in [GitHub issues](https://github.com/codemyriad/cassini-live/issues).
+
+## What you get
+
+- **Live captions with names.** Each speaker's words appear under their Talk name, including your own.
+- **A transcript panel in the call sidebar.** Scroll back through the call; people who join late see what was said before they arrived. Nothing is saved once the call's captions end.
+- **Seven languages on a CPU.** Whistle, bundled, recognises English, German, French, Spanish, Italian, Dutch and Polish, with automatic language detection.
+- **More accurate engines on request.** Administrators can switch the server to Nemotron English (NVIDIA Open Model License) or Nemotron Multilingual (OpenMDW-1.1). Their models are downloaded from dist.gocassini.com when chosen, not shipped in the image.
+- **Safe under load.** Cassini Live needs enforced CPU, memory and process limits, and captions fewer speakers rather than everyone late when the server can't keep up.
+
+## Turning captions on
+
+Each person adds the transcript panel to their browser once, as a bookmark from `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud. In a Talk call, a click on the bookmark opens the panel and starts captions for that person. This needs a Nextcloud login: guests can't start captions or open the panel.
+
+Nextcloud's Live Transcription app can stay installed; Talk's **Show captions** button keeps driving it.
+
+## Requirements
+
+- Nextcloud 33 to 35 with Talk's High-performance backend, AppAPI and a deploy daemon.
+- The HPB internal secret, entered once after installation on Cassini Live's settings page (Administration settings > Assistant, then ? next to Cassini Live). Its URL is discovered from Talk.
+- Linux with cgroup v2, and CPU, memory and PID limits set on the container (`nc_app_cassini_live`) after installation: until then Cassini Live loads no engine. The [installation guide](https://github.com/codemyriad/cassini-live/blob/main/docs/install.md) has the commands. Whistle needs about 2 GiB of container memory; Nemotron 2.25-3 GiB, and twice that on the host.
+
+## Related
+
+Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
+  <version>0.11.0</version>
+  <licence>agpl</licence>
+  <author homepage="https://codemyriad.io">Codemyriad</author>
+  <namespace>CassiniLive</namespace>
+  <documentation>
+    <admin>https://github.com/codemyriad/cassini-live/blob/main/docs/install.md</admin>
+  </documentation>
+  <category>integration</category>
+  <category>ai</category>
+  <website>https://gocassini.com</website>
+  <bugs>https://github.com/codemyriad/cassini-live/issues</bugs>
+  <repository type="git">https://github.com/codemyriad/cassini-live</repository>
+  <!-- Store screenshots: HTTPS, at most 10, at most 2 MiB each. The store fetches
+       these URLs at listing time; they are not in the package. The files are in
+       img/screenshots/ and are served from main, so a file must be on main before
+       its URL is listed here. The Apps page shows only the first. -->
+  <screenshot>https://raw.githubusercontent.com/codemyriad/cassini-live/main/img/screenshots/01-talk-transcript-panel.png</screenshot>
+  <dependencies><nextcloud min-version="33" max-version="35"/></dependencies>
+  <external-app>
+    <docker-install>
+      <registry>ghcr.io</registry>
+      <image>codemyriad/cassini-live</image>
+      <image-tag>0.11.0</image-tag>
+    </docker-install>
+    <environment-variables>
+      <variable>
+        <name>CASSINI_TALK_SIGNALING_INTERNAL_SECRET</name>
+        <display-name>Talk HPB internal secret</display-name>
+        <description>The signalling server's [clients] internalsecret, not the shared secret in Talk
+settings. On AIO: docker exec nextcloud-aio-talk printenv INTERNAL_SECRET. Alternatively, leave this
+empty and enter it on the Cassini Live settings page after installation.</description>
+      </variable>
+      <variable>
+        <name>CASSINI_TALK_HPB_URL</name>
+        <display-name>HPB URL override (optional)</display-name>
+        <description>Leave empty to discover from Talk. Override only when the container needs a different address. Can also be set on the Cassini Live settings page.</description>
+      </variable>
+      <variable>
+        <name>CASSINI_LIVE_DEBUG_VIDEO</name>
+        <display-name>Diagnostic video (optional)</display-name>
+        <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 1 fps; stops under resource pressure. Default off. The admin-only diagnostics page shows the same without this option.</description>
+      </variable>
+    </environment-variables>
+    <!-- Native caption endpoints are server-to-server, never browser-proxied. The settings
+         page and its API are admin-only; the app checks methods and CSRF itself. -->
+    <routes>
+      <route><url>^/?status$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <!-- USER: late-joiner catch-up. GET /history?token=<roomToken> returns the
+           current call's finals; membership is re-checked in the handler by acting
+           as the caller over Talk's OCS API. -->
+      <route><url>^/?history$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <!-- USER: start/stop captions from the transcript panel, for app ids Talk's caption
+           button does not reach. The body Talk sends to /api/v1/call/transcribe; the
+           handler re-checks what Talk would have, acting as the caller over Talk's OCS API:
+           the caller's own session (in the call, to start), past the lobby. It also
+           requires a same-origin JSON request with X-Cassini-Request and rate-limits. -->
+      <route><url>^/?captions/transcribe$</url><verb>POST</verb><access_level>USER</access_level></route>
+      <!-- The transcript panel bundle and its bookmarklet install page: read-only
+           static content for any logged-in user. Same-origin serving is what lets
+           the bookmarklet pass Talk's CSP and the panel reach future ExApp routes. -->
+      <route><url>^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <route><url>^/?settings/(index\.html|app\.js|app\.css)$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/licenses/[A-Za-z0-9.-]+\.txt$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/state$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/engine$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/cancel$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/capacity$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <!-- The HPB internal secret and URL override, for installs without deploy options
+           (the App Store on Nextcloud 34+), and a check that the HPB accepts the secret. -->
+      <route><url>^/?settings/api/talk(/check)?$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+      <route><url>^/?settings/api/models/[a-z0-9-]+$</url><verb>DELETE</verb><access_level>ADMIN</access_level></route>
+      <!-- The live diagnostics page: read-only static content for administrators. -->
+      <route><url>^/?diagnostics/(index\.html|app\.js|app\.css)?$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+      <!-- The live diagnostics page's feed: read-only. Speaker names go only to an
+           administrator who is a participant of the room, re-checked in the handler by
+           acting as the caller over Talk's OCS API. -->
+      <route><url>^/?diagnostics/api/feed$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
+    </routes>
+  </external-app>
+</info>

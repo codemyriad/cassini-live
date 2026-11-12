@@ -10,6 +10,25 @@ import sys
 from pathlib import Path
 
 
+def own_storage(path, uid, gid):
+    """Give the app's persistent volume to the unprivileged account.
+
+    AppAPI creates nc_app_<app id>_data owned by root, and the services drop to
+    `cassini` below, so without this nothing could be saved: the HPB secret from
+    the settings page, engine settings, downloaded models, the recovery journal.
+    Only entries owned by someone else change; symlinks are not followed.
+    """
+    root = Path(path)
+    if not root.is_dir():
+        return
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for entry in [directory, *(os.path.join(directory, n) for n in dirs + files)]:
+            stat = os.lstat(entry)
+            if (stat.st_uid, stat.st_gid) != (uid, gid):
+                os.lchown(entry, uid, gid)
+    root.chmod(0o700)
+
+
 def main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     if os.getuid() == 0:
@@ -19,6 +38,8 @@ def main():
             if cert.is_file():
                 os.chown(cert, account.pw_uid, account.pw_gid)
                 cert.chmod(0o600)
+        if os.environ.get("APP_PERSISTENT_STORAGE"):
+            own_storage(os.environ["APP_PERSISTENT_STORAGE"], account.pw_uid, account.pw_gid)
         os.setgroups([])
         os.setgid(account.pw_gid)
         os.setuid(account.pw_uid)

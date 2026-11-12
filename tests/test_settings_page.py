@@ -234,7 +234,7 @@ def test_state(page):
     assert response.status_code == 200
     assert_secure(response)
     body = response.json()
-    assert set(body) == {"version", "panel", "status", "links"}
+    assert set(body) == {"version", "panel", "status", "links", "talk"}
     assert body["version"] == __version__
     assert body["panel"]["active"] == "whistle" and len(body["panel"]["engines"]) == 3
     assert body["status"]["name"] == "Cassini Live"
@@ -531,7 +531,8 @@ def test_page_url(monkeypatch, nextcloud_url, root):
     else:
         monkeypatch.setenv("NEXTCLOUD_URL", nextcloud_url)
     assert settings_page.webroot() == root
-    assert settings_page.page_url() == (
-        root + "/index.php/apps/app_api/proxy/live_transcription/settings/index.html"
-    )
+    for app_id in ("cassini_live", "live_transcription"):
+        assert settings_page.page_url(app_id) == (
+            root + f"/index.php/apps/app_api/proxy/{app_id}/settings/index.html"
+        )
     assert settings_page.admin_settings_url() == root + "/index.php/settings/admin/ai"

@@ -265,6 +265,27 @@ progress {
   background: var(--bg);
 }
 
+/* Talk connection form */
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; overflow-wrap: anywhere; }
+.fields { display: grid; gap: 12px; margin-top: 12px; max-width: 40rem; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field label { font-weight: 600; }
+.field input {
+  font: inherit;
+  min-height: 44px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+}
+.field input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.field input:disabled { opacity: 0.6; cursor: not-allowed; }
+.field .hint { margin: 0; font-size: 0.875rem; }
+.check-passed { color: var(--success); }
+.check-failed { color: var(--error); }
+
 /* Buttons */
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 button {

@@ -39,6 +39,7 @@ from pathlib import Path
 import av
 
 from . import catalog, transcriber
+from .config import state_dir
 from .talk.types import StreamEndedException
 
 LOGGER = logging.getLogger("cassini_live.replay")
@@ -276,11 +277,13 @@ REFERENCE_DIRS = {
 
 
 def default_model_dir(engine_id: str) -> Path | None:
-    """The app's own install (ModelStore: <storage>/models/<engine id>), else a reference copy."""
+    """The app's own install (ModelStore: <storage>/models/<engine id>), else a reference copy.
+    Inside the container the storage is AppAPI's APP_PERSISTENT_STORAGE (/nc_app_<app id>_data),
+    where the service downloads models."""
     if catalog.get(engine_id).asset is None:
         return None
     here = Path(__file__).resolve().parents[1]
-    candidates = [Path("/nc_app_live_transcription_data/models") / engine_id]
+    candidates = [state_dir() / "models" / engine_id]
     if engine_id in REFERENCE_DIRS:
         candidates.append(here / "local/stt-eval/models" / REFERENCE_DIRS[engine_id])
     for candidate in candidates:

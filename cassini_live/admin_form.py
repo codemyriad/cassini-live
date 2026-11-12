@@ -19,10 +19,6 @@ FORM_ID = "cassini_live_engine"
 SECTION_ID = "ai"
 SECTION_TYPE = "admin"
 ENGINE_FIELD = "speech_engine"
-# Root-relative path of the settings page through the AppAPI proxy; settings_page prefixes
-# the Nextcloud web root.
-PAGE_PATH = "/index.php/apps/app_api/proxy/live_transcription/settings/index.html"
-DEFAULT_PAGE_URL = PAGE_PATH
 PAGE_HINT = "Full settings and progress: click ? next to the title."
 MAX_LABEL = 90
 MAX_TEXT = 400
@@ -260,8 +256,9 @@ def _engine_field(panel):
 
 
 def build_form(
-    panel: dict, status: dict, notes: tuple[str, ...] = (), page_url: str = DEFAULT_PAGE_URL
+    panel: dict, status: dict, notes: tuple[str, ...] = (), *, page_url: str
 ) -> SettingsForm:
+    """`page_url`: the settings page through the AppAPI proxy (settings_page.page_url)."""
     return SettingsForm(
         id=FORM_ID,
         section_id=SECTION_ID,

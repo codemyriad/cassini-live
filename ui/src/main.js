@@ -20,6 +20,7 @@ import { createStore } from './store.js'
 import { createTap } from './tap.js'
 import { createNames } from './names.js'
 import { createSession } from './session.js'
+import { APP_ID } from './app-id.js'
 import { fetchHistory } from './history.js'
 import { enableCaptions } from './captions.js'
 import { createSidebarPanel } from './sidebar.js'
@@ -42,11 +43,38 @@ function mount() {
     },
   })
   const names = createNames({ tap })
+  // Declared before createSession: its first watch() may start a call at once.
+  let captionRun = 0
+  let destroyed = false
   // Scope per conversation/call, poll /history for gaps, and turn captions on
   // for this session when a call starts so it is on the HPB feed.
-  const session = createSession({ tap, store, fetchHistory, onCallStart: enableCaptions })
+  const session = createSession({
+    tap,
+    store,
+    fetchHistory: (room, since) => fetchHistory(APP_ID, room, since),
+    onCallStart: (room) => startCaptions(room),
+  })
+
+  // Turn captions on for this session, retrying while the same call is on: Talk may
+  // not have recorded the join yet (403), Cassini Live may still be connecting to
+  // Talk or loading its engine (503). The panel shows the server's reason meanwhile.
+  async function startCaptions(room) {
+    const run = ++captionRun
+    const call = tap.callToken()
+    let delay = 2000
+    for (;;) {
+      if (destroyed || run !== captionRun || tap.roomToken() !== room || tap.callToken() !== call) return
+      const result = await enableCaptions(APP_ID, room, tap.nextcloudSessionId())
+      if (destroyed || run !== captionRun) return
+      if (panel) panel.setCaptionProblem(result.ok ? null : result.message, result.retry)
+      if (result.ok || !result.retry) return
+      await new Promise((resolve) => setTimeout(resolve, result.retryAfterMs ?? delay))
+      delay = Math.min(delay * 2, 30000)
+    }
+  }
 
   function destroy() {
+    destroyed = true
     session.destroy()
     tap.destroy()
     names.destroy()
@@ -58,7 +86,7 @@ function mount() {
     }
   }
 
-  panel = createSidebarPanel({ store, names })
+  panel = createSidebarPanel({ store, names, appId: APP_ID })
   panel.setStatus(lastStatus)
 
   window[GLOBAL] = {

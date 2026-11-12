@@ -16,6 +16,11 @@ from starlette.responses import PlainTextResponse
 
 
 class SafeAppAPIAuthMiddleware(AppAPIAuthMiddleware):
+    def __init__(self, app, *, app_id: str, disable_for: list[str] | None = None):
+        super().__init__(app, disable_for)
+        # AppAPI names the registered app in EX-APP-ID; create_app passes the same id.
+        self.app_id = app_id
+
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket") or scope.get("path") == "/heartbeat":
             await self.app(scope, receive, send)
@@ -31,7 +36,7 @@ class SafeAppAPIAuthMiddleware(AppAPIAuthMiddleware):
         valid = (
             expected
             and hmac.compare_digest(secret.encode(), expected.encode())
-            and conn.headers.get("EX-APP-ID") == os.environ.get("APP_ID")
+            and conn.headers.get("EX-APP-ID") == self.app_id
             and bool(conn.headers.get("EX-APP-VERSION"))
         )
         if not valid:

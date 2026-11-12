@@ -1,22 +1,65 @@
-# Install the development ExApp
+# Install Cassini Live
 
-The image path in `appinfo/info.xml` is a planned release destination,
-`ghcr.io/codemyriad/cassini-live:0.11.0`. This checkout builds locally; it does not
-publish to GHCR or the Nextcloud App Store.
+Cassini Live installs from the Nextcloud App Store, under the app id
+`cassini_live`. To run a build of your own, or before the first store release
+is published, [install from a checkout](#from-a-checkout) under the same id.
 
-## With an existing deploy daemon
+It needs Nextcloud 33 to 35 with Talk's High-performance backend (HPB), AppAPI
+with a Docker deploy daemon, and a Linux host with cgroup v2. Nextcloud's own
+Live Transcription app can stay installed. See
+[known limitations](known-limitations.md).
 
-1. Check that Talk calls work through HPB. Obtain the HPB's internal secret.
-2. If the official `live_transcription` ExApp is installed, disable it and
-   unregister it through External Apps before registering this replacement.
-   Keep its installation details for rollback. Do not install both providers.
-3. Build and tag the image on the Docker host used by your deploy daemon:
+## From the App Store
+
+1. Check that Talk calls work through the HPB. Obtain the HPB's internal secret
+   (the signalling server's `[clients] internalsecret`).
+2. As an administrator, open **Apps**, find **Cassini Live** and choose **Deploy
+   and enable**. If Nextcloud asks for deploy options, you can leave them empty.
+   Or, on the Nextcloud server:
+
+   ```sh
+   occ app_api:app:register cassini_live DAEMON_NAME --wait-finish
+   ```
+
+   AppAPI pulls `ghcr.io/codemyriad/cassini-live` at the released version, for
+   amd64 or arm64.
+3. [Set the container limits](#set-the-container-limits) on
+   `nc_app_cassini_live`. Until you do, Cassini Live stays blocked and loads no
+   speech engine.
+4. Enter the HPB internal secret: **Administration settings > Assistant**, then
+   **?** next to Cassini Live, section **Talk connection**. The section checks
+   that the HPB accepts the secret, and takes an HPB URL override if the
+   container cannot reach the public one.
+5. Reload the settings page until it shows "Captions are ready." (seconds once
+   the limits are set).
+6. Talk's **Show captions** button does not reach Cassini Live, so people
+   turn captions on from Cassini Live's transcript panel. Each person
+   opens `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud
+   once per browser and drags the bookmark to their bookmarks bar. In a Talk
+   call, a click on the bookmark opens the panel and starts captions. Send your
+   users that link; guests cannot use it (see
+   [known limitations](known-limitations.md)).
+7. [Check the installation](#check-the-installation) in a call.
+
+Update from the **Apps** page or with `occ app_api:app:update cassini_live`,
+then re-apply the PID and swap limits: an update recreates the container
+without them.
+
+## From a checkout
+
+For development, and until the first store release is published. The steps are
+those of the App Store install, except that the image is built locally and the
+app is registered from the manifest in the checkout. The image tag must match
+`appstore/info.xml`, here `ghcr.io/codemyriad/cassini-live:0.11.0`.
+
+1. Check that Talk calls work through the HPB. Obtain the HPB's internal secret.
+2. Build and tag the image on the Docker host used by your deploy daemon:
 
    ```sh
    docker build -t ghcr.io/codemyriad/cassini-live:0.11.0 .
    ```
 
-4. For a dedicated development daemon, configure AppAPI's local registry
+3. For a dedicated development daemon, configure AppAPI's local registry
    override so it uses that local image rather than trying to pull it:
 
    ```sh
@@ -27,59 +70,78 @@ publish to GHCR or the Nextcloud App Store.
    daemon if other ExApps depend on GHCR pulls. Building on a different Docker
    host will not make the image available to the deployment host.
 
-5. Register using this manifest. Run `occ` on your Nextcloud server; the XML path
+4. Register using the manifest. Run `occ` on your Nextcloud server; the XML path
    must be readable there. Replace `DAEMON_NAME` and `YOUR_HPB_INTERNAL_SECRET`:
 
    ```sh
-   occ app_api:app:register live_transcription DAEMON_NAME \
-       --info-xml /path/on/nextcloud/cassini-live/appinfo/info.xml \
+   occ app_api:app:register cassini_live DAEMON_NAME \
+       --info-xml /path/on/nextcloud/cassini-live/appstore/info.xml \
        --env CASSINI_TALK_SIGNALING_INTERNAL_SECRET=YOUR_HPB_INTERNAL_SECRET \
        --wait-finish
    ```
 
-   Prefer External Apps deploy options when you want to avoid placing the secret
-   in shell history. Do not paste it into screenshots, issues or logs.
+   To keep the secret out of shell history, leave out `--env` and enter it after
+   registration on the settings page instead: **Administration settings >
+   Assistant**, then **?** next to Cassini Live, section **Talk connection**. The
+   same section takes an HPB URL override and checks that the HPB accepts the
+   secret. A value given with `--env` (or in deploy options) takes precedence and
+   cannot be changed there. Do not paste the secret into screenshots, issues or
+   logs.
 
-6. Apply enforced limits **before enabling captions**. A newly registered container
-   without these limits stays blocked and does not load recognition workers.
-   For an example host with at least eight available CPUs and 4 GiB RAM:
+5. Continue with steps 3 to 7 of [From the App Store](#from-the-app-store):
+   container limits, the settings page, the transcript panel and the check.
 
-   ```sh
-   docker update --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 nc_app_live_transcription
-   docker exec nc_app_live_transcription python -m cassini_live.capacity --installed
-   ```
+## Set the container limits
 
-   Equal memory and memory-swap values disable swap. Size the limits for your
-   host; we advise leaving it at least half its CPU and RAM ([load and
-   admission](capacity.md)), and a low CPU weight (`docker update --cpu-shares`)
-   makes the kernel take CPU from captions first when the host is busy.
-   Persist CPU and memory limits in the AppAPI daemon's deployment options.
-   AppAPI may not preserve PID and swap limits across container recreation;
-   reapply them after upgrades. Until then, captions refuse to start. Corrections
-   are detected automatically within 15 seconds.
+A newly created container without enforced limits stays blocked and does not
+load recognition workers. The container is named after the app id:
+`nc_app_cassini_live`. For an example host with at least eight available CPUs and
+4 GiB RAM:
 
-   Keep the recovery journal on persistent storage across container recreation
-   (see [recovery policy](capacity.md)). Give the app user write access.
+```sh
+docker update --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 nc_app_cassini_live
+docker exec nc_app_cassini_live python -m cassini_live.capacity --installed
+```
 
-   Configure Docker log rotation on the deployment host before container creation
-   (for example, the `local` logging driver with `max-size=10m`, `max-file=3`).
-   Changing daemon logging defaults only affects newly created containers.
-   Do not use an unbounded log driver on a shared server.
+Equal memory and memory-swap values disable swap. Size the limits for your
+host; we advise leaving it at least half its CPU and RAM ([load and
+admission](capacity.md)), and a low CPU weight (`docker update --cpu-shares`)
+makes the kernel take CPU from captions first when the host is busy.
+Persist CPU and memory limits in the AppAPI daemon's deployment options.
+AppAPI may not preserve PID and swap limits across container recreation;
+reapply them after upgrades. Until then, captions refuse to start. Corrections
+are detected automatically within 15 seconds.
 
-7. Wait for the engine to load (seconds once its files are on disk). As an
-   administrator, open **Administration settings → Assistant →
-   Cassini Live** and reload the page until it shows "Captions are ready.", or run
-   the `cassini_live.capacity --installed` command from step 6.
-   See [load, admission and capacity](capacity.md) for recovery and configuration errors. Join a Talk
-   call with another participant, enable captions from the call menu, and speak.
-   Test your languages, a late joiner, microphone mute/unmute and stop/start.
-   Meanwhile, open **Live diagnostics** from the settings page's Status section
-   (`/index.php/apps/app_api/proxy/live_transcription/diagnostics/`): it should
-   read "Live · updated every second" and show your call's speakers and caption
-   lag. See [diagnostics page](diagnostics-page.md).
+Keep the recovery journal on persistent storage across container recreation
+(see [recovery policy](capacity.md)). Give the app user write access.
+
+Configure Docker log rotation on the deployment host before container creation
+(for example, the `local` logging driver with `max-size=10m`, `max-file=3`).
+Changing daemon logging defaults only affects newly created containers.
+Do not use an unbounded log driver on a shared server.
+
+## Check the installation
+
+Wait for the engine to load (seconds once its files are on disk). As an
+administrator, open **Administration settings → Assistant → Cassini Live** and
+reload the page until it shows "Captions are ready.", or run the
+`cassini_live.capacity --installed` command above. See
+[load, admission and capacity](capacity.md) for recovery and configuration
+errors.
+
+Join a Talk call with another participant, turn captions on with the transcript
+panel's bookmark and speak. Test your languages, a late joiner, microphone
+mute/unmute and stop/start. Meanwhile, open **Live diagnostics** from the
+settings page's Status section
+(`/index.php/apps/app_api/proxy/cassini_live/diagnostics/`): it should read "Live · updated
+every second" and show your call's speakers and caption lag. See
+[diagnostics page](diagnostics-page.md).
+
+## Network and deployment notes
 
 If the public HPB URL is unreachable from the container, set the optional
-`CASSINI_TALK_HPB_URL` deploy variable to its reachable URL. Keep certificate
+`CASSINI_TALK_HPB_URL` deploy variable to its reachable URL, or enter it in the
+settings page's **Talk connection** section. Keep certificate
 verification enabled. Network routing and TLS still need to be valid.
 
 The app uses ordinary WebRTC to receive HPB audio, using the STUN/TURN settings
@@ -154,8 +216,7 @@ the live [diagnostics page](diagnostics-page.md).
 
 Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes for the settings page.
 Upgrading from 0.10.0: 0.11.0 adds them for the diagnostics page. Update with
-`occ app_api:app:update live_transcription` (or reinstall); AppAPI re-reads
-routes only on a version change.
+`occ app_api:app:update cassini_live`, or reinstall; AppAPI re-reads routes only on a version change.
 
 An AppAPI update recreates the container without its swap and PID limits until
 you re-apply them. If Cassini Live starts in that state, it runs Whistle and
@@ -172,7 +233,7 @@ Raise the limits before you choose a Nemotron engine. For example, on a host
 with at least 6 GiB RAM and eight CPUs:
 
 ```sh
-docker update --cpus=4 --memory=3g --memory-swap=3g nc_app_live_transcription
+docker update --cpus=4 --memory=3g --memory-swap=3g nc_app_cassini_live
 ```
 
 Persist the same values in the AppAPI daemon's deployment options. The number
@@ -203,7 +264,9 @@ It disappears when the ExApp is registered again with this manifest.
 
 ## Rollback
 
-Disable and unregister Cassini Live through External Apps, then register the
-previous provider with its original image and deploy options. Cassini Live
-creates no room history, service account or recording configuration to undo.
-Keep `gocassini` installed if you use it for recordings.
+Disable and remove Cassini Live on the **Apps** page, or run
+`occ app_api:app:unregister cassini_live`. Nextcloud's Live Transcription, if
+installed, was never affected.
+
+Cassini Live creates no room history, service account or recording
+configuration to undo. Keep `gocassini` installed if you use it for recordings.

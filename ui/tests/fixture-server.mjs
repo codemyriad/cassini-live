@@ -76,6 +76,7 @@ const pageScript = `
     getSessionId: () => ${JSON.stringify(FULL.me)},
     currentRoomToken: 'room-1',
     currentCallToken: 'room-1',
+    nextcloudSessionId: 'nc-session-me',
     on(name, cb) { bucket('conn:' + name).add(cb) },
     off(name, cb) { bucket('conn:' + name).delete(cb) },
     // the authoritative roster: full session id -> {userid, user.displayname}
@@ -130,6 +131,10 @@ const pageScript = `
     // which conversations the panel turned captions on for (auto-enable)
     enabledTokens() {
       return fetch('/fixture-enabled').then((r) => r.json())
+    },
+    // queue refusals for the next captions/transcribe POSTs: [{ status, detail }]
+    refuseCaptions(list) {
+      return fetch('/fixture-refuse-captions', { method: 'POST', body: JSON.stringify(list) })
     },
     // sidebar presence, for the reactive show/hide
     removeSidebar() { document.getElementById('app-sidebar-vue')?.remove() },
@@ -299,8 +304,11 @@ function timeline(token) {
   return timelines.get(token)
 }
 
-// Conversations the panel enabled captions for (Talk's live-transcription POST).
+// Conversations the panel enabled captions for (the ExApp's captions/transcribe POST).
 const enabled = []
+// Refusals queued for the next captions/transcribe POSTs: { status, detail }, as the
+// ExApp answers when Talk has not seen the join yet (403) or it is not ready (503).
+const refusals = []
 
 export function startFixtureServer(port = PORT) {
   const server = createServer(async (req, res) => {
@@ -310,12 +318,48 @@ export function startFixtureServer(port = PORT) {
       res.end(page)
       return
     }
-    // Talk's "turn captions on" endpoint — record which conversation was enabled.
-    const enableMatch = url.pathname.match(/\/apps\/spreed\/api\/v1\/live-transcription\/([^/]+)$/)
-    if (enableMatch && req.method === 'POST') {
-      if (!enabled.includes(enableMatch[1])) enabled.push(enableMatch[1])
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ocs: { meta: { status: 'ok' } } }))
+    // The ExApp's "turn captions on" route — check the request is what the
+    // ExApp accepts (cassini_live/app.py), and record which conversation.
+    if (url.pathname.endsWith('/live_transcription/captions/transcribe') && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        let body = null
+        try {
+          body = JSON.parse(raw)
+        } catch {
+          /* refused below */
+        }
+        const ok =
+          req.headers['x-cassini-request'] === '1' &&
+          (req.headers['content-type'] || '').startsWith('application/json') &&
+          body && typeof body.roomToken === 'string' && body.ncSessionId === 'nc-session-me' &&
+          body.enable === true && body.langId === 'auto'
+        if (!ok) {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ detail: 'not the request the ExApp accepts' }))
+          return
+        }
+        const refusal = refusals.shift()
+        if (refusal) {
+          res.writeHead(refusal.status, { 'content-type': 'application/json', 'retry-after': '1' })
+          res.end(JSON.stringify({ detail: refusal.detail }))
+          return
+        }
+        if (!enabled.includes(body.roomToken)) enabled.push(body.roomToken)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ message: 'Captions enabled' }))
+      })
+      return
+    }
+    if (url.pathname === '/fixture-refuse-captions' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        refusals.push(...JSON.parse(raw))
+        res.writeHead(204)
+        res.end()
+      })
       return
     }
     if (url.pathname === '/fixture-enabled') {
@@ -396,7 +440,10 @@ export function startFixtureServer(port = PORT) {
     }
     if (url.pathname.endsWith('/panel/panel.js')) {
       try {
-        const body = await readFile(join(distDir, 'panel.js'))
+        // The ExApp fills in its app id when it serves the bundle (panel_page.py); so
+        // does this fixture, with the id its routes use.
+        const body = (await readFile(join(distDir, 'panel.js'), 'utf8'))
+          .replaceAll('__CASSINI_LIVE_APP_ID__', 'live_transcription')
         res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
         res.end(body)
       } catch {

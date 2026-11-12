@@ -103,7 +103,10 @@ class Manager:
         return {"active": self.active, "state": self.status.state, "progress": self.progress}
 
 
-def build(panel, status, notes, page_url=admin_form.DEFAULT_PAGE_URL):
+PAGE = "/index.php/apps/app_api/proxy/test_app/settings/index.html"
+
+
+def build(panel, status, notes, page_url):
     return Form({**panel, "notes": list(notes), "page_url": page_url})
 
 
@@ -111,7 +114,8 @@ def build(panel, status, notes, page_url=admin_form.DEFAULT_PAGE_URL):
 def h():
     manager, clock = Manager(), Clock()
     nc = Nextcloud({})
-    sync = SettingsSync(manager, lambda: nc, dict, build=build, clock=clock, publish_min_s=3)
+    sync = SettingsSync(manager, lambda: nc, dict, build=build, clock=clock, publish_min_s=3,
+                        page_url=PAGE)
     return SimpleNamespace(manager=manager, clock=clock, nc=nc, sync=sync)
 
 
@@ -262,7 +266,7 @@ async def test_form_is_built_with_the_page_url(h):
     await sync.stop(final="Stopped.")
     assert h.nc.forms[-1].to_dict()["page_url"].startswith("/nc/index.php/")
     await h.sync.publish()
-    assert h.nc.forms[-1].to_dict()["page_url"] == admin_form.DEFAULT_PAGE_URL
+    assert h.nc.forms[-1].to_dict()["page_url"] == PAGE
 
 
 async def test_identical_forms_are_not_resent(h):
@@ -277,7 +281,8 @@ async def test_identical_forms_are_not_resent(h):
 
 
 async def test_notifications_are_coalesced_with_a_trailing_publish(h):
-    sync = SettingsSync(h.manager, lambda: h.nc, dict, build=build, publish_min_s=0.05)
+    sync = SettingsSync(h.manager, lambda: h.nc, dict, build=build, publish_min_s=0.05,
+                        page_url=PAGE)
     task = asyncio.create_task(sync._publish_loop())
     try:
         for value in range(10):
@@ -295,7 +300,7 @@ async def test_progress_below_the_next_step_does_not_publish(h):
     def by_step(panel, status, notes, page_url=None):
         return Form({**panel, "progress": panel["progress"] - panel["progress"] % 5})
 
-    sync = SettingsSync(h.manager, lambda: h.nc, dict, build=by_step)
+    sync = SettingsSync(h.manager, lambda: h.nc, dict, build=by_step, page_url=PAGE)
     h.manager.progress = 41
     await sync.publish()
     h.manager.progress = 44
@@ -334,7 +339,7 @@ async def test_status_changes_outside_the_manager_are_republished(h):
     status = {"captions": "checking"}
     sync = SettingsSync(h.manager, lambda: h.nc, lambda: dict(status),
                         build=lambda panel, st, notes, page_url: Form({**panel, **st}),
-                        publish_min_s=0.01)
+                        publish_min_s=0.01, page_url=PAGE)
     task = asyncio.create_task(sync._publish_loop())
     try:
         await sync.poll_once()
@@ -372,7 +377,7 @@ async def deferred_sync(tmp_path, monkeypatch, value="nemotron-en"):
              ready=("nemotron-en",), settings=EngineSettings(engine="nemotron-en"))
     await e.manager.restore()
     nc = Nextcloud({ENGINE: value})
-    sync = SettingsSync(e.manager, lambda: nc, dict)
+    sync = SettingsSync(e.manager, lambda: nc, dict, page_url=PAGE)
     return e, nc, sync
 
 

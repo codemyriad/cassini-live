@@ -2,8 +2,9 @@
 
 Live captions for Nextcloud Talk, running on your own server.
 
-Turn on **Show captions** in Talk's call menu. Cassini Live receives each
-speaker's audio and sends captions back to Talk, with their name attached.
+In a Talk call, open Cassini Live's transcript panel and captions start.
+Cassini Live receives each speaker's audio and shows what they say under their
+name, in a transcript panel beside the call.
 Audio stays on your infrastructure. There is no speech API subscription,
 saved transcript or recording to clean up afterward.
 
@@ -49,7 +50,7 @@ reports what it would do under `resourceSafety.admission` in `/status`.
   OpenMDW-1.1 for Nemotron Multilingual. The settings page shows each license
   and its full text; there is no acceptance step.
 * Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes. Update with
-  `occ app_api:app:update live_transcription` (or reinstall); AppAPI re-reads
+  `occ app_api:app:update cassini_live` (or reinstall); AppAPI re-reads
   routes only on a version change.
 * Speech detection filters silent and noisy tracks before recognition.
   Ten unmuted microphones do not reserve ten recognizers, though receiving and
@@ -70,7 +71,7 @@ See [load, admission and capacity](docs/capacity.md).
 Changes in 0.11.0:
 
 * A live diagnostics page for administrators, served by the app at
-  `/index.php/apps/app_api/proxy/live_transcription/diagnostics/` and linked
+  `/index.php/apps/app_api/proxy/cassini_live/diagnostics/` and linked
   from the settings page's Status section. It shows both views of the
   diagnostic video at once, updated every second, without joining a call or
   setting a deploy option. The app samples for it only while the page polls,
@@ -78,7 +79,7 @@ Changes in 0.11.0:
   the sampled call's Talk conversation. See
   [diagnostics page](docs/diagnostics-page.md).
 * Upgrading from 0.10.0: 0.11.0 adds admin-only proxy routes for the page.
-  Update with `occ app_api:app:update live_transcription` (or reinstall);
+  Update with `occ app_api:app:update cassini_live` (or reinstall);
   AppAPI re-reads routes only on a version change.
 
 Changes in 0.10.0:
@@ -96,7 +97,7 @@ Changes in 0.9.0:
 * New transcript panel for Talk calls, delivered as a bookmarklet and served by
   the app at `/panel/` (any logged-in user): a scrollable, speaker-grouped live
   transcript that also shows your own lines. Pick up the bookmarklet on
-  `/index.php/apps/app_api/proxy/live_transcription/panel/`. See [ui/](ui/).
+  `/index.php/apps/app_api/proxy/cassini_live/panel/`. See [ui/](ui/).
 
 Changes in 0.8.2:
 
@@ -145,11 +146,19 @@ Whistle and runs offline after installation. Only an optional Nemotron engine
 needs a download (from dist.gocassini.com), when an administrator chooses it. An administrator must supply the
 HPB internal secret.
 
-Follow the [installation instructions](docs/install.md). There is no published
-App Store release. Talk currently fixes the caption provider ID to
-`live_transcription`, so this replaces the official caption ExApp. They cannot
-run together. [Cassini](https://github.com/codemyriad/gocassini) can stay installed
-for recordings.
+Follow the [installation instructions](docs/install.md). Cassini Live installs
+from the Nextcloud App Store, under the app id `cassini_live`. The first store
+release, 0.12.0-alpha.1, is being prepared (see the
+[App Store checklist](docs/appstore-checklist.md)); until it is published,
+install from a checkout as the instructions describe.
+
+Talk sends its **Show captions** button only to Nextcloud's own Live
+Transcription app, so people turn captions on from Cassini Live's transcript
+panel instead. Nextcloud's app can stay installed.
+
+[Known limitations](docs/known-limitations.md) lists what Cassini Live does not
+do. [Cassini](https://github.com/codemyriad/gocassini) can stay installed for
+recordings.
 
 ## Development
 
@@ -176,5 +185,6 @@ This project is substantially AI-assisted. Automated checks cover the audio
 pipeline, signalling, WebRTC and resource refusal; they do not establish
 production readiness or replace human review.
 
-[Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Privacy](docs/privacy.md) ·
+[Known limitations](docs/known-limitations.md) · [Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Privacy](docs/privacy.md) ·
+[Releasing](docs/release.md) · [App Store checklist](docs/appstore-checklist.md) ·
 [Third-party notices](NOTICE.md) · [AGPL-3.0-or-later](LICENSE)

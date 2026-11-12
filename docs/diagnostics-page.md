@@ -4,7 +4,7 @@ Administrators can watch how Cassini Live is working on a web page served by
 the app:
 
 ```
-/index.php/apps/app_api/proxy/live_transcription/diagnostics/
+/index.php/apps/app_api/proxy/cassini_live/diagnostics/
 ```
 
 The Status section of the Cassini Live settings page links to it ("Live
@@ -157,7 +157,7 @@ reaches the app. The page uses the settings page's Content Security Policy
 (`script-src 'self'; style-src 'self'; connect-src 'self'`): scripts, styles
 and requests only from the origin that serves the page, which is your
 Nextcloud server, and no inline code. AppAPI re-reads routes only on a version
-change, so upgrade with `occ app_api:app:update live_transcription` (or
+change, so upgrade with `occ app_api:app:update cassini_live` (or
 reinstall).
 
 The feed, `GET diagnostics/api/feed?since=<seconds>`, returns:

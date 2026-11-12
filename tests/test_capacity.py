@@ -125,8 +125,9 @@ async def test_measure_cli_waits_for_the_result(monkeypatch, capsys):
     calls = []
     states = iter(["checking", "checking", "passed"])
 
-    def installed_request(method, path):
+    def installed_request(method, path, app_id):
         calls.append((method, path))
+        assert app_id == "test_app"
         if method == "POST":
             return {"state": "checking"}
         return {
@@ -139,7 +140,7 @@ async def test_measure_cli_waits_for_the_result(monkeypatch, capsys):
 
     monkeypatch.setattr(capacity, "installed_request", installed_request)
     monkeypatch.setattr(capacity.asyncio, "sleep", no_sleep)
-    assert await capacity.measure_installed() == 0
+    assert await capacity.measure_installed("test_app") == 0
     assert calls[0] == ("POST", "/capacity/check") and len(calls) == 4
     assert '"passed"' in capsys.readouterr().out
 
@@ -325,9 +326,9 @@ async def test_watch_prints_one_json_line_per_second_from_status(monkeypatch, ca
     calls = []
     monkeypatch.setattr(capacity, "installed_request", lambda *a: calls.append(a) or status)
     monkeypatch.setattr(capacity, "WATCH_INTERVAL_S", 0.01)
-    assert await capacity.watch(3) == 0
+    assert await capacity.watch(3, "test_app") == 0
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert len(lines) == 3 and calls == [("GET", "/status")] * 3
+    assert len(lines) == 3 and calls == [("GET", "/status", "test_app")] * 3
     assert list(lines[0]) == [
         "at", "state", "lagSeconds", "lagSustainedSeconds", "captionAgeSeconds", "cpuStall",
         "cpuPressureAvg10", "engineDuty", "memoryUsedMiB", "memoryHeadroomMiB",
@@ -340,7 +341,7 @@ async def test_watch_prints_one_json_line_per_second_from_status(monkeypatch, ca
     del status["resourceSafety"]["admission"]  # an older service: the line still prints
     del status["resourceSafety"]["cpuHealth"]
     del status["hostRestarts"]  # Whistle has no host
-    assert await capacity.watch(1) == 1
+    assert await capacity.watch(1, "test_app") == 1
     (line,) = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert line["state"] == "recovering" and line["lagSeconds"] is None
     assert line["hostRestarts"] is None and line["p95RequestSeconds"] == 0.5
@@ -360,7 +361,7 @@ async def test_watch_survives_a_failed_read_and_keeps_its_cadence(monkeypatch, c
     ]
     reads = iter([status, *failures, status])
 
-    def installed_request(method, path):
+    def installed_request(method, path, app_id):
         result = next(reads)
         if isinstance(result, Exception):
             raise result
@@ -368,7 +369,7 @@ async def test_watch_survives_a_failed_read_and_keeps_its_cadence(monkeypatch, c
 
     monkeypatch.setattr(capacity, "installed_request", installed_request)
     monkeypatch.setattr(capacity, "WATCH_INTERVAL_S", 0.01)
-    assert await capacity.watch(7) == 0
+    assert await capacity.watch(7, "test_app") == 0
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert len(lines) == 7 and lines[0]["state"] == lines[6]["state"] == "ready"
     assert [line["state"] for line in lines[1:6]] == [None] * 5
@@ -382,18 +383,18 @@ async def test_watch_survives_a_failed_read_and_keeps_its_cadence(monkeypatch, c
     assert list(lines[1]) == [*lines[0], "error"] and lines[1]["lagSeconds"] is None
 
     # The exit status reports the last read: a service still down at the end is not ready.
-    def refused(method, path):
+    def refused(method, path, app_id):
         raise ConnectionRefusedError(111, "Connection refused")
 
     monkeypatch.setattr(capacity, "installed_request", refused)
-    assert await capacity.watch(1) == 1
+    assert await capacity.watch(1, "test_app") == 1
 
 
 async def test_measure_cli_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
-    def refused(method, path):
+    def refused(method, path, app_id):
         raise capacity.ServiceRefused(method, path, 409, "Measuring needs every call to end")
 
     monkeypatch.setattr(capacity, "installed_request", refused)
-    assert await capacity.measure_installed() == 1
+    assert await capacity.measure_installed("test_app") == 1
     err = capsys.readouterr().err
     assert err.strip() == "Capacity measurement not started: Measuring needs every call to end"

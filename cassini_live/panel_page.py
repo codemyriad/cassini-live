@@ -9,12 +9,19 @@ Serving the bundle same-origin with Nextcloud is load-bearing, not a convenience
 Talk pages ship `script-src 'nonce-…' 'strict-dynamic'` and `connect-src 'self'`,
 so a nonce-carrying <script src> for this route passes the page's CSP, and any
 future panel fetches to ExApp routes stay same-origin.
+
+The bundles reach this app's routes through the AppAPI proxy, whose path names the app
+id. The build leaves APP_ID_PLACEHOLDER where the id goes (ui/src/app-id.js), and this
+router fills in the id it is given, so the bookmarklets people pick up name the app they
+came from.
 """
 
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
+
+from . import appapi
 
 STATIC = Path(__file__).parent / "static" / "panel"
 ASSETS = {
@@ -23,6 +30,8 @@ ASSETS = {
     "install.js": "text/javascript; charset=utf-8",
     "install.css": "text/css; charset=utf-8",
 }
+# Must match ui/src/app-id.js.
+APP_ID_PLACEHOLDER = b"__CASSINI_LIVE_APP_ID__"
 # The install page runs its own scripts and styles; everything it needs is
 # served by this router, so 'self' covers it.
 CSP = (
@@ -34,8 +43,14 @@ CSP = (
 NO_STORE = "no-store"
 
 
-def _load_assets() -> dict[str, bytes]:
-    return {name: (STATIC / name).read_bytes() for name in ASSETS}
+def load_assets(app_id: str, static: Path = STATIC) -> dict[str, bytes]:
+    """The served files, with `app_id` in place of the build's placeholder."""
+    if not appapi.APP_ID.fullmatch(app_id):
+        raise ValueError("invalid app id")
+    return {
+        name: (static / name).read_bytes().replace(APP_ID_PLACEHOLDER, app_id.encode())
+        for name in ASSETS
+    }
 
 
 def _secure(response: Response) -> Response:
@@ -50,9 +65,9 @@ def _secure(response: Response) -> Response:
     return response
 
 
-def create_router() -> APIRouter:
+def create_router(app_id: str) -> APIRouter:
     router = APIRouter()
-    assets = _load_assets()
+    assets = load_assets(app_id)
 
     @router.get("/panel/")
     @router.get("/panel/{name}")

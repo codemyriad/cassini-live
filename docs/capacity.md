@@ -205,7 +205,7 @@ handles: **Measure capacity** on the Cassini Live settings page, or from the
 container:
 
 ```sh
-docker exec nc_app_live_transcription python -m cassini_live.capacity --installed --measure
+docker exec nc_app_cassini_live python -m cassini_live.capacity --installed --measure
 ```
 
 It needs ready captions and no captioned calls; calls asking for captions while
@@ -222,7 +222,7 @@ information only: admission never reads it, and nothing runs it automatically.
 ## Watch the live signals
 
 ```sh
-docker exec nc_app_live_transcription python -m cassini_live.capacity --installed --watch 600
+docker exec nc_app_cassini_live python -m cassini_live.capacity --installed --watch 600
 ```
 
 prints one JSON line per second: control lag, its 5-second sustained minimum,

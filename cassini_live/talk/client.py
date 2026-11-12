@@ -7,7 +7,6 @@ import asyncio
 import dataclasses
 import json
 import logging
-import os
 import time
 import weakref
 from collections import deque
@@ -157,7 +156,7 @@ class SpreedClient:
 		self.sessionid = None
 
 		self._websocket_url = sanitize_websocket_url(hpb_settings.server)
-		self.secret = os.environ["CASSINI_TALK_SIGNALING_INTERNAL_SECRET"]
+		self.secret = hpb_settings.secret
 
 		self.room_token = room_token
 		self.hpb_settings = hpb_settings
@@ -1239,7 +1238,7 @@ class SpreedClient:
 				# own session for the existing last-user-left comparison.
 				users_update = [user for user in users_update
 					if not user.get("internal", False) or user.get("sessionId") == self.sessionid]
-				# the last user just left the call, live_transcription is the only one left
+				# the last user just left the call; only this caption client is left
 				if (len(users_update) == 2):
 					if (
 						users_update[0].get("sessionId") != self.sessionid

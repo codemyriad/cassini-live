@@ -10,7 +10,7 @@ declarative form change engines through the same EngineManager methods.
 import functools
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,12 +18,11 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from . import __version__, admin_form, catalog, model_store
+from . import __version__, appapi, catalog, model_store
 from .engine_switch import EngineManager, SwitchRefused
 from .model_store import ModelError
+from .talk_setup import SetupRefused, TalkSetup
 
-APP_ID = "live_transcription"
-PROXY_PATH = admin_form.PAGE_PATH
 ADMIN_SETTINGS_PATH = "/index.php/settings/admin/ai"
 DOCS_URL = (
     "https://github.com/codemyriad/cassini-live/blob/main/docs/install.md#choose-a-speech-engine"
@@ -54,10 +53,11 @@ def webroot() -> str:
     return path.rstrip("/")
 
 
-def page_url() -> str:
+def page_url(app_id: str) -> str:
+    """The settings page through the AppAPI proxy, for the admin form's ? link."""
     # Root-relative on purpose: it resolves against the browser's origin, so an internal
     # NEXTCLOUD_URL host cannot break the link, while a sub-directory install keeps its prefix.
-    return webroot() + PROXY_PATH
+    return webroot() + appapi.proxy_path(app_id, "settings/index.html")
 
 
 def admin_settings_url() -> str:
@@ -181,13 +181,25 @@ def guard(handler):
         except SwitchRefused as refused:
             reasons = [asdict(r) for r in refused.reasons]
             return error_response(refused.status, refused.code, str(refused), reasons)
+        except SetupRefused as refused:
+            return error_response(refused.status, refused.code, str(refused))
 
     return run
 
 
-def create_router(manager: EngineManager, status_body: Callable[[], dict]) -> APIRouter:
+def create_router(
+    manager: EngineManager,
+    status_body: Callable[[], dict],
+    talk: TalkSetup | None = None,
+    reconnect: Callable[[], Awaitable[None]] | None = None,
+) -> APIRouter:
     router = APIRouter()
     assets = load_assets(STATIC, ASSETS)
+    talk = talk or TalkSetup()
+
+    async def connect_again():
+        if reconnect is not None:
+            await reconnect()
 
     @router.get("/settings/api/state")
     @guard
@@ -196,6 +208,7 @@ def create_router(manager: EngineManager, status_body: Callable[[], dict]) -> AP
             "version": __version__,
             "panel": manager.panel(),
             "status": status_body(),
+            "talk": talk.status(),
             "links": {
                 "docs": DOCS_URL,
                 "adminSettings": admin_settings_url(),
@@ -213,6 +226,23 @@ def create_router(manager: EngineManager, status_body: Callable[[], dict]) -> AP
         # Page refusals go back to the browser only; lastRefusal is the form's channel.
         switch = await manager.request_switch(engine)
         return json_response({"switch": switch.to_json(), "panel": manager.panel()}, 202)
+
+    @router.post("/settings/api/talk")
+    @guard
+    async def talk_setup(request: Request):
+        # The HPB secret and URL override for installs without deploy options (the App
+        # Store on Nextcloud 34+). The secret is write-only: no response carries it.
+        data = await require_same_origin(request)
+        if talk.save(data):
+            await connect_again()
+        return json_response({"talk": talk.status(), "status": status_body()})
+
+    @router.post("/settings/api/talk/check")
+    @guard
+    async def talk_check(request: Request):
+        await require_same_origin(request)
+        await connect_again()
+        return json_response({"talk": talk.status(), "status": status_body()})
 
     @router.post("/settings/api/capacity")
     @guard

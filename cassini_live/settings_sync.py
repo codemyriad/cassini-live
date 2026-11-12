@@ -31,7 +31,7 @@ class SettingsSync:
     def __init__(self, manager: EngineManager, nc_factory, status: Callable[[], dict], *,
                  build=admin_form.build_form, parse=admin_form.parse_values,
                  clock=time.monotonic, poll_s=POLL_S, publish_min_s=PUBLISH_MIN_S,
-                 page_url: str = admin_form.DEFAULT_PAGE_URL):
+                 page_url: str):
         self.manager, self.nc_factory, self.status = manager, nc_factory, status
         self.build, self.parse, self.clock = build, parse, clock
         self.poll_s, self.publish_min_s = poll_s, publish_min_s

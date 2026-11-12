@@ -1,4 +1,5 @@
 import copy
+import functools
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,12 +13,15 @@ from cassini_live.admin_form import (
     MAX_LABEL,
     MAX_TEXT,
     PAGE_HINT,
-    build_form,
     option_label,
     parse_values,
     progress_percent,
     status_text,
 )
+
+PAGE = "/index.php/apps/app_api/proxy/test_app/settings/index.html"
+# The form's ? link; settings_page.page_url(app_id) supplies it in the app.
+build_form = functools.partial(admin_form.build_form, page_url=PAGE)
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_REASON = (
@@ -147,7 +151,7 @@ def test_form_shape_round_trips():
     assert data["id"] == "cassini_live_engine"
     assert (data["section_id"], data["section_type"]) == ("ai", "admin")
     assert data["title"] == "Cassini Live"
-    assert data["doc_url"] == admin_form.PAGE_PATH == admin_form.DEFAULT_PAGE_URL
+    assert data["doc_url"] == PAGE
     assert [f["id"] for f in data["fields"]] == [ENGINE_FIELD]
     assert [f["type"] for f in data["fields"]] == ["radio"]
     assert SettingsForm.from_dict(data).to_dict() == data

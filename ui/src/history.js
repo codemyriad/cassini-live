@@ -9,24 +9,16 @@
  * an empty delta so the panel keeps whatever it already has.
  */
 
-const PROXY_PATH = '/apps/app_api/proxy/live_transcription/history'
+import { proxyUrl } from './app-id.js'
 
-function historyUrl(token, since) {
-  const query = `?token=${encodeURIComponent(token)}&since=${since | 0}`
-  try {
-    if (window.OC && typeof window.OC.generateUrl === 'function') {
-      return window.OC.generateUrl(PROXY_PATH) + query
-    }
-  } catch {
-    /* fall through */
-  }
-  return '/index.php' + PROXY_PATH + query
+function historyUrl(appId, token, since) {
+  return proxyUrl(appId, 'history') + `?token=${encodeURIComponent(token)}&since=${since | 0}`
 }
 
-export async function fetchHistory(token, since = 0) {
+export async function fetchHistory(appId, token, since = 0) {
   if (!token) return { entries: [], head: 0 }
   try {
-    const res = await fetch(historyUrl(token, since), {
+    const res = await fetch(historyUrl(appId, token, since), {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' },
     })

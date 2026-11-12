@@ -488,6 +488,7 @@ class DiagnosticVideo:
                 "server": settings.server,
                 "stunservers": settings.model_dump()["stunservers"],
                 "turnservers": settings.model_dump()["turnservers"],
+                "secret": settings.secret,
             }
             process.stdin.write((json.dumps(config) + "\n").encode())
             await process.stdin.drain()

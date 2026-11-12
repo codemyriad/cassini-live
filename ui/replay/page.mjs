@@ -42,6 +42,7 @@ export function renderPage({ replay, viewer, token }) {
       getSessionId: () => ${jsonForScript(me.sid)},
       currentRoomToken: ${jsonForScript(token)},
       currentCallToken: ${jsonForScript(token)},
+      nextcloudSessionId: 'replay-viewer',
       joinedUsers: ${jsonForScript(joinedUsers)},
     }
     window.OCA = { Talk: { SimpleWebRTC: {

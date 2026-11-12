@@ -8,3 +8,8 @@ dist/
 models/
 .cache/
 local/
+build/
+# App Store signing material never lives in the repo (docs/appstore-checklist.md).
+*.key
+*.crt
+*.csr

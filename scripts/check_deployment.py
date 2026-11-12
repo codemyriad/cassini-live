@@ -1,8 +1,8 @@
 """Run inside an installed container: readiness, HPB auth, bundled STT.
 
 This check never joins a call. Pass the included JFK WAV fixture to also check
-recorded speech. It reads deployment credentials from the container environment
-and prints no secrets or call data.
+recorded speech. It reads the HPB secret as the app does (deploy options, else the
+settings page's saved file) and prints no secrets or call data.
 """
 
 import asyncio
@@ -18,11 +18,12 @@ import numpy as np
 from nc_py_api import AsyncNextcloudApp
 from websockets.asyncio.client import connect
 
-from cassini_live.config import Config
+from cassini_live.config import Config, state_dir
 from cassini_live.pool import Worker
 from cassini_live.service import CaptionService
 from cassini_live.talk.client import SpreedClient
 from cassini_live.talk.utils import get_ssl_context
+from cassini_live.talk_setup import TalkSetup
 
 
 def readiness():
@@ -54,7 +55,8 @@ def readiness():
 async def main():
     readiness()
     config = Config.from_env()
-    service = CaptionService(config)
+    talk = TalkSetup.from_config(config, state_dir() / "cassini-live-talk.json")
+    service = CaptionService(config, talk=talk)
     await service.discover(AsyncNextcloudApp())
     client = SpreedClient("unused-deployment-check", service.settings, "auto", None)
     url = service.settings.server
