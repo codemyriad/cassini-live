@@ -8,11 +8,9 @@ the app:
 ```
 
 The Status section of the Cassini Live settings page links to it ("Live
-diagnostics"), and the page links back. It shows what the
-[diagnostic video](diagnostic-video.md) shows, but you don't have to be in a
-call, and no deploy option is needed. Both views are on screen at once, update
-once a second, and the text can be selected and copied into a bug report. The
-video is unchanged and works independently of the page.
+diagnostics"), and the page links back. You don't have to be in a call, and no
+deploy option is needed. Both views are on screen at once, update once a
+second, and the text can be selected and copied into a bug report.
 
 ## What it shows
 
@@ -24,41 +22,42 @@ precedence:
 - *Starting*, while there is no sample yet
 - *Captions not ready* with the service state (blocked, recovering or disabled)
 - *No captions running*, when no call has captions on
-- the video's states: *Audio lost*, *Holding new voices* (or *Would hold new
+- the live states: *Audio lost*, *Holding new voices* (or *Would hold new
   voices* while the governor only observes), *Speakers waiting*, *Captions live*
 
-**Speakers.** The same three numbers as the video: voices heard now, seats taken
+**Speakers.** Three numbers: voices heard now, seats taken
 out of the ceiling (with the hold reason when admission is closed), and how far
 captions trail speech on a 0–3 s bar marked at the admit and shed thresholds.
 Below them is one lane per recent speaker, covering two minutes:
 
-- the lanes show captioned, held, paused and lost speech in the video's
-  colours, which also differ in lightness
+- the lanes show captioned, held, paused and lost speech in four colours
+  that also differ in lightness
 - each lane carries a name chip over its oldest end, and a tag with the slot
   or scribe it holds and its own lag
 - the "+N silent mics · +M more speakers" counts follow the title
 
-Lanes follow the video's rules: at most ten, recent speakers only, in a stable
-order (see [Diagnostic video](diagnostic-video.md#what-it-shows)). Under the
-lanes are the lag graph, with dashed admit and shed lines, pause marks and a
-tick per caption line, then the governor's last decision with its time in UTC
-(as the video draws it), and a footer with memory against its limit, CPU
-stall, engine busy share, reply p95 and the page's own sampling cost.
+Lanes go to the people heard in the last two minutes, the same window they
+draw: at most ten, recent speakers only, in a stable order (speakers holding
+or waiting for a seat stay first, then this room's speakers, then the most
+recent; a newcomer is added at the bottom, and a speaker silent for two
+minutes loses the lane). Under the lanes are the lag graph, with dashed admit
+and shed lines, pause marks and a tick per caption line, then the governor's
+last decision with its time in UTC, and a footer with memory against its
+limit, CPU stall, engine busy share, reply p95 and the page's own sampling
+cost.
 
 **How a caption is made.** The five pipeline steps with live numbers, and the
 three panels of rules: what protects the call, the lag rules, and what counts
 as a crash.
 
-A line at the bottom reports the diagnostic video: off, or its state and, while
-it publishes, its own CPU, memory and bit rate. It never names the video's
-room. If a sample fails, the page says so, names only the error's type, and
+If a sample fails, the page says so, names only the error's type, and
 keeps showing the last good numbers.
 
 ## How it works
 
 The page polls the feed, `diagnostics/api/feed`, a second after each answer.
 Starting live captions wakes the feed: a one-second ticker whose sampler reads
-the same state as the video's sampler, with the same code. Collection continues
+the caption service's state once a second. Collection continues
 while any caption room remains, even if nobody opens the page. The feed keeps the latest
 sample and two minutes of one-second history columns. It answers each poll with
 the sample and the columns newer than the newest one the page has. The page
@@ -79,22 +78,17 @@ administrator's browser            caption service process
                                    │ DiagnosticFeed                       │
                                    │  1 Hz ticker, the latest sample and  │
                                    │  a ring of 120 one-second columns    │
-                                   │   └─► DiagnosticSampler, the video's │
-                                   │       code: engine, seats, rooms,    │
-                                   │       lanes, memory, CPU             │
+                                   │   └─► DiagnosticSampler: engine,    │
+                                   │       seats, rooms, lanes, memory,   │
+                                   │       CPU                            │
                                    └──────────────────────────────────────┘
 ```
 
-The page and the video run separate samplers over the same state, so their
-numbers agree, and running both costs one more sample a second. While the
-video runs, the page samples the video's room for names; otherwise neither
-affects the other.
-
 ## Names
 
-The page samples one room for names: the diagnostic video's room while the
-video runs, otherwise the oldest call with captions on. You see that room's
-speakers' names only if you are a participant of its Talk conversation; you
+The page samples one room for names: the oldest call with captions on. You see
+that room's speakers' names only if you are a participant of its Talk
+conversation; you
 need not have joined the call. On each poll the app checks this by asking Talk
 for the room's participants as you, the same check the transcript panel's
 catch-up uses; a yes is remembered for 30 seconds and a no for 10. Everyone
@@ -103,9 +97,9 @@ Lanes from other calls read *other call* for everyone, and the decision line
 calls their speakers "someone in another call".
 
 Participant lists are read from Talk only while a participant of the sampled
-conversation has polled the page in the last 30 seconds, or while the video
-runs in that room. As for the video, the list is read as the Nextcloud user who
-most recently enabled captions there, at most once every 10 seconds. The names
+conversation has polled the page in the last 30 seconds. The list is read as
+the Nextcloud user who most recently enabled captions there, at most once
+every 10 seconds. The names
 are kept in memory only for as long as that lasts, and dropped when it ends or
 the page moves to another room. Names are never logged. Each name is cut to 40
 characters (20 emoji). The feed carries anonymous lane numbers, never a room
@@ -171,7 +165,6 @@ The feed, `GET diagnostics/api/feed?since=<seconds>`, returns:
 - `sampledAt`: the final/latest sample time in monotonic seconds; the page anchors
   stopped history here rather than aging it out
 - `names`: whether names are included
-- `video`: the diagnostic video's status
 - `error`: the exception type when the last sample failed, otherwise null
 - `version`, `window` (120 columns) and `presence` (30 seconds)
 

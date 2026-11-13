@@ -112,12 +112,12 @@ bookmarklet (`src/loader.js`) and the administrators' live diagnostics page
 `…/apps/app_api/proxy/cassini_live/diagnostics/` (ADMIN), under the
 settings page's CSP (`script-src 'self'; style-src 'self'`): no inline styles,
 sizes through CSSOM. It polls `api/feed` a second after each answer and draws
-the diagnostic video's two views from the samples and history columns. See
-[the diagnostics page](../docs/diagnostics-page.md).
+the speaker lanes and caption pipeline from the samples and history columns.
+See [the diagnostics page](../docs/diagnostics-page.md).
 
 - `src/diagnostics/format.js`, `src/diagnostics/lanes.js` — pure view models
-  for the status, hero numbers, pipeline, panels, lanes and lag graph, ported
-  from the video's Pillow renderer (`cassini_live/diagnostic_video.py`).
+  for the status, hero numbers, pipeline, panels, lanes and lag graph (ported
+  from the removed diagnostic video's Pillow renderer).
 - `src/diagnostics/feed.js` — the poll protocol: the relative feed path,
   backoff, the page's copy of the columns, and restart detection (a new
   `instance`, or the server clock going back).

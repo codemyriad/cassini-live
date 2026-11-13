@@ -50,11 +50,6 @@ empty and enter it on the Cassini Live settings page after installation.</descri
         <display-name>HPB URL override (optional)</display-name>
         <description>Leave empty to discover from Talk. Override only when the container needs a different address. Can also be set on the Cassini Live settings page.</description>
       </variable>
-      <variable>
-        <name>CASSINI_LIVE_DEBUG_VIDEO</name>
-        <display-name>Diagnostic video (optional)</display-name>
-        <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 1 fps; stops under resource pressure. Default off. The admin-only diagnostics page shows the same without this option.</description>
-      </variable>
     </environment-variables>
     <!-- Native caption endpoints are server-to-server, never browser-proxied. The settings
          page and its API are admin-only; the app checks methods and CSRF itself. -->

@@ -130,11 +130,9 @@ Changes in 0.8.0:
   the first start; a cooldown after an OOM kill, repeated crashes or a crash
   while running or loading is still waited out.
 
-An optional [diagnostic video](docs/diagnostic-video.md) shows, inside a call,
-how captions are made: each speaker's lane under their name, the caption lag,
-admission decisions and resource use, including its own overhead. We enable it
-on our deployments; other installations default to off. Administrators can see
-the same on the [diagnostics page](docs/diagnostics-page.md) without joining a
+Administrators can watch how captions are made on the
+[diagnostics page](docs/diagnostics-page.md): each speaker's lane under their
+name, the caption lag, admission decisions and resource use, without joining a
 call or setting any option.
 
 ## Try it

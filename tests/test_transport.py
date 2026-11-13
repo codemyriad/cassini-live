@@ -115,7 +115,7 @@ async def test_handshake_targeting_reconnect_and_final_before_bye(monkeypatch):
             await client.close()
 
 
-async def test_last_human_leaving_closes_captions_with_internal_video_present():
+async def test_last_human_leaving_closes_captions_with_internal_sessions_present():
     settings = HPBSettings(server="ws://example.test/spreed", stunservers=[], turnservers=[])
     client = transport.SpreedClient("room", settings, "en", None)
     client.sessionid = "captions"
@@ -131,7 +131,7 @@ async def test_last_human_leaving_closes_captions_with_internal_video_present():
                     "users": [
                         {"sessionId": "human", "inCall": 0},
                         {"sessionId": "captions", "inCall": 1, "internal": True},
-                        {"sessionId": "diagnostic", "inCall": 5, "internal": True},
+                        {"sessionId": "recorder", "inCall": 5, "internal": True},
                     ]
                 },
             },

@@ -21,7 +21,6 @@ import {
   sampleError,
   statusPill,
   unreachable,
-  videoLine,
 } from './format.js'
 import { renderLanes } from './lanesView.js'
 
@@ -170,7 +169,7 @@ function render() {
   // Only the history since the feed last started: the seconds before it were not sampled.
   // Columns from another Cassini Live process never get here (accept drops them).
   const history = feedHistory(state.columns, state.historyStart)
-  // Before the first sample the figures are the video's empty ones, shown dimmed.
+  // Before the first sample the figures are empty placeholders, shown dimmed.
   document.body.classList.toggle('waiting', !sample)
   renderHeader(sample, state.columns, now)
   renderHero(sample)
@@ -179,9 +178,6 @@ function render() {
   renderFooter(sample)
   renderStages(pipelineStages(sample, history, now))
   renderPanels(protectionPanels(sample))
-  const video = videoLine(body ? body.video : null)
-  setText($('video'), video.text)
-  setTone($('video'), video.tone)
   const error = sampleError(body ? body.error : null)
   setText($('sample-error'), error)
   show($('sample-error'), Boolean(error))

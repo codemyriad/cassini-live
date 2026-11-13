@@ -119,7 +119,6 @@ const view = (page) =>
     captioned: document.querySelectorAll('#band rect.seg.captioned').length,
     sent: document.querySelectorAll('#graph-sent rect').length,
     decision: document.getElementById('decision')?.textContent,
-    video: document.getElementById('video')?.textContent,
     text: document.body.innerText,
     violations: window.__violations || [],
   }))
@@ -172,7 +171,6 @@ try {
   const memberAnswer = admin.answers.filter(Boolean).at(-1)
   log('member view:', JSON.stringify({ pill: seen.pill, names: seen.names, tags: seen.tags, captioned: seen.captioned, sent: seen.sent }))
   if (memberAnswer?.names !== true) throw new Error(`member feed answer has names=${memberAnswer?.names}`)
-  if (!/Diagnostic video off|Diagnostic video/.test(seen.video || '')) throw new Error(`video line: ${seen.video}`)
 
   // auditor: an administrator who is not a participant reads the same lanes, unnamed
   auditor = await watch(viewers, AUDITOR, AUDITOR_PASSWORD)

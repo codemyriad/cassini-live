@@ -174,8 +174,8 @@ export function laneColumns(lanes, count, { now = NOW } = {}) {
   return JSON.parse(JSON.stringify(made))
 }
 
-// The lanes and lag graph of each case are drawn by the video (diagnostic_video.render)
-// and the page; diagnostics-lanes.test.mjs holds what the video drew for each.
+// The lanes and lag graph of each case were also drawn by the removed diagnostic video;
+// diagnostics-lanes.test.mjs holds what it drew for each, as the page's golden wording.
 export const LANE_CASES = {
   tenLanes: {
     sample: sample({ lanes: TEN_LANES, silentMics: 3, hiddenSpeakers: 2, admission: governor({ lagSeconds: lagAt(NOW), shedEvents: 2 }) }),
@@ -209,10 +209,10 @@ export const LANE_CASES = {
   },
 }
 
-// Every case renders the same sample in the video (diagnostic_video.render) and the page;
-// diagnostics-format.test.mjs holds the video's strings for each.
+// Every case was also rendered by the removed diagnostic video; diagnostics-format.test.mjs
+// holds its strings for each, as the page's golden wording.
 export const CASES = {
-  // A sample with no fields at all: what the video draws before its first sample.
+  // A sample with no fields at all: what the page draws before its first sample.
   empty: { sample: {}, columns: [] },
   busy: {
     sample: sample({

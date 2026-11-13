@@ -80,7 +80,7 @@ OFFER_REQUEST_COOLDOWN = 10
 
 
 def speaker_label(participant: dict) -> str:
-	"""Talk attendee -> the label the diagnostic video shows over that speaker's lane."""
+	"""Talk attendee -> the label the diagnostics page shows over that speaker's lane."""
 	name = str(participant.get("displayName") or "").strip()
 	if participant.get("actorType") in ("guests", "emails"):
 		return f"Guest · {name}" if name else "Guest"
@@ -115,9 +115,8 @@ class SpreedClient:
 		self.target_lock = asyncio.Lock()
 		self.nc_sid_map: dict[str, str] = {}  # {"nc_session_id": "session_id"}, use the same target lock
 		# Display names for the diagnostics, read as the latest Nextcloud user who enabled
-		# captions here, only while someone holds them (diagnostics.NameHolds): this room's
-		# running diagnostic video, or a member of it watching the diagnostics page:
-		# {"nc_session_id": label}. Never logged.
+		# captions here, only while someone holds them (diagnostics.NameHolds): a member of
+		# this room watching the diagnostics page: {"nc_session_id": label}. Never logged.
 		self.name_user: str | None = None
 		self.names_shown = False
 		self.speaker_names: dict[str, str] = {}
@@ -699,8 +698,8 @@ class SpreedClient:
 			self.refresh_names()
 
 	def show_names(self, shown: bool):
-		"""Names are read and kept only while this room's diagnostic video runs or a member
-		watches the diagnostics page (diagnostics.NameHolds)."""
+		"""Names are read and kept only while a member of this room watches the
+		diagnostics page (diagnostics.NameHolds)."""
 		self.names_shown = shown
 		if shown:
 			self.refresh_names()

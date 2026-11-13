@@ -291,7 +291,6 @@ function diagnosticsBody(feed, since) {
     sample: data,
     columns: columns.filter((column) => column.t > since),
     error: null,
-    video: { enabled: false, state: 'disabled' },
   }
 }
 
