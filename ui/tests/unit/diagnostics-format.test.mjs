@@ -18,14 +18,13 @@ import {
   seconds,
   statusPill,
   unreachable,
-  videoLine,
 } from '../../src/diagnostics/format.js'
 import { CASES, NOW, columns, governor, sample } from '../diagnostics-fixtures.mjs'
 
-// What diagnostic_video.render() draws for each case with its clock at NOW, in drawing
-// order, without the video-only chrome (logo, legends, the tile's own cost, the view
-// alternation note) and the lanes and lag graph (S4). The video cuts a line that overflows
-// its card with "…"; the page shows it whole.
+// What the removed diagnostic video's renderer drew for each case with its clock at NOW,
+// in drawing order, without its own chrome and the lanes and lag graph (S4): kept as the
+// golden wording the page must keep saying. The video cut a line that overflowed its card
+// with "…"; the page shows it whole.
 const VIDEO = {
   empty: {
     lanes: ['Starting', 'Whistle', '0', 'voices', 'heard now', '0', '/0', 'seats', 'taken', '–', 'captions trail', 'speech by', 'No admission decision yet', 'Memory', '–', 'CPU stall', '–', 'Engine busy', '–', 'Reply p95', '–'],
@@ -61,13 +60,13 @@ const VIDEO = {
   },
 }
 
-// The video never shows these: it runs only in a live room while captions are ready.
+// The video never showed these: it ran only in a live room while captions were ready.
 const PAGE_ONLY_PILLS = { notReady: 'Captions not ready · blocked', noRooms: 'No captions running' }
 const PANEL_TITLES = ['THE KERNEL PROTECTS THE CALL', 'LAG KEEPS CAPTIONS USEFUL', 'ONLY A CRASH STOPS CAPTIONS']
 
 const squash = (text) => text.replace(/\s+/g, ' ').trim()
 
-// The page's strings where the video cut a line short: compared up to the cut.
+// The page's strings where the golden cut a line short: compared up to the cut.
 function asVideo(page, video) {
   return page.map((text, i) => {
     const cut = video[i]
@@ -75,7 +74,7 @@ function asVideo(page, video) {
   })
 }
 
-// The three panels as {title: every line squashed into one}; the video pads its
+// The three panels as {title: every line squashed into one}; the golden pads its
 // monospace columns and wraps one line, the page lays rows out as key and value.
 function videoPanels(lines) {
   const panels = {}
@@ -111,7 +110,7 @@ function lanesView(name, { sample: data, columns: history }) {
     model.lag.value,
     ...(model.lag.unit ? [model.lag.unit] : []),
     ...model.lag.label,
-    // The video's header clock says UTC; the page has no clock and puts it on the time.
+    // The golden's header clock said UTC; the page has no clock and puts it on the time.
     ...(decision ? [decision.time.replace(/ UTC$/, ''), decision.verb, decision.text] : ['No admission decision yet']),
     'Memory',
     budgets.memory.text,
@@ -134,8 +133,8 @@ function pipelineView({ sample: data, columns: history }) {
       stage.name,
       stage.big,
       stage.unit,
-      // Without a memory limit the video's engine card keeps only its last line: its
-      // conditional takes the whole implicitly concatenated f-string.
+      // Without a memory limit the golden's engine card kept only its last line: its
+      // conditional took the whole implicitly concatenated f-string.
       ...(i === 3 && !data.limitMiB ? stage.detail.slice(2) : stage.detail),
     ]),
     '◆',
@@ -144,12 +143,12 @@ function pipelineView({ sample: data, columns: history }) {
 }
 
 for (const [name, fixture] of Object.entries(CASES)) {
-  test(`the header, hero and budgets say what the video says: ${name}`, () => {
+  test(`the header, hero and budgets say what the golden says: ${name}`, () => {
     const video = VIDEO[name].lanes
     assert.deepEqual(asVideo(lanesView(name, fixture), video), video)
   })
 
-  test(`the pipeline cards and panels say what the video says: ${name}`, () => {
+  test(`the pipeline cards and panels say what the golden says: ${name}`, () => {
     const video = VIDEO[name].pipeline
     const split = video.indexOf(PANEL_TITLES[0])
     assert.deepEqual(asVideo(pipelineView(fixture), video.slice(0, split)), video.slice(0, split))
@@ -339,7 +338,7 @@ test('engine busy warns from 90 %; the other budgets read as numbers or dashes',
   assert.deepEqual(empty, { stall: '–', duty: '–', p95: '–', sampler: '–' })
 })
 
-/* ---------- decision, video, freshness ---------- */
+/* ---------- decision, freshness ---------- */
 
 test('the decision line reads the time in UTC, the verb and who; null without one', () => {
   assert.deepEqual(decisionLine(CASES.busy.sample), {
@@ -355,29 +354,6 @@ test('the decision line reads the time in UTC, the verb and who; null without on
   // Names are data: passed through untouched for textContent.
   const who = '<img src=x onerror=alert(1)>'
   assert.equal(decisionLine(sample({ decision: { at: 0, verb: 'pause', who, text: '' } })).verb, `pause ${who}`)
-})
-
-test('the video line: off, waiting, starting, and its cost while it publishes', () => {
-  assert.deepEqual(videoLine({ enabled: false, state: 'disabled' }), { text: 'Diagnostic video off', tone: 'idle' })
-  assert.deepEqual(videoLine(null), { text: 'Diagnostic video off', tone: 'idle' })
-  assert.deepEqual(videoLine({ enabled: true, state: 'idle' }), {
-    text: 'Diagnostic video on, waiting for a captioned call',
-    tone: 'idle',
-  })
-  assert.equal(videoLine({ enabled: true, state: 'starting' }).text, 'Diagnostic video starting')
-  const publishing = { enabled: true, state: 'connected', diagnosticCpu: 3.5, diagnosticMiB: 41.6, samplerMs: 2.1, frames: 40, kbps: 70.24, quantizer: 40 }
-  assert.deepEqual(videoLine(publishing), { text: 'Diagnostic video publishing · 4% CPU · 42 MiB · 70 kbit/s', tone: 'live' })
-  assert.equal(videoLine({ enabled: true, state: 'connected' }).text, 'Diagnostic video publishing')
-  // A stopped child's last figures are not its current cost.
-  assert.deepEqual(videoLine({ ...publishing, state: 'paused: diagnostic budget exceeded' }), {
-    text: 'Diagnostic video paused: diagnostic budget exceeded',
-    tone: 'warn',
-  })
-})
-
-test('the video line reads no field but its state and cost', () => {
-  const status = { enabled: true, state: 'connected', diagnosticCpu: 1, diagnosticMiB: 2, kbps: 3, room: 'ROOMTOKEN-q9x7', owner: 'ROOMTOKEN-q9x7' }
-  assert.ok(!videoLine(status).text.includes('ROOMTOKEN'))
 })
 
 test('the page is stale five seconds after its last answer', () => {

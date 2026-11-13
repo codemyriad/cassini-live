@@ -22,23 +22,23 @@ import {
   WINDOW_S,
 } from './lanes.js'
 
-// Up to four lanes keep the video's 30 px lanes and 8 px gaps. More lanes close up, but
-// not to the video's 12 px: the page can grow, and names and tags stay legible.
+// Up to four lanes stay roomy, 30 px with 8 px gaps. More lanes close up, but only so
+// far: the page can grow, and names and tags stay legible.
 const ROOMY = { lane: 30, gap: 8 }
 const DENSE = { lane: 22, gap: 4 }
 const ROOMY_LANES = 4
 // The band keeps the height of four lanes, so the graph under it does not move.
 const MIN_BAND = ROOMY_LANES * ROOMY.lane + (ROOMY_LANES - 1) * ROOMY.gap
-// diagnostic_video's graph: 58 px high, 0 s at 50 px from the top, 18 px per second, the
-// caption ticks along the bottom from 52 px.
+// The lag graph: 58 px high, 0 s at 50 px from the top, 18 px per second, the caption
+// ticks along the bottom from 52 px.
 const GRAPH_H = 58
 const ZERO_Y = 50
 const PER_S = 18
 const TICK_Y = 52
 // Outlined states (stroke widths in px): inset by half a stroke to stay inside the lane.
 const STROKES = { held: 3, paused: 2 }
-// A run stops this short of the next column, the video's 1 px of each 6 px column; a
-// caption tick is the other 5 px, so ticks narrow with the band rather than merging.
+// A run stops this short of the next column (1/6 of a column); a caption tick is the
+// other 5/6, so ticks narrow with the band rather than merging.
 const RUN_GAP_S = 1 / 6
 const TICK_S = 5 / 6
 const MIN_RUN_S = 0.05
@@ -57,7 +57,7 @@ export function renderLanes(sample, columns, windowSeconds, now) {
   setVar(root, '--lane-gap', `${gap}px`)
 
   renderLegend()
-  // The video names who has no lane only beside lanes; with none, the band counts them.
+  // Who has no lane is named only beside lanes; with none, the band counts them.
   const missing = rows.length ? leftOut(sample) : ''
   setText($('left-out'), missing)
   show($('left-out'), Boolean(missing))

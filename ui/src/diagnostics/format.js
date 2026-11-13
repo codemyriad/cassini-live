@@ -1,8 +1,6 @@
 /**
  * View models for the diagnostics page, from the feed's latest sample and its history
- * columns. Pure: no DOM. The wording, thresholds and number formats are the diagnostic
- * video's (cassini_live/diagnostic_video.py), so the page and the video say the same
- * things about the same sample. Times in columns and `now` are the server's monotonic
+ * columns. Pure: no DOM. Times in columns and `now` are the server's monotonic
  * seconds; a sample's numbers may be null where the container exposes no reading.
  */
 
@@ -24,13 +22,13 @@ export const REASONS = {
 
 // safety.py's pressure_problem pauses captions at 80 % of the memory budget.
 export const MEMORY_PAUSE = 0.8
-// The memory bar turns amber from this fraction of the limit (diagnostic_video._limit_bar).
+// The memory bar turns amber from this fraction of the limit.
 const MEMORY_WARN = 0.6
 // The engine is near saturation from this duty cycle.
 const DUTY_WARN = 0.9
 // Dropped audio colours the status this long after it happened, in server seconds.
 const LOST_S = 60
-// The video's seat chips fit eight in their column.
+// Eight seat chips fit their column.
 const CHIPS = 8
 // The lag bar's scale, seconds: the shed threshold sits two thirds along.
 const LAG_SCALE_S = 3
@@ -92,12 +90,12 @@ export function g(value, precision = 6) {
   return trim(fixed(x, precision - 1 - exponent))
 }
 
-/** diagnostic_video._seconds */
+/** Tenths of a second, or a dash. */
 export function seconds(value) {
   return known(value) ? `${fixed(value, 1)} s` : DASH
 }
 
-/** diagnostic_video._percent */
+/** A 0-1 fraction as a whole percentage, or a dash. */
 export function percent(value) {
   return known(value) ? `${fixed(Number(value) * 100, 0)}%` : DASH
 }
@@ -125,7 +123,7 @@ function heldText(admission, observing) {
   return (observing ? 'would hold: ' : 'holding: ') + reasonOf(admission)
 }
 
-/** The governor's lag and CPU thresholds, or the video's defaults while it reports none. */
+/** The governor's lag and CPU thresholds, or their defaults while it reports none. */
 export function thresholds(admission) {
   return {
     lagAdmit: Number(admission.lagAdmit || 1.0),
@@ -142,7 +140,7 @@ function seatsOf(sample) {
   }
 }
 
-/** Every open microphone: the lanes plus the tracks they leave out (diagnostic_video._mics). */
+/** Every open microphone: the lanes plus the tracks they leave out. */
 export function mics(sample) {
   const lanes = (sample && sample.lanes) || []
   return lanes.length + int(get(sample, 'silentMics', 0)) + int(get(sample, 'hiddenSpeakers', 0))
@@ -153,10 +151,8 @@ const NOT_READY_TONES = { recovering: 'warn', disabled: 'idle' }
 /**
  * The status pill: {label, tone, note}, tone one of live, warn, bad, idle.
  *
- * Page-only states come first: they say captions are not running at all, which the video
- * never shows because it runs only in a live room while captions are ready. Then the
- * video's own rules in its order (_status): audio dropped in the last minute, admission
- * closed, speakers waiting, live.
+ * States that say captions are not running at all come first. Then, in order: audio
+ * dropped in the last minute, admission closed, speakers waiting, live.
  */
 export function statusPill(sample, columns = [], now = 0) {
   const pill = (label, tone, note = '') => ({ label, tone, note })
@@ -222,7 +218,7 @@ export function hero(sample) {
   }
 }
 
-/** The governor's last admission decision, or null (diagnostic_video._render_lanes). */
+/** The governor's last admission decision, or null. */
 export function decisionLine(sample) {
   const decision = sample && sample.decision
   if (!decision) return null
@@ -230,8 +226,8 @@ export function decisionLine(sample) {
   if (admissionOf(sample).observing && verb) verb = 'would ' + verb
   const at = new Date(Number(get(decision, 'at', 0)) * 1000)
   return {
-    // The governor stamps decisions with wall-clock seconds; the video draws them in UTC
-    // under a UTC header clock. The page has no clock, so the time carries the zone.
+    // The governor stamps decisions with wall-clock seconds. The page has no clock, so
+    // the time carries the zone.
     time: Number.isNaN(at.getTime()) ? DASH : `${at.toISOString().slice(11, 19)} UTC`,
     verb: `${verb} ${decision.who ?? ''}`.trim(),
     text: String(decision.text ?? ''),
@@ -239,7 +235,7 @@ export function decisionLine(sample) {
   }
 }
 
-/** The five caption pipeline stages (diagnostic_video._render_pipeline). */
+/** The five caption pipeline stages. */
 export function pipelineStages(sample, columns = [], now = 0) {
   const data = sample || {}
   const { admission, observing } = admissionOf(data)
@@ -290,7 +286,6 @@ export function pipelineStages(sample, columns = [], now = 0) {
       name: 'Engine',
       big: percent(duty),
       unit: `busy, ${threads} ${plural(threads, 'thread', 'threads')}`,
-      // Without a memory limit the video drops the first two lines too; the page keeps them.
       detail: [
         shape,
         `reply p95 ${seconds(data.p95)}`,
@@ -376,31 +371,6 @@ export function footer(sample) {
       { id: 'sampler', label: 'Sampling', value: known(data.samplerMs) ? `${fixed(data.samplerMs, 1)} ms` : DASH, tone: 'soft' },
     ],
   }
-}
-
-const VIDEO_STATES = {
-  idle: 'Diagnostic video on, waiting for a captioned call',
-  starting: 'Diagnostic video starting',
-  new: 'Diagnostic video connecting',
-  connecting: 'Diagnostic video connecting',
-  connected: 'Diagnostic video publishing',
-}
-const VIDEO_TONES = { connected: 'live', idle: 'idle', starting: 'idle', new: 'idle', connecting: 'idle' }
-// The child reports its cost while it runs; after it stops the last figures may linger.
-const VIDEO_RUNNING = new Set(['new', 'connecting', 'connected'])
-
-/**
- * The diagnostic video publisher, in one line: off, its state, and while it runs its own
- * CPU, memory and bit rate. Only these fields are read: the status carries no room.
- */
-export function videoLine(video) {
-  if (!video || !video.enabled) return { text: 'Diagnostic video off', tone: 'idle' }
-  const state = String(video.state || 'idle')
-  let text = has(VIDEO_STATES, state) ? VIDEO_STATES[state] : `Diagnostic video ${state}`
-  if (VIDEO_RUNNING.has(state) && known(video.diagnosticCpu)) {
-    text += ` · ${fixed(video.diagnosticCpu, 0)}% CPU · ${fixed(video.diagnosticMiB ?? 0, 0)} MiB · ${fixed(video.kbps ?? 0, 0)} kbit/s`
-  }
-  return { text, tone: has(VIDEO_TONES, state) ? VIDEO_TONES[state] : 'warn' }
 }
 
 function ago(ms) {

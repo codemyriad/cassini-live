@@ -22,13 +22,13 @@ const TITLE = html.match(/id="lanes-title"[^>]*>([^<]*)</)[1]
 const AXIS = [...html.match(/<p class="axis"[^>]*>(.*?)<\/p>/)[1].matchAll(/<span>([^<]*)<\/span>/g)].map((m) => m[1])
 const SENT = strip(html.match(/<li class="sent">(.*?)<\/li>/)[1])
 
-// What diagnostic_video.render(sample, columns, "lanes") drew for each LANE_CASES case,
-// with its clock at NOW and int lane keys as in the caption process: the row above the
-// band (title, legend, who has no lane), the band's text when it has no lanes, each lane's
-// name, tag and value and its runs as "state start-end" in seconds before the newest
-// column, the lag line as "x:lag" and the shed marks and caption ticks at x seconds, the
-// graph's labels and the axis. The video cuts a name that overflows a quarter of the band
-// with "…"; the page cuts it with CSS.
+// What the removed diagnostic video's renderer drew for each LANE_CASES case, with its
+// clock at NOW and int lane keys as in the caption process: kept as the golden wording
+// the page must keep saying. The row above the band (title, legend, who has no lane), the
+// band's text when it has no lanes, each lane's name, tag and value and its runs as
+// "state start-end" in seconds before the newest column, the lag line as "x:lag" and the
+// shed marks and caption ticks at x seconds, the graph's labels and the axis. The video
+// cut a name that overflowed a quarter of the band with "…"; the page cuts it with CSS.
 const VIDEO = {
   tenLanes: {
     head: ["SPEAKERS, LAST TWO MINUTES", "captioned", "held", "paused", "lost", "+3 silent mics · +2 more speakers"],
@@ -126,7 +126,7 @@ const VIDEO = {
 
 const n = (value) => String(Math.round(value * 1000) / 1000)
 const runs = (segments) => segments.map((s) => `${s.state} ${n(s.start)}-${n(s.end)}`).join(' ')
-// The page's text where the video cut it short: compared up to the cut.
+// The page's text where the golden cut it short: compared up to the cut.
 const asVideo = (text, cut) => (typeof cut === 'string' && cut.endsWith('…') && text.startsWith(cut.slice(0, -1)) ? cut : text)
 
 function pageView({ sample: data, columns }, video) {
@@ -151,7 +151,7 @@ function pageView({ sample: data, columns }, video) {
 }
 
 for (const [name, fixture] of Object.entries(LANE_CASES)) {
-  test(`the lanes and lag graph say what the video says: ${name}`, () => {
+  test(`the lanes and lag graph say what the golden says: ${name}`, () => {
     assert.deepEqual(pageView(fixture, VIDEO[name]), VIDEO[name])
   })
 }
@@ -215,7 +215,7 @@ test('lane ids match the columns by string, as JSON keys arrive', () => {
   assert.deepEqual(laneSegments(3, [column(11, new Map([[3, 'speech']]))], 120, 11), [])
 })
 
-test('runs are clipped to the window; an unknown state draws as captioned, like the video', () => {
+test('runs are clipped to the window; an unknown state draws as captioned', () => {
   const columns = [column(4880, { 1: 'speech' }), column(4881, { 1: 'speech' }), column(4882, { 1: 'murmur' })]
   assert.deepEqual(laneSegments(1, columns, 120, NOW), [
     { state: 'captioned', start: 120, end: 119 },
@@ -324,7 +324,7 @@ test('shed marks and caption ticks sit at their columns; nothing outside the win
   assert.deepEqual(graph.lines, [])
 })
 
-test('thresholds default to admit 1.0 s and shed 2.0 s, as the video draws them', () => {
+test('thresholds default to admit 1.0 s and shed 2.0 s', () => {
   for (const admission of [{}, null, governor({ lagAdmit: null, lagShed: 0 })]) {
     const graph = lagGraph([], sample({ admission }), 120, NOW)
     assert.deepEqual([graph.admit, graph.shed, graph.labels], [1, 2, { shed: 'shed 2.0 s', admit: 'admit 1.0 s' }])

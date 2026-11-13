@@ -331,9 +331,9 @@ def create_app(
         except Exception as error:
             LOGGER.error("Caption request failed (%s)", type(error).__name__)
             return failure(500, "Failed to process transcription or translation request.")
-        # AppAPI names the requesting user; the diagnostics (the video, or the page for a
-        # member watching) read this room's participant names as them. Guests have no user
-        # id and are skipped.
+        # AppAPI names the requesting user; the diagnostics page (for a member watching)
+        # reads this room's participant names as them. Guests have no user id and are
+        # skipped.
         client = getattr(service, "clients", {}).get(req.roomToken)
         if req.enable and client is not None and hasattr(client, "note_user"):
             client.note_user(request.scope.get("username") or None)
@@ -415,7 +415,6 @@ def create_app(
             "activeRooms": len(service.clients),
             "capacityAssessment": assessment.result,
             "resourceSafety": resource_status,
-            "diagnosticVideo": service.diagnostics.status(),
             **safety.pool.status(),
             # After the pool fields: the pool reports only its engine id under this key.
             "engine": manager.engine_status(),
@@ -430,11 +429,7 @@ def create_app(
     app.state.native_api = mock_talk_proxy.NativeApi(app_id)
     app.include_router(mock_talk_proxy.create_router(nc_factory))
     app.include_router(home_page.create_router(app_id))
-    app.include_router(
-        diagnostics_page.create_router(
-            service.diagnostic_feed, membership, service.diagnostics.status
-        )
-    )
+    app.include_router(diagnostics_page.create_router(service.diagnostic_feed, membership))
     if production:
         sync = SettingsSync(
             manager, nc_factory, status_body, page_url=settings_page.page_url(app_id)
