@@ -23,7 +23,7 @@ def _recent(seen, now):
 
 class DiagnosticFeed:
     """The latest sample and up to COLUMNS history columns, sampled against one owner room:
-    the diagnostic video's while it runs, else the oldest live caption room, else none."""
+    the oldest live caption room, else none."""
 
     def __init__(self, service, names):
         self.service = service
@@ -62,11 +62,6 @@ class DiagnosticFeed:
 
     def _select(self):
         clients = self.service.clients
-        video = self.service.diagnostics
-        # A video that stopped itself (paused, failed) keeps its task and owner until that
-        # room closes; it no longer runs, so it no longer picks the room.
-        if video.task is not None and not video.task.done() and video.owner in clients:
-            return video.owner, clients[video.owner]
         for token, client in list(clients.items()):
             defunct = getattr(client, "defunct", None)
             if defunct is None or not defunct.is_set():

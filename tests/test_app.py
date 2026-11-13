@@ -279,7 +279,7 @@ def test_status_keeps_its_shape_and_exports_the_observing_admission_block(header
     app, _ = make_app()
     status = TestClient(app).get("/status", headers=headers).json()
     assert status["version"] == __version__
-    for key in ("capacityAssessment", "resourceSafety", "diagnosticVideo", "engine"):
+    for key in ("capacityAssessment", "resourceSafety", "engine"):
         assert key in status
     assert status["lagSeconds"] == 0.0 and status["p95RequestSeconds"] == 0.0
     safety = status["resourceSafety"]

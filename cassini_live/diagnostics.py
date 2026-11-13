@@ -1,42 +1,25 @@
-"""Opt-in, bounded diagnostic publisher. No room content crosses this pipe."""
+"""One-second diagnostic samples of the caption service. No room content leaves it."""
 
-import asyncio
 import json
-import logging
 import os
-import sys
 import time
 import weakref
-from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
-from .resources import snapshot
-
-LOGGER = logging.getLogger(__name__)
-# One sample per second, matching the governor's tick and the publisher's 1 fps.
+# One sample per second, matching the governor's tick.
 SAMPLE_S = 1.0
-# Stop the child after 6 s above 15 % of one CPU (three 2 s samples before 0.7.4).
-HIGH_SAMPLES = 6
 VERBS = {None: "admit", "shed": "keep paused"}
-SKIPS = {
-    "skippedFrames": "a frame over its size cap",
-    "skippedSamples": "a metrics line over its length limit",
-}
-# Names are the only unbounded text in a sample line, which the child reads with an 8 KiB
-# limit (diagnostic_video.LINE_LIMIT). Each is cut to NAME_BYTES as json.dumps writes it:
-# non-ASCII is escaped, 6 bytes per character and 12 per emoji, so 240 bytes keep 40
-# characters of any alphabet (NAME_CHARS) and 20 emoji. Ten lane names and the
-# decision's "who" cost at most 11 x 240 = 2640 bytes; with every number 24 characters
-# wide (silentMics and hiddenSpeakers count tracks, two digits) the line measures 6440
-# bytes, 1.7 KiB under the limit
-# (test_worst_case_sample_line_fits_the_child_limit keeps at least 1.5 KiB free).
+# Names are the only unbounded text in a sample. Each is cut to NAME_BYTES as json.dumps
+# writes it: non-ASCII is escaped, 6 bytes per character and 12 per emoji, so 240 bytes
+# keep 40 characters of any alphabet (NAME_CHARS) and 20 emoji, and a sample with ten
+# lane names and the decision's "who" stays a few KiB.
 NAME_CHARS, NAME_BYTES = 40, 240
 # Lanes show who spoke recently, not the first open microphones: a 20-person call has
 # 20 open tracks and only a few speakers. A track qualifies for LANE_WINDOW_S after its
-# last voice, the two minutes of history the video draws (diagnostic_history.COLUMNS
-# one-second columns), so a lane never shows an empty history. At most MAX_LANES lanes:
-# ten stay 13 px tall in the video's lane band, enough for their name and tag text.
+# last voice, the two minutes of history the diagnostics page draws
+# (diagnostic_history.COLUMNS one-second columns), so a lane never shows an empty
+# history. At most MAX_LANES lanes, enough for their name and tag text on the page.
 LANE_WINDOW_S, MAX_LANES = 120, 10
 # The labels that stand in for a name: an owning-room speaker whose name is unknown, a
 # decision about a speaker who has gone, and one about a speaker in another room.
@@ -131,8 +114,8 @@ class DiagnosticSampler:
         return self._scribes[worker]
 
     def _lane_sample(self, pool, transcriber, name=None, other=False, now=None):
-        """One lane. `name` only for the owner room (the video's, or the diagnostics feed's);
-        other rooms' lanes are marked `other` and carry no name."""
+        """One lane. `name` only for the owner room (the diagnostics feed's); other rooms'
+        lanes are marked `other` and carry no name."""
         gate = transcriber.gate
         held = getattr(transcriber, "worker", None)
         active = bool(getattr(gate, "active", False))
@@ -222,8 +205,8 @@ class DiagnosticSampler:
     @staticmethod
     def _speakers(owner, clients):
         """Every live transcriber with its room, and display labels for the owning room's
-        speakers only. Names leave the sampler for that room alone, to the video's pipe or to
-        the feed, which redacts them for non-members; they are never logged."""
+        speakers only. Names leave the sampler for that room alone, to the feed, which
+        redacts them for non-members; they are never logged."""
         speakers = [
             (c, sid, t) for c in clients for sid, t in list(getattr(c, "transcribers", {}).items())
         ]
@@ -301,8 +284,8 @@ class DiagnosticSampler:
         self._voices.clear()
 
     def sample(self, owner, data, now, started=None):
-        """One sample, without the video child's own figures; speaker names only for
-        `owner`'s room. `data` is the caller's resources snapshot for this tick, `now` its
+        """One sample; speaker names only for `owner`'s room. `data` is the caller's
+        resources snapshot for this tick, `now` its
         monotonic time and `started` the thread time the tick began, so samplerMs also
         covers the caller's own reads. CPU figures are deltas since the previous sample or
         prime()."""
@@ -406,167 +389,3 @@ class DiagnosticSampler:
             line.split() for line in Path("/sys/fs/cgroup/cpu.stat").read_text().splitlines()
         )
         return int(data["usage_usec"]) / 1e6
-
-
-class DiagnosticVideo:
-    """One publisher per installation; fail closed, without restart loops."""
-
-    def __init__(self, service, names=None):
-        self.service = service
-        self.names = names or NameHolds()
-        self.enabled = os.environ.get("CASSINI_LIVE_DEBUG_VIDEO", "").lower() in ("1", "true")
-        self.task = None
-        self.owner = None
-        self.state = "idle" if self.enabled else "disabled"
-        self.metrics = {}
-        self._stop_task = None
-        self._stop_reason = "stopped"
-        self.sampler = DiagnosticSampler(service)
-
-    def start(self, token):
-        if not self.enabled or self.task is not None:
-            return
-        self.owner = token
-        self.task = asyncio.create_task(self._run(token))
-
-    async def stop(self, token=None):
-        if token is not None and token != self.owner:
-            return
-        if self.task is None:
-            return
-        if self._stop_task is None:
-            self._stop_reason = (
-                "stopped: caption room closed" if token else "stopped: caption service closed rooms"
-            )
-            self._stop_task = asyncio.create_task(self._stop(self.task))
-        # Caller cancellation propagates, but reaping remains owned and tracked.
-        await asyncio.shield(self._stop_task)
-
-    async def _stop(self, task):
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        if self.task is task:
-            self.task = None
-            self.owner = None
-            self.metrics = {}
-            self.state = "idle" if self.enabled else "disabled"
-        self._stop_task = None
-
-    def status(self):
-        return {**self.metrics, "enabled": self.enabled, "state": self.state}
-
-    async def _run(self, token):
-        process = owner = None
-        try:
-            owner = self.service.clients.get(token)
-            data = snapshot()
-            safety = self.service.admission
-            limit = data.get("memoryLimitBytes") or 0
-            if (
-                owner is None
-                or safety.state != "ready"
-                or not limit
-                or data["memoryFraction"] + 128 * 1024**2 / limit >= 0.7
-            ):
-                self.state = "paused: insufficient diagnostic headroom"
-                return
-            self.state = "starting"
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "cassini_live.diagnostic_video",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                env={**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
-                limit=8192,
-            )
-            settings = self.service.settings
-            config = {
-                "room": token,
-                "backend": owner.backend_url,
-                "server": settings.server,
-                "stunservers": settings.model_dump()["stunservers"],
-                "turnservers": settings.model_dump()["turnservers"],
-                "secret": settings.secret,
-            }
-            process.stdin.write((json.dumps(config) + "\n").encode())
-            await process.stdin.drain()
-            booted = time.monotonic()
-            previous_cpu, _ = process_usage(process.pid)
-            previous_time = time.monotonic()
-            self.sampler.prime(previous_time)
-            high = 0
-            skipped = set()
-            # The owning room reads its participants' names while this video (or a member
-            # watching the diagnostics page) holds them.
-            self.names.hold(owner, self)
-            while True:
-                if self.service.clients.get(token) is not owner or owner.defunct.is_set():
-                    self.state = "stopped: caption room closed"
-                    return
-                started = time.thread_time()
-                data = snapshot()
-                safety = self.service.admission
-                if safety.state != "ready" or data["memoryFraction"] >= 0.7:
-                    self.state = "paused: caption resource pressure"
-                    return
-                now = time.monotonic()
-                elapsed = max(0.01, now - previous_time)
-                cpu, rss = process_usage(process.pid)
-                used = max(0, (cpu - previous_cpu) / elapsed)
-                # Give module imports a short startup allowance. Thereafter the
-                # entire child (rendering, codec, WebRTC) must fit 0.15 CPU.
-                high = high + 1 if used > 0.15 and now - booted > 10 else 0
-                if rss > 128 * 1024**2 or (high >= HIGH_SAMPLES and now - booted > 10):
-                    self.state = "paused: diagnostic budget exceeded"
-                    return
-                sample = self.sampler.sample(owner, data, now, started=started)
-                sample.update(
-                    diagnosticCpu=round(used * 100, 2), diagnosticMiB=round(rss / 1024**2, 1)
-                )
-                process.stdin.write((json.dumps(sample) + "\n").encode())
-                async with asyncio.timeout(8):
-                    await process.stdin.drain()
-                    reply = await process.stdout.readline()
-                if not reply:
-                    raise RuntimeError("Diagnostic publisher exited")
-                report = json.loads(reply)
-                self.metrics = {
-                    k: sample[k] for k in ("diagnosticCpu", "diagnosticMiB", "samplerMs")
-                }
-                self.metrics.update(report)
-                # Once per video each: a frame still over the cap at the coarsest
-                # quantizer, or a metrics line over the child's limit.
-                for key, what in SKIPS.items():
-                    if report.get(key) and key not in skipped:
-                        skipped.add(key)
-                        LOGGER.info("Diagnostic video skipped %s", what)
-                self.state = report.get("state", "publishing")
-                if self.state in {"failed", "closed"} or (
-                    now - booted > 30 and self.state != "connected"
-                ):
-                    return
-                previous_cpu, previous_time = cpu, now
-                await asyncio.sleep(SAMPLE_S)
-        except asyncio.CancelledError:
-            self.state = self._stop_reason
-            raise
-        except Exception as error:
-            self.state = "unavailable: " + type(error).__name__
-        finally:
-            LOGGER.info("Diagnostic video ended (%s)", self.state)
-            if owner is not None:
-                self.names.release(owner, self)
-            if process and process.returncode is None:
-                if process.stdin and hasattr(process.stdin, "close"):
-                    with suppress(Exception):
-                        process.stdin.close()
-                with suppress(ProcessLookupError):
-                    process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), 3)
-                except TimeoutError:
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                    await process.wait()

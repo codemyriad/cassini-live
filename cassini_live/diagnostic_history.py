@@ -1,6 +1,5 @@
-"""One-second history columns derived from consecutive diagnostic samples. Standard library
-only: the budgeted video child imports it without the service's web and Nextcloud stack,
-and the caption service process can import it without Pillow or the video renderer."""
+"""One-second history columns derived from consecutive diagnostic samples. Standard
+library only, so the caption service imports nothing heavy for them."""
 
 # Two minutes of history: one column per one-second sample.
 COLUMNS = 120

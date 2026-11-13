@@ -40,7 +40,7 @@ function lab(hex) {
 const distance = (a, b) => Math.hypot(...lab(a).map((v, i) => v - lab(b)[i]))
 
 test('the lag figure turns from gold to amber visibly in both themes', () => {
-  // The video's own pair (the dark tokens) is ΔE 20 apart.
+  // The dark tokens' own pair is ΔE 20 apart.
   for (const [name, theme] of Object.entries(THEMES)) {
     assert.ok(distance(theme.gold, theme.amber) >= 15, `${name}: gold ${theme.gold} vs amber ${theme.amber}`)
   }

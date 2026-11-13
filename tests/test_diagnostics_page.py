@@ -37,8 +37,8 @@ KEYS = {
 
 
 class WatchedRoom(Room):
-    """A room whose names the diagnostic video is reading, so samples carry them whether or
-    not the page holds them."""
+    """A room that answers every name lookup, so samples carry names whether or not the
+    page holds them."""
 
     def __init__(self, *names, sessions=SESSION):
         super().__init__(*names, sessions=sessions)
@@ -141,13 +141,12 @@ def test_a_member_reads_the_owner_rooms_names(monkeypatch, headers):
     assert response.status_code == 200
     assert_secure(response)
     body = response.json()
-    assert set(body) == KEYS | {"video"}
+    assert set(body) == KEYS
     assert (body["version"], body["window"], body["presence"]) == (__version__, COLUMNS, 30.0)
     assert body["names"] is True and touched == [TOKEN]
     assert [lane.get("name") for lane in body["sample"]["lanes"]] == ["Ana Ferreira", None]
     assert body["sample"]["decision"]["who"] == "Ana Ferreira"
     assert (body["head"], [c["t"] for c in body["columns"]], body["error"]) == (2.0, [2.0], None)
-    assert body["video"] == service.diagnostics.status()
     # Asked of Talk as the requesting administrator, about the room the sample shows.
     assert asked == [("alice", "GET", participants(TOKEN))]
 
@@ -439,17 +438,12 @@ def test_other_methods_and_paths_are_refused_with_security_headers(monkeypatch, 
 def test_no_room_token_session_or_participant_id_reaches_the_page(monkeypatch, headers, member):
     room, other = WatchedRoom("Ana"), WatchedRoom("Bo", sessions=f"{SESSION}-other")
     app, service, _ = build_app(
-        monkeypatch, member=member, rooms={OTHER_TOKEN: other, TOKEN: room}
+        monkeypatch, member=member, rooms={TOKEN: room, OTHER_TOKEN: other}
     )
-    # The video runs in the newer room, so the feed samples that one.
-    video = service.diagnostics
-    video.task, video.owner, video.state = SimpleNamespace(done=lambda: False), TOKEN, "connected"
-    video.metrics = {"frames": 3, "kbps": 9.5}
     decide(service, first_mic(room))
     sample(service, room, other)
     response = TestClient(app).get(FEED, headers=headers)
     assert response.status_code == 200
-    assert response.json()["video"]["state"] == "connected"
     for identifier in (TOKEN, OTHER_TOKEN, SESSION, ATTENDEE, "ROOMTOKEN"):
         assert identifier not in response.text
 

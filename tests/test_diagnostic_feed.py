@@ -10,7 +10,7 @@ import pytest
 from cassini_live import diagnostic_feed
 from cassini_live.diagnostic_feed import DiagnosticFeed
 from cassini_live.diagnostic_history import COLUMNS
-from cassini_live.diagnostics import DiagnosticVideo, NameHolds
+from cassini_live.diagnostics import NameHolds
 from cassini_live.load import LoadGovernor
 from cassini_live.pool import WorkerPool
 from tests.test_diagnostics import SAMPLE_KEYS, SNAPSHOT, Mic
@@ -48,8 +48,7 @@ def service_with(**clients):
     admission = SimpleNamespace(
         state="ready", pool=pool, governor=LoadGovernor(ceiling=2), tracks=set(), max_tracks=8
     )
-    video = SimpleNamespace(task=None, owner=None)
-    return SimpleNamespace(clients=dict(clients), admission=admission, diagnostics=video)
+    return SimpleNamespace(clients=dict(clients), admission=admission)
 
 
 def quiet(monkeypatch, sampler, data=SNAPSHOT):
@@ -169,24 +168,12 @@ def test_samples_without_rooms_engine_or_memory_limit(monkeypatch, admission):
     assert feed.names_token() is None and feed.owner_token() is None
 
 
-def test_owner_is_the_video_room_else_the_oldest_live_room_else_none(monkeypatch):
+def test_owner_is_the_oldest_live_room_else_none(monkeypatch):
     first, second, third = Room("Ana"), Room("Bo"), Room("Cy")
     service = service_with(**{"room-1": first, "room-2": second, "room-3": third})
     feed = make_feed(monkeypatch, service)
     assert feed.owner_token() == "room-1"
     first.defunct.set()
-    assert feed.owner_token() == "room-2"
-    running = SimpleNamespace(done=lambda: False)
-    service.diagnostics.task, service.diagnostics.owner = running, "room-3"
-    assert feed.owner_token() == "room-3"
-    # A video still stopping for a room that is gone, or no video at all.
-    service.diagnostics.owner = "room-gone"
-    assert feed.owner_token() == "room-2"
-    service.diagnostics.task, service.diagnostics.owner = None, "room-3"
-    assert feed.owner_token() == "room-2"
-    # A video that stopped itself keeps its task and owner until its room closes, but no
-    # longer runs: the feed samples the oldest live room again.
-    service.diagnostics.task = SimpleNamespace(done=lambda: True)
     assert feed.owner_token() == "room-2"
     second.defunct.set()
     assert feed.owner_token() == "room-3"
@@ -231,13 +218,13 @@ def test_name_holds_count_every_holder():
     holds = NameHolds()
     shown = []
     client = SimpleNamespace(show_names=shown.append)  # unhashable, like the tests' rooms
-    video, page = object(), object()
-    holds.hold(client, video)
+    other, page = object(), object()
+    holds.hold(client, other)
     holds.hold(client, page)
-    holds.hold(client, video)
+    holds.hold(client, other)
     assert shown == [True]
-    holds.release(client, video)
-    holds.release(client, video)
+    holds.release(client, other)
+    holds.release(client, other)
     assert shown == [True]
     holds.release(client, page)
     assert shown == [True, False]
@@ -245,67 +232,8 @@ def test_name_holds_count_every_holder():
     holds.hold(client, page)
     assert shown == [True, False, True]
     # A client that cannot read names is left alone.
-    holds.hold(SimpleNamespace(), video)
-    holds.release(SimpleNamespace(), video)
-
-
-async def test_the_video_ending_keeps_names_the_page_still_holds(monkeypatch):
-    import cassini_live.diagnostics as module
-
-    monkeypatch.setenv("CASSINI_LIVE_DEBUG_VIDEO", "1")
-    room = Room("Ana Ferreira")
-    service = service_with(room=room)
-    service.settings = SimpleNamespace(
-        server="wss://example.invalid",
-        secret="test-hpb",
-        model_dump=lambda: {"stunservers": [], "turnservers": []},
-    )
-    holds = NameHolds()
-    feed = without_ticker(make_feed(monkeypatch, service, holds))
-    video = service.diagnostics = DiagnosticVideo(service, names=holds)
-
-    class Pipe:
-        def write(self, data):
-            pass
-
-        async def drain(self):
-            pass
-
-    class Out:
-        async def readline(self):
-            return b'{"state": "failed"}\n'
-
-    class Child:
-        pid, returncode, stdin, stdout = 123, None, Pipe(), Out()
-
-        def terminate(self):
-            self.returncode = 0
-
-        async def wait(self):
-            return 0
-
-    async def spawn(*args, **kwargs):
-        return Child()
-
-    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(module, "process_usage", lambda pid: (0, 1))
-    monkeypatch.setattr(module, "snapshot", lambda: dict(SNAPSHOT))
-    quiet(monkeypatch, video.sampler)
-    feed.touch("room", now=1.0)
-    feed._step(1.5)
-    assert room.shown == [True]
-    await video._run("room")
-    assert video.state == "failed"
-    # The video held and released the room's names; the page still holds them.
-    assert room.shown == [True]
-    room.speak()
-    feed._step(2.5)
-    assert feed.read(0)["sample"]["lanes"][0]["name"] == "Ana Ferreira"
-    await feed.close()
-    assert room.shown == [True, False]
-    # Alone, the video turns names on and off as before.
-    await video._run("room")
-    assert room.shown == [True, False, True, False]
+    holds.hold(SimpleNamespace(), other)
+    holds.release(SimpleNamespace(), other)
 
 
 async def test_an_owner_change_releases_the_old_room_and_forgets_the_member(monkeypatch):
@@ -509,7 +437,7 @@ async def test_closing_the_service_stops_the_feed(monkeypatch):
     from cassini_live.service import CaptionService
 
     service = CaptionService(Config(None, 2, "secret", ""))
-    assert service.diagnostics.names is service.diagnostic_feed.names is service.name_holds
+    assert service.diagnostic_feed.names is service.name_holds
     room = Room("Ana")
     service.clients["room"] = room
     feed = without_ticker(service.diagnostic_feed)

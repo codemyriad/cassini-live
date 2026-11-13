@@ -344,9 +344,9 @@ def create_app(
             raise HTTPException(
                 503, "Could not connect captions to Talk; please try again"
             ) from error
-        # AppAPI names the requesting user; the diagnostics (the video, or the page for a
-        # member watching) read this room's participant names as them. Guests have no user
-        # id and are skipped.
+        # AppAPI names the requesting user; the diagnostics page (for a member watching)
+        # reads this room's participant names as them. Guests have no user id and are
+        # skipped.
         client = getattr(service, "clients", {}).get(req.roomToken)
         if req.enable and client is not None and hasattr(client, "note_user"):
             client.note_user(username)
@@ -387,7 +387,6 @@ def create_app(
             "activeRooms": len(service.clients),
             "capacityAssessment": assessment.result,
             "resourceSafety": resource_status,
-            "diagnosticVideo": service.diagnostics.status(),
             **safety.pool.status(),
             # After the pool fields: the pool reports only its engine id under this key.
             "engine": manager.engine_status(),
@@ -399,11 +398,7 @@ def create_app(
     )
     app.include_router(panel_page.create_router(app_id))
     app.include_router(home_page.create_router(app_id))
-    app.include_router(
-        diagnostics_page.create_router(
-            service.diagnostic_feed, membership, service.diagnostics.status
-        )
-    )
+    app.include_router(diagnostics_page.create_router(service.diagnostic_feed, membership))
     if production:
         sync = SettingsSync(
             manager, nc_factory, status_body, page_url=settings_page.page_url(app_id)
