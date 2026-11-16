@@ -22,6 +22,7 @@ from .eligibility import NetworkProbe
 from .engine_switch import EngineManager, SwitchRefused
 from .membership import RoomMembership
 from .model_store import ModelStore
+from .nc_client import nc_client
 from .pool import WorkerPool
 from .recovery import RecoveryJournal
 from .safety import ResourceRefused, SafetyController
@@ -120,7 +121,8 @@ def create_app(
                 safety.admin_action = True
             await asyncio.sleep(delay)
             try:
-                await restore_connection(nc_factory(), force)
+                async with nc_client(nc_factory) as nc:
+                    await restore_connection(nc, force)
                 return
             except Exception:
                 service.enabled = False
@@ -142,8 +144,8 @@ def create_app(
         nonlocal discovery_task
         await stop_discovery()
         try:
-            async with asyncio.timeout(10):
-                await service.discover(nc_factory())
+            async with nc_client(nc_factory) as nc, asyncio.timeout(10):
+                await service.discover(nc)
         except Exception as error:
             service.enabled = False
             service.settings = None
@@ -213,7 +215,8 @@ def create_app(
             if production:
                 await manager.restore()
             try:
-                await restore_connection(nc_factory())
+                async with nc_client(nc_factory) as nc:
+                    await restore_connection(nc)
             except Exception:
                 LOGGER.warning("Talk is not ready on startup; retrying automatically")
                 discovery_task = asyncio.create_task(retry_connection())

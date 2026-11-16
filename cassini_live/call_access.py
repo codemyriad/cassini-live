@@ -19,6 +19,8 @@ import re
 import time
 from collections.abc import Callable
 
+from .nc_client import nc_client
+
 # Talk room tokens are short alphanumerics; anything else never reaches the OCS path.
 ROOM_TOKEN = re.compile(r"[A-Za-z0-9]{1,64}")
 
@@ -33,11 +35,11 @@ class CallSessions:
         if not username or not session_id or not ROOM_TOKEN.fullmatch(room_token or ""):
             return False
         try:
-            nc = self.nc_factory()
-            await nc.set_user(username)
-            participants = await nc.ocs(
-                "GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants"
-            )
+            async with nc_client(self.nc_factory) as nc:
+                await nc.set_user(username)
+                participants = await nc.ocs(
+                    "GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants"
+                )
         except Exception:
             return False
         for participant in participants if isinstance(participants, list) else []:

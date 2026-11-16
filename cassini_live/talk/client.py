@@ -47,6 +47,7 @@ from .types import (
 from .meta_translator import MetaTranslator
 from .models import LANGUAGE_MAP
 from nc_py_api import AsyncNextcloudApp
+from ..nc_client import close_client, nc_client
 from ..transcriber import WhistleTranscriber
 from ..transcriber import create as create_transcriber
 from .utils import get_ssl_context, hmac_sha256, sanitize_websocket_url
@@ -487,13 +488,13 @@ class SpreedClient:
 
 	async def send_hello(self):
 		nonce = token_urlsafe(64)
-		nc = AsyncNextcloudApp()
-		abs_url_res = await nc.ocs(
-			"GET",
-			"/ocs/v1.php/apps/app_api/api/v1/info/nextcloud_url/absolute",
-			params={"url": ""},
-		)
-		nc_public_url = abs_url_res.get("absolute_url") or nc.app_cfg.endpoint
+		async with nc_client(AsyncNextcloudApp) as nc:
+			abs_url_res = await nc.ocs(
+				"GET",
+				"/ocs/v1.php/apps/app_api/api/v1/info/nextcloud_url/absolute",
+				params={"url": ""},
+			)
+			nc_public_url = abs_url_res.get("absolute_url") or nc.app_cfg.endpoint
 		self.backend_url = nc_public_url
 
 		await self.send_message({
@@ -790,6 +791,9 @@ class SpreedClient:
 		if self._names_task and not self._names_task.done():
 			self._names_task.cancel()
 		self.speaker_names = {}
+		if self._names_app is not None:
+			names_app, self._names_app = self._names_app, None
+			await close_client(names_app)
 
 		if self._deferred_close_task and not self._deferred_close_task.done():
 			LOGGER.debug("Cancelling deferred close task", extra={

@@ -322,6 +322,24 @@ async def test_ocs_errors_back_off_and_never_propagate(h):
     assert h.sync.delay == h.sync.poll_s and h.sync.dirty.is_set()
 
 
+async def test_a_failed_call_closes_the_dropped_client(h):
+    """Recreating the client on error must close the old one: a dropped client's QUIC
+    sockets hold their fds until the process dies (the 2026-11-13 fd exhaustion)."""
+    closed = []
+
+    class Adapter:
+        def __init__(self, name):
+            self.name = name
+
+        async def close(self):
+            closed.append(self.name)
+
+    h.nc._session = SimpleNamespace(adapter=Adapter("ocs"), adapter_dav=Adapter("dav"))
+    h.nc.fail = OSError("Nextcloud is down")
+    await h.sync.poll_once()
+    assert closed == ["ocs", "dav"] and h.sync.nc is None
+
+
 async def test_start_and_stop_with_final_note(h):
     await h.sync.start()
     await h.sync.start()
