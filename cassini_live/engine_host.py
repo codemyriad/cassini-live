@@ -24,7 +24,7 @@ COMMIT_PAD_S = 0.56
 FINISH_PAD_S = 1.2
 ROTATE_SAMPLES = 30 * 60 * RATE
 CASSINI_LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
-# The option form sherpa-onnx 1.13.8 accepts; tests/test_engine_integration.py checks it.
+# The option form sherpa-onnx accepts; tests/test_engine_integration.py checks it.
 LANGUAGE_OPTION = {code: code for code in CASSINI_LANGUAGES}
 TAG = re.compile(r"<([a-z]{2,3})(?:[-_][A-Za-z0-9]{2,4})?>")
 MODEL_FILES = ("tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx")

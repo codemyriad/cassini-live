@@ -21,7 +21,7 @@ manifest with their revisions and SHA-256 checksums. Model weights come from
 [Cactus-Compute/whistle](https://huggingface.co/Cactus-Compute/whistle), Apache-2.0.
 
 The optional Nemotron engines run on
-[`sherpa-onnx==1.13.8`](https://github.com/k2-fsa/sherpa-onnx) and its
+[`sherpa-onnx==2.0.1`](https://github.com/k2-fsa/sherpa-onnx) and its
 `sherpa-onnx-core` wheel, Apache-2.0 (`LICENSES/Apache-2.0.txt`). The core wheel
 bundles its own copy of ONNX Runtime (`libonnxruntime.so` 1.28.2, MIT). The
 manylinux wheels also vendor alsa-lib 1.2.12 (`sherpa_onnx.libs/libasound-*.so.2.0.0`),
