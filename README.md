@@ -72,9 +72,9 @@ Changes in 0.11.0:
 
 * A live diagnostics page for administrators, served by the app at
   `/index.php/apps/app_api/proxy/cassini_live/diagnostics/` and linked
-  from the settings page's Status section. It shows both views of the
-  diagnostic video at once, updated every second, without joining a call or
-  setting a deploy option. The app samples for it only while the page polls,
+  from the settings page's Status section. It shows the speakers and how
+  each caption is made at once, updated every second, without joining a call
+  or setting a deploy option. The app samples for it only while the page polls,
   and shows speakers' names only to administrators who are participants of
   the sampled call's Talk conversation. See
   [diagnostics page](docs/diagnostics-page.md).
@@ -109,8 +109,8 @@ Changes in 0.8.1:
 * Calls with many participants: up to 24 open microphones per server (was 10),
   and a Nemotron speaker's engine stream closes after a minute of silence, so
   any 12 people can speak within a minute instead of only the first 12.
-* The diagnostic video lists the people who spoke in the last two minutes,
-  with a count of silent microphones.
+* The diagnostic video (since removed) lists the people who spoke in the last
+  two minutes, with a count of silent microphones.
 
 Changes in 0.8.0:
 

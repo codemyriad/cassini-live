@@ -9,8 +9,9 @@ the app:
 
 The Status section of the Cassini Live settings page links to it ("Live
 diagnostics"), and the page links back. You don't have to be in a call, and no
-deploy option is needed. Both views are on screen at once, update once a
-second, and the text can be selected and copied into a bug report.
+deploy option is needed. The speakers and the caption pipeline are on screen
+at once, update once a second, and the text can be selected and copied into a
+bug report.
 
 ## What it shows
 
