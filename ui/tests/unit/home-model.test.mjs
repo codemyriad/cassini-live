@@ -20,16 +20,16 @@ test('ready: green pill, no setup list, admin facts only for administrators', ()
   assert.equal(user.facts, null)
   const admin = viewModel({ status: { ...ready, activeRooms: 2 }, admin: { talk: talkOk, panel: { host } } })
   assert.equal(admin.setup, null)
-  assert.deepEqual(admin.facts, { engine: 'Whistle', talk: { text: 'Passed', tone: 'good' }, calls: '2 calls' })
+  assert.deepEqual(admin.facts, { engine: 'Whistle', talk: { text: 'Connected', tone: 'good' }, calls: '2 calls' })
 })
 
-test('right after install an administrator sees all three steps open', () => {
+test('right after install an administrator sees both tasks open and the engine waiting', () => {
   const model = viewModel({ status: fresh, admin: { talk: { secretConfigured: false, check: null }, panel: { host: {} } } })
   assert.equal(model.pill.text, 'Setup needed')
   assert.deepEqual(model.setup.map((s) => [s.id, s.done]), [['talk', false], ['limits', false], ['engine', false]])
   assert.equal(model.setup[2].state, 'Waiting')
-  assert.equal(model.facts.talk.text, 'Internal secret not set')
-  assert.equal(model.facts.engine, 'Whistle, not loaded')
+  // The facts and links take the setup list's place once captions are ready.
+  assert.equal(model.facts, null)
 })
 
 test('a failed check and a refused container are named in their steps', () => {
@@ -59,14 +59,14 @@ test('with both steps done the engine step says it is loading', () => {
 
 test('other people are told to ask an administrator, or that captions are starting', () => {
   const blocked = viewModel({ status: fresh, admin: null })
-  assert.equal(blocked.pill.text, 'Captions are not set up yet')
-  assert.match(blocked.userNote, /Ask an administrator/)
+  assert.equal(blocked.pill.text, 'Not set up yet')
+  assert.match(blocked.userNote, /An administrator needs to finish setting up/)
   const starting = viewModel({ status: { ...fresh, resourceSafety: { state: 'recovering', phase: 'loading' } }, admin: null })
-  assert.equal(starting.pill.text, 'Captions are starting')
+  assert.equal(starting.pill.text, 'Starting')
 })
 
 test('no answer from the app is said plainly', () => {
   const model = viewModel({ status: null, admin: null })
   assert.equal(model.pill.kind, 'off')
-  assert.match(model.userNote, /did not answer/)
+  assert.match(model.userNote, /isn't responding/)
 })

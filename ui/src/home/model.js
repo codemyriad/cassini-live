@@ -19,7 +19,7 @@ function talkStep(talk, status) {
   } else if (talk?.secretConfigured && !done) {
     detail = "The secret is saved. Cassini Live is still loading Talk's signalling settings."
   } else if (done) {
-    detail = 'The high-performance backend accepted the internal secret.'
+    detail = 'Connected.'
   }
   return { id: 'talk', title: 'Connect to Talk', done, detail, action: 'settings' }
 }
@@ -30,15 +30,15 @@ function limitsStep(host, safety, talkDone) {
   // service names what is missing.
   const refused = talkDone && safety?.state === 'blocked' && safety?.phase === 'configuration'
   const done = set && !refused
-  let detail = 'The container needs enforced CPU, memory and process limits, with swap off. This is done on the server, not here.'
+  let detail = 'Give the container CPU, memory and process limits, and turn swap off. You do this on the server that runs the container.'
   if (refused && safety.reason) detail = sentence(safety.reason)
-  else if (done) detail = 'CPU and memory limits are in place.'
+  else if (done) detail = 'Limits are set.'
   return { id: 'limits', title: 'Set container limits', done, detail, action: 'limits-docs' }
 }
 
 function engineStep(safety, earlierDone) {
   const done = safety?.state === 'ready'
-  let detail = 'Happens by itself once the first two are done. This page then shows Captions ready.'
+  let detail = 'The speech engine starts on its own once both are done.'
   let state = 'Waiting'
   if (done) {
     detail = 'The speech engine is loaded.'
@@ -47,7 +47,7 @@ function engineStep(safety, earlierDone) {
     state = safety?.phase === 'loading' ? 'Loading' : 'Starting'
     if (safety?.reason) detail = sentence(safety.reason)
   }
-  return { id: 'engine', title: 'Speech engine loads', done, detail, state }
+  return { id: 'engine', title: 'Speech engine', done, detail, state }
 }
 
 function sentence(text) {
@@ -57,18 +57,18 @@ function sentence(text) {
 }
 
 function talkFact(talk) {
-  if (!talk?.secretConfigured) return { text: 'Internal secret not set', tone: 'warning' }
+  if (!talk?.secretConfigured) return { text: 'Not connected', tone: 'warning' }
   const check = talk.check
-  if (!check) return { text: 'Secret saved, not checked since restart', tone: 'neutral' }
-  if (check.state === 'passed') return { text: 'Passed', tone: 'good' }
+  if (!check) return { text: 'Not checked since restart', tone: 'neutral' }
+  if (check.state === 'passed') return { text: 'Connected', tone: 'good' }
   return { text: check.state === 'failed' ? 'Check failed' : 'Backend unreachable', tone: 'warning' }
 }
 
 export function viewModel({ status, admin }) {
   if (!status) {
     return {
-      pill: { kind: 'off', text: 'Cannot reach Cassini Live' },
-      userNote: 'Cassini Live did not answer. Reload this page; if it stays like this, tell an administrator.',
+      pill: { kind: 'off', text: 'Not responding' },
+      userNote: "Cassini Live isn't responding. Reload the page. If that doesn't help, tell an administrator.",
       setup: null,
       facts: null,
     }
@@ -83,12 +83,17 @@ export function viewModel({ status, admin }) {
     const first = talkStep(talk, status)
     const second = limitsStep(admin.panel?.host, safety, first.done)
     const third = engineStep(safety, first.done && second.done)
-    if (!ready) setup = [first, second, third]
-    const rooms = Number(status.activeRooms) || 0
-    facts = {
-      engine: status.model ? (safety.state === 'ready' ? status.model : `${status.model}, not loaded`) : 'Unknown',
-      talk: talkFact(talk),
-      calls: rooms === 0 ? 'None right now' : rooms === 1 ? '1 call' : `${rooms} calls`,
+    // One administrator block at a time: what is left to do, or, once captions
+    // are ready, the facts and links.
+    if (!ready) {
+      setup = [first, second, third]
+    } else {
+      const rooms = Number(status.activeRooms) || 0
+      facts = {
+        engine: status.model || 'Unknown',
+        talk: talkFact(talk),
+        calls: rooms === 0 ? 'None' : rooms === 1 ? '1 call' : `${rooms} calls`,
+      }
     }
   }
 
@@ -99,10 +104,10 @@ export function viewModel({ status, admin }) {
   }
   const starting = safety.state === 'recovering' && !safety.adminActionRequired
   return {
-    pill: starting ? { kind: 'setup', text: 'Captions are starting' } : { kind: 'setup', text: 'Captions are not set up yet' },
+    pill: starting ? { kind: 'setup', text: 'Starting' } : { kind: 'setup', text: 'Not set up yet' },
     userNote: starting
-      ? 'Cassini Live is starting. Captions will work in a moment.'
-      : 'Captions are not set up yet. Ask an administrator to finish setting up Cassini Live.',
+      ? 'Cassini Live is starting. Give it a moment.'
+      : "Captions aren't working yet. An administrator needs to finish setting up Cassini Live.",
     setup: null,
     facts: null,
   }

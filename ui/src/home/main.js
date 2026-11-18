@@ -6,9 +6,9 @@
  * script draws the whole page into a shadow root there, so Nextcloud's styles and
  * ours stay apart while Nextcloud's theme colours (CSS variables) still apply.
  *
- * Everyone gets the three steps to captions and the "Live transcript" bookmark.
- * Administrators also get what is left to set up and links to the settings and
- * diagnostics pages. Those routes are ADMIN at the proxy: hiding the block here
+ * Everyone gets the two steps to captions and the "Live transcript" bookmark.
+ * Administrators also get what is left to set up or, once captions are ready,
+ * links to the settings and diagnostics pages. Those routes are ADMIN at the proxy: hiding the block here
  * is a courtesy, not the boundary.
  */
 
@@ -91,21 +91,21 @@ function mount(container) {
   bookmark.setAttribute('href', loader)
   bookmark.addEventListener('click', (event) => {
     event.preventDefault()
-    say('Drag it up to your bookmarks bar instead of clicking it here. It works inside a Talk call.')
+    say('This only works during a Talk call. Drag it to your bookmarks bar first.')
   })
   bookmark.addEventListener('dragstart', () => {
     $('drop-hint').hidden = false
   })
   bookmark.addEventListener('dragend', () => {
     $('drop-hint').hidden = true
-    say('If Live transcript is now in your bookmarks bar, you are done here: join a Talk call and click it.')
+    say('Added? Join a Talk call and click it.')
   })
   $('copy').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(loader)
       say('Copied. Add a new bookmark, name it Live transcript, and paste this as its address (URL).')
     } catch {
-      say('Copying is not allowed here. Right-click Live transcript above and copy its link address instead.')
+      say("Couldn't copy. Right-click Live transcript above and copy the link.")
     }
   })
 
@@ -120,8 +120,12 @@ function mount(container) {
     const list = $('setup-list')
     box.hidden = !steps
     if (!steps) return
+    // The engine is not a task: it is a status line under the numbered ones.
+    const engine = steps.find((step) => step.id === 'engine')
+    $('engine-text').textContent = engine ? engine.detail : ''
+    $('engine-state').textContent = engine ? engine.state : ''
     list.replaceChildren(
-      ...steps.map((step, index) => {
+      ...steps.filter((step) => step !== engine).map((step, index) => {
         const row = el('div', `setup-step${step.done ? ' done' : ''}`)
         row.dataset.step = step.id
         row.append(el('span', 'num', step.done ? '✓' : String(index + 1)))
@@ -135,13 +139,11 @@ function mount(container) {
           link.href = proxyUrl(APP_ID, 'settings/index.html')
           row.append(link)
         } else if (step.action === 'limits-docs') {
-          const link = el('a', 'secondary', 'How to set them')
+          const link = el('a', 'secondary', 'Read the guide')
           link.href = LIMITS_DOCS
           link.target = '_blank'
           link.rel = 'noopener noreferrer'
           row.append(link)
-        } else {
-          row.append(el('span', 'setup-state', step.state))
         }
         return row
       }),

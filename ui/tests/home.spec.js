@@ -18,12 +18,12 @@ async function open(page, state, { admin = false } = {}) {
   return page.locator('#cassini-live-home')
 }
 
-test('a user sees the three steps, the Live transcript bookmark and a green status', async ({ page }) => {
+test('a user sees the two steps, the Live transcript bookmark and a green status', async ({ page }) => {
   const home = await open(page, { status: ready, admin: null })
   await expect(home.locator('#pill')).toHaveText('Captions ready')
   await expect(home.locator('h1')).toHaveText('Cassini Live')
   await expect(home.locator('.step strong')).toHaveText([
-    'Add the Live transcript bookmark', 'Join a Talk call', 'Click the Live transcript bookmark',
+    'Add the Live transcript bookmark', 'Click Live transcript',
   ])
   const bookmark = home.locator('#bookmark')
   await expect(bookmark).toHaveText('Live transcript')
@@ -31,21 +31,25 @@ test('a user sees the three steps, the Live transcript bookmark and a green stat
   const href = await bookmark.getAttribute('href')
   expect(href.startsWith('javascript:')).toBe(true)
   expect(href).toContain('/apps/app_api/proxy/live_transcription/panel/panel.js')
-  await expect(home.locator('figure svg')).toHaveAttribute('aria-label', /bookmarks bar/)
+  await expect(home.locator('#how-add svg')).toHaveAttribute('aria-label', /bookmarks bar/)
+  await expect(home.locator('#how-click')).toHaveAttribute('aria-label', /Live transcription tab/)
   await expect(home.locator('#admin')).toBeHidden()
   await expect(home.locator('#setup')).toBeHidden()
   await expect(home.locator('#version')).toHaveText('Cassini Live 0.11.0')
   await expect(home.locator('#open-talk')).toHaveAttribute('href', '/index.php/apps/spreed/')
-  // The thing to drag is never called a button.
+  // The thing to drag is never called a button. Only the note about Talk's own
+  // control uses the word.
   const text = await home.locator('.page').innerText()
-  expect(text.toLowerCase()).not.toContain('button')
+  const note = await home.locator('#talk-note').innerText()
+  expect(note).toContain("Talk's Enable live transcription button")
+  expect(text.replace(note, '').toLowerCase()).not.toContain('button')
 })
 
 test('clicking the bookmark here explains dragging, and copy offers the manual way', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const home = await open(page, { status: ready, admin: null })
   await home.locator('#bookmark').click()
-  await expect(home.locator('#bookmark-note')).toContainText('Drag it up to your bookmarks bar')
+  await expect(home.locator('#bookmark-note')).toContainText('Drag it to your bookmarks bar')
   await home.locator('#copy').click()
   await expect(home.locator('#bookmark-note')).toContainText('name it Live transcript')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^javascript:/)
@@ -68,16 +72,13 @@ test('an administrator right after install gets the setup list and links', async
   )
   await expect(home.locator('#pill')).toHaveText('Setup needed')
   await expect(home.locator('#setup')).toBeVisible()
-  await expect(home.locator('.setup-step strong')).toHaveText([
-    'Connect to Talk', 'Set container limits', 'Speech engine loads',
-  ])
+  await expect(home.locator('.setup-step strong')).toHaveText(['Connect to Talk', 'Set container limits'])
+  await expect(home.locator('[data-step="limits"] a')).toHaveText('Read the guide')
   await expect(home.locator('[data-step="talk"] a')).toHaveAttribute(
     'href', '/index.php/apps/app_api/proxy/live_transcription/settings/index.html')
   await expect(home.locator('[data-step="engine"] .setup-state')).toHaveText('Waiting')
-  await expect(home.locator('#admin')).toBeVisible()
-  await expect(home.locator('#fact-talk')).toHaveText('Internal secret not set')
-  await expect(home.locator('#diagnostics-link')).toHaveAttribute(
-    'href', '/index.php/apps/app_api/proxy/live_transcription/diagnostics/')
+  // The facts and links replace the setup list once captions are ready.
+  await expect(home.locator('#admin')).toBeHidden()
 })
 
 test('the page follows setup as it completes, without a reload', async ({ page }) => {
@@ -92,18 +93,21 @@ test('the page follows setup as it completes, without a reload', async ({ page }
   })
   await expect(home.locator('#pill')).toHaveText('Captions ready', { timeout: 10000 })
   await expect(home.locator('#setup')).toBeHidden()
-  await expect(home.locator('#fact-talk')).toHaveText('Passed')
+  await expect(home.locator('#admin')).toBeVisible()
+  await expect(home.locator('#fact-talk')).toHaveText('Connected')
+  await expect(home.locator('#diagnostics-link')).toHaveAttribute(
+    'href', '/index.php/apps/app_api/proxy/live_transcription/diagnostics/')
 })
 
 test('a non-administrator is told to ask one, and never sees the admin block', async ({ page }) => {
   const home = await open(page, { status: fresh, admin: null })
-  await expect(home.locator('#pill')).toHaveText('Captions are not set up yet')
-  await expect(home.locator('#user-note')).toContainText('Ask an administrator')
+  await expect(home.locator('#pill')).toHaveText('Not set up yet')
+  await expect(home.locator('#user-note')).toContainText('An administrator needs to finish setting up')
   await expect(home.locator('#admin')).toBeHidden()
   await expect(home.locator('#setup')).toBeHidden()
 })
 
 test('an unreachable app is said plainly', async ({ page }) => {
   const home = await open(page, { status: null, admin: null })
-  await expect(home.locator('#pill')).toHaveText('Cannot reach Cassini Live')
+  await expect(home.locator('#pill')).toHaveText('Not responding')
 })
