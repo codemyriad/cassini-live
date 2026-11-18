@@ -30,6 +30,8 @@ COPY --from=build /usr/local/bin/frpc /usr/local/bin/frpc
 COPY cassini_live cassini_live
 COPY scripts/entrypoint.py scripts/entrypoint.py
 COPY LICENSE NOTICE.md ./
+# The app-menu icon, served at img/app.svg.
+COPY img/app.svg img/app.svg
 COPY LICENSES LICENSES
 ENV PATH="/app/.venv/bin:$PATH" APP_HOST=0.0.0.0 APP_PORT=8080 \
     NEEDLE_TELEMETRY=0 DO_NOT_TRACK=1 HF_HUB_OFFLINE=1 ORT_DISABLE_TELEMETRY=1 \

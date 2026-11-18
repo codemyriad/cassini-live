@@ -304,6 +304,17 @@ function timeline(token) {
   return timelines.get(token)
 }
 
+// The home page (the app-menu entry): what /status and settings/api/state answer,
+// set by POST /fixture-home { status, admin }. `admin: null` answers 403.
+let homeState = { status: null, admin: null }
+const homePage = (admin) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cassini Live - Nextcloud</title>
+<script nonce="${NONCE}">
+  window.OC = { isUserAdmin: () => ${admin ? 'true' : 'false'}, generateUrl: (path) => '/index.php' + path }
+</script>
+<script nonce="${NONCE}" src="/fixture-home.js" defer></script>
+</head><body><header id="header">Nextcloud</header><div id="content"></div></body></html>`
+
 // Conversations the panel enabled captions for (the ExApp's captions/transcribe POST).
 const enabled = []
 // Refusals queued for the next captions/transcribe POSTs: { status, detail }, as the
@@ -360,6 +371,43 @@ export function startFixtureServer(port = PORT) {
         res.writeHead(204)
         res.end()
       })
+      return
+    }
+    if (url.pathname === '/home') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': CSP })
+      res.end(homePage(url.searchParams.get('admin') === '1'))
+      return
+    }
+    if (url.pathname === '/fixture-home.js') {
+      const body = (await readFile(join(distDir, 'home.js'), 'utf8'))
+        .replaceAll('__CASSINI_LIVE_APP_ID__', 'live_transcription')
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
+      res.end(body)
+      return
+    }
+    if (url.pathname === '/fixture-home' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        homeState = JSON.parse(raw)
+        res.writeHead(204)
+        res.end()
+      })
+      return
+    }
+    if (url.pathname.endsWith('/live_transcription/status')) {
+      res.writeHead(homeState.status ? 200 : 503, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(homeState.status || {}))
+      return
+    }
+    if (url.pathname.endsWith('/live_transcription/settings/api/state')) {
+      res.writeHead(homeState.admin ? 200 : 403, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(homeState.admin || { error: { code: 'forbidden' } }))
+      return
+    }
+    if (url.pathname.endsWith('/live_transcription/img/app.svg')) {
+      res.writeHead(200, { 'content-type': 'image/svg+xml' })
+      res.end('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="white"/></svg>')
       return
     }
     if (url.pathname === '/fixture-enabled') {

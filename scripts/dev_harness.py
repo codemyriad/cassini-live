@@ -295,11 +295,12 @@ class Harness:
                     "--installed", "--wait", str(cfg.timeout), timeout=cfg.timeout + 15)
         self.docker("exec", "-i", cfg.container, "python", "-", input=HPB_PROBE)
         prefix = "/index.php/apps/app_api/proxy/" + self.app["appid"]
-        for path in ("/panel/", "/settings/index.html"):
+        for path in ("/panel/panel.js", "/settings/index.html"):
             self.page(prefix + path)
         print("Cassini Live is ready. Open these URLs using the exact hostname shown:")
         print(f"  Talk: {cfg.public_url}/index.php/apps/spreed/")
-        print(f"  Transcript bookmarklet: {cfg.public_url}{prefix}/panel/")
+        home = "/index.php/apps/app_api/embedded/" + self.app["appid"] + "/home"
+        print(f"  Cassini Live page (transcript bookmark): {cfg.public_url}{home}")
         print(f"  Settings: {cfg.public_url}{prefix}/settings/index.html")
         print("Join a call with another participant and enable captions in the call menu.")
 

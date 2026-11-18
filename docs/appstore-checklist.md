@@ -62,7 +62,7 @@ local store rehearsal.
 - [x] **The first store version: `0.12.0-alpha.1`.** Not a restart at 0.1.0:
       the hosts still hold old `cassini-live:0.1.0` images that a
       `ghcr.io → local` mapping would pick up.
-- [x] **Main's version.** Main is at 0.11.0, the deployed version, so the first
+- [x] **Main's version.** Main is at 0.11.1 (0.11.0 is the deployed version), so the first
       cut is `prepare-release.sh --bump minor` → `0.12.0-alpha.1`. After the first
       beta, main carries the next untagged `X.Y.0-alpha.0`, as in Cassini.
 - [x] **Release branches: Cassini's model.** Alphas on main; `release/X.Y`
@@ -118,8 +118,8 @@ Everything here is done.
       panel's bookmark starts captions, logged-in users only, and the container
       limits are set after installation.
 - [x] `docs/install.md` (the store's admin documentation link) starts with the
-      App Store install, and the README, the panel's install page and the other
-      docs name only `cassini_live`.
+      App Store install, and the README and the other docs name only
+      `cassini_live`.
 
 Stacked on this branch, not needed for the release:
 
@@ -164,7 +164,7 @@ In this order:
       stacked on it).
 - [ ] Run `image.yml` by hand on `main`; make the GHCR package public.
 - [ ] Cut the first pre-release on `main`:
-      `./scripts/prepare-release.sh --bump minor --push` (0.11.0 →
+      `./scripts/prepare-release.sh --bump minor --push` (0.11.1 →
       0.12.0-alpha.1). It folds the changelog fragments and pushes the tag,
       which starts `image.yml` and `release.yml`; `release.yml` then waits
       for approval in the `Release` environment.

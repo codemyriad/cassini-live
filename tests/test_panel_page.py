@@ -12,21 +12,20 @@ def get(path, headers):
     return TestClient(app).get(path, headers=headers)
 
 
-def test_panel_assets_are_served_with_security_headers(headers):
-    for name, content_type, marker in [
-        ("", "text/html", b"Cassini Live transcript panel"),
-        ("index.html", "text/html", b"Cassini Live transcript panel"),
-        ("panel.js", "text/javascript", b"__CASSINI_LIVE_PANEL__"),
-        ("install.js", "text/javascript", b"CASSINI_LIVE_BOOKMARKLETS"),
-        ("install.css", "text/css", b"color-scheme"),
-    ]:
-        response = get(f"/panel/{name}", headers=headers)
-        assert response.status_code == 200, name
-        assert response.headers["content-type"].startswith(content_type), name
-        assert marker in response.content, name
-        assert response.headers["cache-control"] == "no-store", name
-        assert "default-src 'none'" in response.headers["content-security-policy"], name
-        assert response.headers["x-content-type-options"] == "nosniff", name
+def test_the_panel_bundle_is_served_with_security_headers(headers):
+    response = get("/panel/panel.js", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/javascript")
+    assert b"__CASSINI_LIVE_PANEL__" in response.content
+    assert response.headers["cache-control"] == "no-store"
+    assert "default-src 'none'" in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize("name", ["", "index.html", "install.js", "install.css"])
+def test_the_former_bookmark_page_is_gone(headers, name):
+    # The "Live transcript" bookmark is on the home page now (home_page.py).
+    assert get(f"/panel/{name}", headers=headers).status_code == 404
 
 
 def test_the_served_bundle_is_the_built_one(headers):
@@ -52,19 +51,10 @@ def test_panel_requires_the_appapi_gateway(headers):
     assert TestClient(app).get("/panel/panel.js").status_code == 401
 
 
-def test_bookmarklets_point_at_the_proxy_route(headers):
-    # make_app runs under the APP_ID of the environment (conftest: live_transcription).
-    install = get("/panel/install.js", headers=headers).text
-    assert "/apps/app_api/proxy/" in install and "panel/panel.js" in install
-    assert "live_transcription" in install
-    assert panel_page.APP_ID_PLACEHOLDER.decode() not in install
-    assert "javascript:" in install
-
-
 @pytest.mark.parametrize("app_id", ["cassini_live", "live_transcription"])
-def test_served_bundles_name_the_app_id_they_are_given(app_id):
+def test_the_served_bundle_names_the_app_id_it_is_given(app_id):
     assets = panel_page.load_assets(app_id)
-    for name in ("panel.js", "install.js"):
+    for name in ("panel.js",):
         built = (panel_page.STATIC / name).read_bytes()
         placeholders = built.count(panel_page.APP_ID_PLACEHOLDER)
         assert placeholders and panel_page.APP_ID_PLACEHOLDER not in assets[name]
@@ -73,9 +63,9 @@ def test_served_bundles_name_the_app_id_they_are_given(app_id):
         ), name
 
 
-def test_the_build_leaves_the_placeholder_in_every_bundle():
+def test_the_build_leaves_the_placeholder_in_the_bundle():
     # ui/src/app-id.js: a bundle without it would hardcode an id.
-    for name in ("panel.js", "install.js"):
+    for name in ("panel.js",):
         assert panel_page.APP_ID_PLACEHOLDER in (panel_page.STATIC / name).read_bytes(), name
 
 

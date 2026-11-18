@@ -60,7 +60,7 @@ On the version's branch:
 ```bash
 ./scripts/release-preview.sh                          # what is pending, and the candidates
 ./scripts/prepare-release.sh                          # guided: pick, confirm, commit + tag locally
-./scripts/prepare-release.sh --bump minor             # 0.11.0 -> 0.12.0-alpha.1 (main)
+./scripts/prepare-release.sh --bump minor             # 0.11.1 -> 0.12.0-alpha.1 (main)
 ./scripts/prepare-release.sh --promote beta           # 0.12.0-alpha.N -> 0.12.0-beta.1 (release/0.12)
 ./scripts/prepare-release.sh --version 0.12.0         # straight to stable
 ```

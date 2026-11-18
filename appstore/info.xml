@@ -30,20 +30,20 @@ Expect rough edges. Please read the [known limitations](https://github.com/codem
 
 ## Turning captions on
 
-Each person adds the transcript panel to their browser once, as a bookmark from `/index.php/apps/app_api/proxy/cassini_live/panel/` on your Nextcloud. In a Talk call, a click on the bookmark opens the panel and starts captions for that person. This needs a Nextcloud login: guests can't start captions or open the panel.
+Each person adds the transcript panel to their browser once, as a bookmark, from the **Cassini Live** page in Nextcloud's app menu. In a Talk call, a click on the bookmark opens the panel and starts captions for that person. This needs a Nextcloud login: guests can't start captions or open the panel.
 
 Nextcloud's Live Transcription app can stay installed; Talk's **Show captions** button keeps driving it.
 
 ## Requirements
 
 - Nextcloud 33 to 35 with Talk's High-performance backend, AppAPI and a deploy daemon.
-- The HPB internal secret, entered once after installation on Cassini Live's settings page (Administration settings > Assistant, then ? next to Cassini Live). Its URL is discovered from Talk.
+- The HPB internal secret, entered once after installation: the **Cassini Live** page in the app menu shows administrators what is left to set up and links to the settings page. Its URL is discovered from Talk.
 - Linux with cgroup v2, and CPU, memory and PID limits set on the container (`nc_app_cassini_live`) after installation: until then Cassini Live loads no engine. The [installation guide](https://github.com/codemyriad/cassini-live/blob/main/docs/install.md) has the commands. Whistle needs about 2 GiB of container memory; Nemotron 2.25-3 GiB, and twice that on the host.
 
 ## Related
 
 Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
-  <version>0.11.0</version>
+  <version>0.11.1</version>
   <licence>agpl</licence>
   <author homepage="https://codemyriad.io">Codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -65,7 +65,7 @@ Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassi
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.11.0</image-tag>
+      <image-tag>0.11.1</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -100,10 +100,16 @@ empty and enter it on the Cassini Live settings page after installation.</descri
            the caller's own session (in the call, to start), past the lobby. It also
            requires a same-origin JSON request with X-Cassini-Request and rate-limits. -->
       <route><url>^/?captions/transcribe$</url><verb>POST</verb><access_level>USER</access_level></route>
-      <!-- The transcript panel bundle and its bookmarklet install page: read-only
+      <!-- The transcript panel bundle the "Live transcript" bookmark loads: read-only
            static content for any logged-in user. Same-origin serving is what lets
            the bookmarklet pass Talk's CSP and the panel reach future ExApp routes. -->
-      <route><url>^/?panel/(index\.html|panel\.js|install\.js|install\.css)?$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <route><url>^/?panel/panel\.js$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <!-- The "Cassini Live" entry in Nextcloud's app menu: AppAPI's embedded page loads
+           this script, and the menu fetches the icon, both through the proxy. Every
+           logged-in user sees the entry; what administrators see extra comes from the
+           ADMIN settings routes below. -->
+      <route><url>^/?ui/home\.js$</url><verb>GET</verb><access_level>USER</access_level></route>
+      <route><url>^/?img/app\.svg$</url><verb>GET</verb><access_level>USER</access_level></route>
       <route><url>^/?settings/(index\.html|app\.js|app\.css)$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/licenses/[A-Za-z0-9.-]+\.txt$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
       <route><url>^/?settings/api/state$</url><verb>GET</verb><access_level>ADMIN</access_level></route>
