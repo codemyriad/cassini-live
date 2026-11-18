@@ -31,7 +31,7 @@ jobs:
       - run: shellcheck -x --source-path=SCRIPTDIR --severity=style scripts/*.sh
       - run: ./scripts/test-release-tooling.sh
       - run: |
-          version="$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' appstore/info.xml | head -n1)"
+          version="$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' appinfo/info.xml | head -n1)"
           ./scripts/build-appstore-tarball.sh --version "$version"
           ./scripts/validate-appstore-tarball.sh --version "$version" \
             --tarball build/artifacts/appstore/cassini_live.tar.gz

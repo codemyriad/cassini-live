@@ -36,7 +36,7 @@ const OUT = process.env.OUT_DIR || '/out'
 const BOT_PASSWORD = process.env.BOT_PASSWORD || 'zN4vQ9mT2Kp7R1x!'
 const AUDITOR = process.env.AUDITOR || 'auditor'
 const AUDITOR_PASSWORD = process.env.AUDITOR_PASSWORD || 'Aud1t-Pass!42'
-const PAGE = '/index.php/apps/app_api/proxy/live_transcription/diagnostics/'
+const PAGE = '/index.php/apps/app_api/proxy/cassini_live/diagnostics/'
 const token = new URL(CALL_URL).pathname.split('/').pop()
 const log = (...a) => console.log('[diag-e2e]', ...a)
 

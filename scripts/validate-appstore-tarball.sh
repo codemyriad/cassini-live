@@ -3,10 +3,10 @@
 #
 # Ported from codemyriad/gocassini. Runs against a built tarball with no
 # secrets, so CI can gate an upload without App Store credentials. <id> is the
-# store app id: --app-id, or appstore/info.xml's <id> by default. Checks:
+# store app id: --app-id, or appinfo/info.xml's <id> by default. Checks:
 #   - every entry is under a single `<id>/` root
 #   - <id>/appinfo/info.xml exists and parses
-#   - its <id> is the store app id (never Talk's `live_transcription`)
+#   - its <id> is the store app id
 #   - <version> equals the requested release version
 #   - the Docker <image-tag> equals the requested version
 #   - the archive is below 20 MiB and info.xml below 512 KiB (store limits)
@@ -78,12 +78,8 @@ main() {
   rv_validate "$version" || return 1
   [[ -f "$tarball" ]] || { echo "error: $tarball not found" >&2; return 1; }
   if [[ -z "$app_id" ]]; then
-    app_id="$(rv_read_app_id "$(git rev-parse --show-toplevel)/appstore/info.xml")" || return 1
+    app_id="$(rv_read_app_id "$(git rev-parse --show-toplevel)/appinfo/info.xml")" || return 1
   fi
-  # Talk hardcodes this id and Nextcloud's own ExApp owns it on the store; the
-  # store package must never carry it.
-  [[ "$app_id" != "live_transcription" ]] \
-    || { echo "error: the store app id must not be live_transcription" >&2; return 1; }
 
   # bad <message> — record a failed check but keep going so one run reports
   # every problem at once.

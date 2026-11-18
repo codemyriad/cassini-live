@@ -8,8 +8,7 @@
 # Docker <image-tag> must stay equal to it. Unlike gocassini, Cassini Live
 # keeps the version in more than one file (scripts/check_manifest.py asserts
 # they agree), so rv_write_release_version rewrites all of them in lockstep:
-#   appinfo/info.xml       <version> + <image-tag>  (native live_transcription manifest)
-#   appstore/info.xml      <version> + <image-tag>  (App Store manifest)
+#   appinfo/info.xml       <version> + <image-tag>  (App Store manifest)
 #   pyproject.toml         [project] version
 #   cassini_live/__init__.py  __version__
 #   uv.lock                the cassini-live package's version (PEP 440 form)
@@ -283,7 +282,7 @@ rv_pep440() {
 # under <root> (test fixtures may carry only some of them).
 rv_release_files() {
   local root="$1" f
-  for f in appinfo/info.xml appstore/info.xml pyproject.toml cassini_live/__init__.py uv.lock; do
+  for f in appinfo/info.xml pyproject.toml cassini_live/__init__.py uv.lock; do
     [[ -f "$root/$f" ]] && printf '%s\n' "$root/$f"
   done
   return 0
@@ -321,10 +320,7 @@ rv_write_release_version() {
     echo "error: cassini_live/__init__.py does not carry __version__ \"$current\"; fix it before bumping" >&2
     return 1
   fi
-  for file in "$root/appinfo/info.xml" "$root/appstore/info.xml"; do
-    [[ -f "$file" ]] || continue
-    rv_write_version "$file" "$new" || return 1
-  done
+  rv_write_version "$root/appinfo/info.xml" "$new" || return 1
   if [[ -f "$root/pyproject.toml" ]]; then
     # The first `version = ` line is [project]'s.
     _rv_sub_once "$root/pyproject.toml" \

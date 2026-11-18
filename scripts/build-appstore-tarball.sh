@@ -7,9 +7,8 @@
 # source, Dockerfiles, tests and any signing material can never leak in because
 # they are simply never listed.
 #
-# The packaged manifest is appstore/info.xml (the store app id), not
-# appinfo/info.xml (the native `live_transcription` drop-in, registered by hand
-# with occ). The archive root is named after appstore/info.xml's <id>.
+# The packaged manifest is appinfo/info.xml (the store app id), and the
+# archive root is named after its <id>.
 #
 #   # Local, unsigned: build the staging tree and the tarball in one go.
 #   ./scripts/build-appstore-tarball.sh --version 0.12.0-alpha.1
@@ -36,9 +35,9 @@ source "$SCRIPT_DIR/lib-release-version.sh"
 # to the repo root, destinations to the archive root). README.md is
 # intentionally excluded: the App Store reads metadata from info.xml, and
 # <website> already links the repo README. No appinfo/app.php: an ExApp has no
-# PHP, and Nextcloud's own ExApps (e.g. live_transcription) ship none.
+# PHP, and Nextcloud's own ExApps ship none.
 APPSTORE_FILES=(
-  appstore/info.xml:appinfo/info.xml
+  appinfo/info.xml:appinfo/info.xml
   img/app.svg:img/app.svg
   CHANGELOG.md:CHANGELOG.md
   LICENSE:LICENSE
@@ -85,7 +84,7 @@ main() {
 
   local root app_id
   root="$(git rev-parse --show-toplevel)"
-  app_id="$(rv_read_app_id "$root/appstore/info.xml")" || return 1
+  app_id="$(rv_read_app_id "$root/appinfo/info.xml")" || return 1
   staging="${staging:-$root/build/appstore}"
   output="${output:-$root/build/artifacts/appstore/$app_id.tar.gz}"
   local tree="$staging/$app_id"
@@ -93,9 +92,9 @@ main() {
   if [[ "$mode" != "archive" ]]; then
     # The packaged manifest must be the one for this exact version.
     local packaged
-    packaged="$(rv_read_version "$root/appstore/info.xml")" || return 1
+    packaged="$(rv_read_version "$root/appinfo/info.xml")" || return 1
     [[ "$packaged" == "$version" ]] \
-      || die "appstore/info.xml is at $packaged, not $version; run scripts/release-version.sh first"
+      || die "appinfo/info.xml is at $packaged, not $version; run scripts/release-version.sh first"
 
     rm -rf "$tree"
     local pair src dst
