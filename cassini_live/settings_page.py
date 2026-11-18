@@ -129,8 +129,9 @@ async def _read_body(request: Request) -> bytes:
     return body
 
 
-async def require_same_origin(request: Request) -> dict | None:
-    """CSRF defense for POST and DELETE. Returns the parsed JSON object for POST."""
+async def require_same_origin(request: Request, with_body: bool = False) -> dict | None:
+    """CSRF defense for POST and DELETE. Returns the parsed JSON object for POST, and
+    for any method with `with_body`."""
     if request.headers.get("x-cassini-request") != "1":
         raise Refused(403, "csrf", "Missing request header")
     site = request.headers.get("sec-fetch-site")
@@ -139,7 +140,7 @@ async def require_same_origin(request: Request) -> dict | None:
     origin = request.headers.get("origin")
     if origin is not None and origin != "null" and not _origin_allowed(request, origin):
         raise Refused(403, "csrf", "Cross-origin requests are not allowed")
-    if request.method != "POST":
+    if request.method != "POST" and not with_body:
         return None
     media = request.headers.get("content-type", "").split(";")[0].strip().lower()
     if media != "application/json":

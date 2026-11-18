@@ -1,9 +1,9 @@
 """Whether a Nextcloud user may turn captions on or off for a Talk session.
 
-Under the app id live_transcription, Talk authorizes its caption button and calls
-/api/v1/call/transcribe server to server. Under any other app id (the App Store's
-cassini_live) Talk's button never reaches this app, so the transcript panel calls the USER
-proxy route /captions/transcribe with the same body instead. AppAPI only tells us who the
+Talk authorizes its caption button itself and then calls the provider's
+/api/v1/call/transcribe server to server, which trusts it. Talk calls only the app id
+live_transcription, so for this app the routes in mock_talk_proxy stand in for Talk: the
+transcript panel calls them through the AppAPI proxy (USER). AppAPI only tells us who the
 caller is; these are the checks Talk would otherwise have made, asked of Talk as that user:
 
 - the caller is a participant of the room and past its lobby: Talk returns a room's

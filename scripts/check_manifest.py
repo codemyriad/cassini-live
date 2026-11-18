@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 STORE_ID = "cassini_live"
+# Talk's stand-in (cassini_live/mock_talk_proxy.py): the only caption routes for the browser.
+MOCK_TALK = "^/?mock_talk_proxy/live-transcription/[A-Za-z0-9]{1,64}$"
 
 
 def runtime_sections(info):
@@ -69,6 +71,7 @@ def main():
     user_patterns = [
         "^/?status$",
         "^/?history$",
+        MOCK_TALK,
         "^/?captions/transcribe$",
         r"^/?panel/panel\.js$",
         r"^/?ui/home\.js$",
@@ -81,6 +84,8 @@ def main():
                 assert verb == "GET", "the panel and the home page serve read-only static content"
             if pattern == "^/?captions/transcribe$":
                 assert verb == "POST", "the caption toggle is POST only"
+            if pattern == MOCK_TALK:
+                assert verb == "POST,DELETE", "Talk's stand-in starts with POST, stops with DELETE"
         else:
             assert level == "ADMIN", pattern
             assert pattern.startswith(("^/?settings/", "^/?diagnostics/")), pattern
@@ -98,6 +103,9 @@ def main():
 
     private = (
         "api/v1/call/transcribe", "api/v1/call/leave", "api/v1/call/set-language", "enabled",
+        "api/v1/languages", "api/v1/translation/languages", "capabilities",
+        "api/v1/translation/set-target-language", "mock_talk_proxy/api/v1/call/transcribe",
+        "mock_talk_proxy/live-transcription/room1/language", "mock_talk_proxy/live-transcription/",
         "init", "capacity/check", "ui/live.js", "ui/live.css", "img/other.svg", "heartbeat",
     )
     for path in private:
@@ -105,6 +113,8 @@ def main():
     public = {
         "status": "GET",
         "captions/transcribe": "POST",
+        "mock_talk_proxy/live-transcription/room1": "POST",
+        "mock_talk_proxy/live-transcription/Room1": "DELETE",
         "ui/home.js": "GET",
         "img/app.svg": "GET",
         "settings/index.html": "GET",
@@ -129,6 +139,7 @@ def main():
     assert not matches("diagnostics/api/feed", "POST"), "POST diagnostics/api/feed is routed"
     assert not matches("diagnostics/other.js"), "diagnostics/other.js is routed"
     assert not matches("captions/transcribe", "GET"), "GET captions/transcribe is routed"
+    assert not matches("mock_talk_proxy/live-transcription/room1", "GET"), "GET mock is routed"
     assert not matches("settings/api/talk", "GET"), "GET settings/api/talk is routed"
     print(f"Cassini Live {version}: Store metadata, versions and proxy boundaries pass")
 

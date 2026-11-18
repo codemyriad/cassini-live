@@ -2,16 +2,14 @@
 
 import asyncio
 import logging
-import math
 import os
 from contextlib import asynccontextmanager, suppress
-from typing import Literal
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from nc_py_api import AsyncNextcloudApp
 from nc_py_api.ex_app import run_app, set_handlers
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from . import (
     __version__,
@@ -19,12 +17,12 @@ from . import (
     catalog,
     diagnostics_page,
     home_page,
+    mock_talk_proxy,
     panel_page,
     settings_page,
     transcriber,
 )
 from .auth import SafeAppAPIAuthMiddleware
-from .call_access import ROOM_TOKEN, CallSessions, RateLimit
 from .capacity import CapacityAssessment
 from .config import Config, state_dir
 from .eligibility import NetworkProbe
@@ -42,7 +40,12 @@ from .talk.types import SpreedClientException, VoskException
 from .talk_setup import SECRET_MISSING, TalkSetup
 
 LOGGER = logging.getLogger(__name__)
-Language = Literal["auto", "en", "de", "fr", "es", "it", "nl", "pl"]
+# The native caption API answers as nextcloud/live_transcription 2.1.3 does: the same
+# routes, status codes, `{"message": ...}` on success and `{"error": ...}` on failure (the
+# only key Talk reads), and its wording where it holds here. A malformed body is FastAPI's
+# 422 on both sides. The one addition is the language "auto", also the default.
+BAD_LANGUAGE = "Invalid or unsupported language ID provided."
+NO_TRANSLATION = "Translation is not supported"
 DISABLED_NOTE = "Cassini Live is disabled. Enable it to change the speech engine."
 STOPPED_NOTE = "Cassini Live is restarting or stopped. Reload this page in a minute."
 
@@ -51,13 +54,23 @@ class TranscribeRequest(BaseModel):
     roomToken: str = Field(min_length=1, max_length=128)
     ncSessionId: str = Field(min_length=1, max_length=512)
     enable: bool = True
-    langId: Language = "auto"
-    translationTargetLangId: str | None = None
+    langId: str = Field(default="auto", max_length=32)
+    translationTargetLangId: str | None = Field(default=None, max_length=32)
 
 
 class LanguageRequest(BaseModel):
     roomToken: str = Field(min_length=1, max_length=128)
-    langId: Language
+    langId: str = Field(max_length=32)
+
+
+class TargetLanguageRequest(BaseModel):
+    roomToken: str = Field(min_length=1, max_length=128)
+    ncSessionId: str = Field(min_length=1, max_length=512)
+    langId: str | None = Field(default=None, max_length=32)
+
+
+def failure(status: int, message: str, headers: dict | None = None) -> JSONResponse:
+    return JSONResponse({"error": message}, status, headers=headers)
 
 
 def create_app(
@@ -100,9 +113,6 @@ def create_app(
     call_starts = 0
     # A measurement must not start while a call's captions are being set up.
     manager.calls_starting = lambda: call_starts
-    # The panel's start/stop route: Talk's checks, asked of Talk as the caller.
-    call_sessions = CallSessions(nc_factory)
-    caption_toggles = RateLimit()
     discovery_task = None
     enable_generation = 0
 
@@ -255,9 +265,9 @@ def create_app(
     app.state.safety = safety
     app.state.manager = manager
 
-    def require_enabled():
-        if not service.enabled:
-            raise HTTPException(503, "Cassini Live is not enabled or Talk is not ready")
+    @app.exception_handler(SpreedClientException)
+    async def transport_failure(_request, error: SpreedClientException):
+        return failure(500, str(error))
 
     @app.get("/enabled")
     async def enabled():
@@ -266,6 +276,7 @@ def create_app(
     @app.get("/capabilities")
     async def capabilities():
         # Talk's capability and feature names for a caption provider, not an app id.
+        # No "live_translation": the answer of a provider that cannot translate.
         return {
             "live_transcription": {
                 "version": __version__,
@@ -278,57 +289,29 @@ def create_app(
     async def languages():
         return manager.languages()
 
-    def require_language(language):
-        if language not in manager.languages():
-            raise HTTPException(400, "The active speech engine does not support this language")
+    def room_client(token):
+        client = getattr(service, "clients", {}).get(token)
+        return None if client is None or client.defunct.is_set() else client
 
     @app.post("/api/v1/call/transcribe")
     async def transcribe_call(req: TranscribeRequest, request: Request):
-        # Talk, server to server, after it authorized its caption button (native mode).
-        return await transcribe(req, request.scope.get("username") or None)
-
-    @app.post("/captions/transcribe")
-    async def transcribe_from_panel(request: Request):
-        # The transcript panel, through the AppAPI proxy (USER), with the body Talk would
-        # have sent: for app ids Talk's caption button does not reach. AppAPI checked
-        # only that the caller is logged in; call_access re-checks what Talk would have.
-        username = request.scope.get("username") or ""
-        if not username:
-            raise HTTPException(403, "Turn captions on from Nextcloud")
-        try:
-            data = await settings_page.require_same_origin(request)
-        except settings_page.Refused as refused:
-            raise HTTPException(refused.status, str(refused)) from None
-        try:
-            req = TranscribeRequest.model_validate(data)
-        except ValidationError as error:
-            raise RequestValidationError(error.errors()) from None
-        if not ROOM_TOKEN.fullmatch(req.roomToken):
-            raise HTTPException(400, "Invalid room token")
-        retry = caption_toggles.retry_after(username)
-        if retry:
-            raise HTTPException(
-                429,
-                "Too many caption requests; try again shortly",
-                headers={"Retry-After": str(max(1, math.ceil(retry)))},
-            )
-        if not await call_sessions.may_toggle(
-            username, req.roomToken, req.ncSessionId, req.enable
-        ):
-            raise HTTPException(
-                403,
-                "Join the call to turn captions on"
-                if req.enable
-                else "Not your session in this call",
-            )
-        return await transcribe(req, username)
-
-    async def transcribe(req: TranscribeRequest, username: str | None):
+        # Trusts its caller, as the upstream provider does: Talk authorizes its caption
+        # button and then calls this server to server. Not a browser proxy route.
         nonlocal call_starts
-        require_enabled()
-        if req.translationTargetLangId:
-            raise HTTPException(400, "Cassini Live provides captions in the spoken language")
-        require_language(req.langId)
+        if not service.enabled:
+            return failure(503, "Cassini Live is not enabled or Talk is not ready")
+        if req.langId not in manager.languages():
+            return failure(400, BAD_LANGUAGE)
+        if req.enable and req.translationTargetLangId:
+            client = room_client(req.roomToken)
+            spoken = client.room_lang_id if client else req.langId
+            if req.translationTargetLangId == spoken:
+                return failure(
+                    400,
+                    f"Target language '{req.translationTargetLangId}' is the same as the "
+                    f"original language '{spoken}'",
+                )
+            return failure(550, NO_TRANSLATION)
         try:
             call_starts += 1
             try:
@@ -338,41 +321,83 @@ def create_app(
             finally:
                 call_starts -= 1
         except ResourceRefused as error:
-            raise HTTPException(
+            return failure(
                 503,
                 str(error),
-                headers={"Retry-After": str(safety.status()["retryAfterSeconds"] or 30)},
-            ) from error
-        except (SpreedClientException, TimeoutError) as error:
-            raise HTTPException(
-                503, "Could not connect captions to Talk; please try again"
-            ) from error
+                {"Retry-After": str(safety.status()["retryAfterSeconds"] or 30)},
+            )
+        except (SpreedClientException, TimeoutError):
+            return failure(503, "Could not connect captions to Talk; please try again")
+        except Exception as error:
+            LOGGER.error("Caption request failed (%s)", type(error).__name__)
+            return failure(500, "Failed to process transcription or translation request.")
         # AppAPI names the requesting user; the diagnostics (the video, or the page for a
         # member watching) read this room's participant names as them. Guests have no user
         # id and are skipped.
         client = getattr(service, "clients", {}).get(req.roomToken)
         if req.enable and client is not None and hasattr(client, "note_user"):
-            client.note_user(username)
-        return {"message": "Captions enabled" if req.enable else "Captions disabled"}
+            client.note_user(request.scope.get("username") or None)
+        return {"message": "Transcription or translation request processed successfully."}
 
     @app.post("/api/v1/call/set-language")
     async def set_language(req: LanguageRequest):
-        require_enabled()
-        require_language(req.langId)
+        if req.langId not in manager.languages():
+            return failure(400, BAD_LANGUAGE)
         try:
             await service.set_language(req)
         except KeyError:
-            raise HTTPException(404, "No active captions in this call") from None
-        except VoskException:
-            raise HTTPException(
-                503, "Could not change the caption language; please try again"
-            ) from None
-        return {"message": "Caption language updated"}
+            # Talk reads 404 as "no captions running" and still stores the language.
+            return failure(
+                404,
+                f"No SpreedClient for room token {req.roomToken}, cannot set language."
+                " Start a call and add at least one participant first.",
+            )
+        except VoskException as error:
+            return failure(error.retcode, "Failed to set language for the call")
+        except Exception as error:
+            LOGGER.error("Changing the caption language failed (%s)", type(error).__name__)
+            return failure(500, "Failed to set language for the call")
+        return {"message": "Language set successfully for the call"}
+
+    @app.get("/api/v1/translation/languages")
+    async def translation_languages(roomToken: str):
+        # Talk reads 550 as "translation is not available": stop asking.
+        return failure(550, "A fatal error occurred while fetching translation languages.")
+
+    @app.post("/api/v1/translation/set-target-language")
+    async def set_target_language(req: TargetLanguageRequest):
+        client = room_client(req.roomToken)
+        if client is None:
+            return failure(
+                404, f"No SpreedClient for room token {req.roomToken}, cannot set target language"
+            )
+        if req.langId is None:
+            # Translation off: the session goes back to captions in the spoken language.
+            await client.add_target(req.ncSessionId)
+            return {"message": "Target translation language set successfully for the participant."}
+        if req.langId == client.room_lang_id:
+            return failure(
+                400,
+                f"Target language '{req.langId}' is the same as the original language "
+                f"'{client.room_lang_id}'",
+            )
+        if not await client.is_target(req.ncSessionId):
+            return failure(
+                412,
+                f"Transcript target with Nextcloud session ID '{req.ncSessionId}' not found."
+                " Transcription must be enabled for the target before setting the"
+                " translation language.",
+            )
+        return failure(550, NO_TRANSLATION)
 
     @app.post("/api/v1/call/leave")
-    async def leave(roomToken: str = Body(embed=True, min_length=1, max_length=128)):
-        await service.leave(roomToken)
-        return {"message": "Captions stopped"}
+    async def leave(roomToken: str = Body(embed=True)):
+        try:
+            await service.leave(roomToken)
+        except Exception as error:
+            LOGGER.error("Leaving a call failed (%s)", type(error).__name__)
+            return failure(500, "Failed to process leave call request.")
+        return {"message": "Leave call request processed."}
 
     def status_body():
         resource_status = safety.status()
@@ -401,6 +426,9 @@ def create_app(
         settings_page.create_router(manager, status_body, service.talk, reconnect_talk)
     )
     app.include_router(panel_page.create_router(app_id))
+    # Temporary: stands in for Talk until Talk can call this app id (see the module).
+    app.state.native_api = mock_talk_proxy.NativeApi(app_id)
+    app.include_router(mock_talk_proxy.create_router(nc_factory))
     app.include_router(home_page.create_router(app_id))
     app.include_router(
         diagnostics_page.create_router(
