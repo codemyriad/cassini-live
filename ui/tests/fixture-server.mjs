@@ -132,7 +132,7 @@ const pageScript = `
     enabledTokens() {
       return fetch('/fixture-enabled').then((r) => r.json())
     },
-    // queue refusals for the next captions/transcribe POSTs: [{ status, detail }]
+    // queue refusals for the next caption-start POSTs: [{ status, detail }]
     refuseCaptions(list) {
       return fetch('/fixture-refuse-captions', { method: 'POST', body: JSON.stringify(list) })
     },
@@ -315,9 +315,9 @@ const homePage = (admin) => `<!doctype html>
 <script nonce="${NONCE}" src="/fixture-home.js" defer></script>
 </head><body><header id="header">Nextcloud</header><div id="content"></div></body></html>`
 
-// Conversations the panel enabled captions for (the ExApp's captions/transcribe POST).
+// Conversations the panel enabled captions for (the ExApp's stand-in for Talk's POST).
 const enabled = []
-// Refusals queued for the next captions/transcribe POSTs: { status, detail }, as the
+// Refusals queued for the next caption-start POSTs: { status, detail }, as the
 // ExApp answers when Talk has not seen the join yet (403) or it is not ready (503).
 const refusals = []
 
@@ -329,9 +329,11 @@ export function startFixtureServer(port = PORT) {
       res.end(page)
       return
     }
-    // The ExApp's "turn captions on" route — check the request is what the
-    // ExApp accepts (cassini_live/app.py), and record which conversation.
-    if (url.pathname.endsWith('/live_transcription/captions/transcribe') && req.method === 'POST') {
+    // The ExApp's "turn captions on" route, its stand-in for Talk's endpoint — check
+    // the request is what the ExApp accepts (cassini_live/mock_talk_proxy.py), and
+    // record which conversation.
+    const start = url.pathname.match(/\/live_transcription\/mock_talk_proxy\/live-transcription\/([^/]+)$/)
+    if (start && req.method === 'POST') {
       let raw = ''
       req.on('data', (c) => (raw += c))
       req.on('end', () => {
@@ -344,8 +346,7 @@ export function startFixtureServer(port = PORT) {
         const ok =
           req.headers['x-cassini-request'] === '1' &&
           (req.headers['content-type'] || '').startsWith('application/json') &&
-          body && typeof body.roomToken === 'string' && body.ncSessionId === 'nc-session-me' &&
-          body.enable === true && body.langId === 'auto'
+          body && body.ncSessionId === 'nc-session-me' && Object.keys(body).length === 1
         if (!ok) {
           res.writeHead(400, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ detail: 'not the request the ExApp accepts' }))
@@ -357,9 +358,9 @@ export function startFixtureServer(port = PORT) {
           res.end(JSON.stringify({ detail: refusal.detail }))
           return
         }
-        if (!enabled.includes(body.roomToken)) enabled.push(body.roomToken)
+        if (!enabled.includes(start[1])) enabled.push(start[1])
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ message: 'Captions enabled' }))
+        res.end('{}')
       })
       return
     }

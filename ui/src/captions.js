@@ -3,12 +3,16 @@
  * button does — so the viewer is on cassini-live's HPB feed as soon as the
  * panel sees the call (D-830).
  *
- * This asks the ExApp directly, through its USER proxy route
- * /captions/transcribe, with the body Talk itself sends to the provider. Talk's
- * own endpoint only reaches an app registered as live_transcription, so it
- * cannot start captions for the App Store install (cassini_live); the ExApp's
- * route works under either id and re-checks what Talk would have (the caller's
- * own session, in the call). See cassini_live/call_access.py.
+ * Talk's own endpoint (POST /live-transcription/{token}) only reaches an app
+ * registered as live_transcription (nextcloud/spreed#20296), so this asks the
+ * ExApp's stand-in for it: POST mock_talk_proxy/live-transcription/{token} on the
+ * AppAPI proxy. That route makes Talk's checks (the caller's own session, in the
+ * call) and sends the provider what Talk would. See
+ * cassini_live/mock_talk_proxy.py. When Talk can call this app, this becomes a
+ * call to Talk's endpoint.
+ *
+ * No language is sent: Talk's endpoint takes none, and the provider's default
+ * (automatic) applies.
  *
  * `ncSessionId` is Talk's Nextcloud session id for this tab (the signalling
  * connection's nextcloudSessionId), not the HPB session id.
@@ -33,7 +37,8 @@ export async function enableCaptions(appId, token, ncSessionId) {
   if (!token || !ncSessionId) return { ok: false, retry: true, retryAfterMs: null, message: null }
   let response
   try {
-    response = await fetch(proxyUrl(appId, 'captions/transcribe'), {
+    const route = `mock_talk_proxy/live-transcription/${encodeURIComponent(token)}`
+    response = await fetch(proxyUrl(appId, route), {
       method: 'POST',
       credentials: 'same-origin',
       headers: {
@@ -42,7 +47,8 @@ export async function enableCaptions(appId, token, ncSessionId) {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify({ roomToken: token, ncSessionId, enable: true, langId: 'auto' }),
+      // Talk knows the caller's session; here it is sent, and the route checks it.
+      body: JSON.stringify({ ncSessionId }),
     })
   } catch {
     return { ok: false, retry: true, retryAfterMs: null, message: null }
