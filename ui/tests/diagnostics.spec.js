@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { TEN_LANES } from './diagnostics-fixtures.mjs'
 import { HOSTILE_NAME } from './fixture-server.mjs'
 
-const PROXY = '/index.php/apps/app_api/proxy/live_transcription'
+const PROXY = '/index.php/apps/app_api/proxy/cassini_live'
 const LIVE = 'Live · updated every second'
 const REFUSED = 'Open this page from Nextcloud as an administrator'
 

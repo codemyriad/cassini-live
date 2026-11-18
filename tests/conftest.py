@@ -6,7 +6,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def app_environment(monkeypatch):
     for key, value in {
-        "APP_ID": "live_transcription",
+        "APP_ID": "cassini_live",
         "APP_VERSION": "0.1.0",
         "APP_SECRET": "test-exapp-secret",
         "NEXTCLOUD_URL": "http://cloud.test",
@@ -20,7 +20,7 @@ def app_environment(monkeypatch):
 @pytest.fixture
 def headers():
     return {
-        "EX-APP-ID": "live_transcription",
+        "EX-APP-ID": "cassini_live",
         "EX-APP-VERSION": "0.1.0",
         "AUTHORIZATION-APP-API": base64.b64encode(b"alice:test-exapp-secret").decode(),
     }

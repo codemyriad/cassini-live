@@ -178,7 +178,7 @@ def test_the_status_links_to_the_live_diagnostics_page(page):
     link = parser.links["diagnostics"]
     assert (link["section"], link["text"]) == ("overview", "Live diagnostics")
     # Relative to the page, so it resolves under the AppAPI proxy prefix.
-    proxy = "https://cloud.example/index.php/apps/app_api/proxy/live_transcription"
+    proxy = "https://cloud.example/index.php/apps/app_api/proxy/cassini_live"
     target = urljoin(f"{proxy}{PAGE}", link["href"])
     assert target == f"{proxy}/diagnostics/"
     response = client.get(target.removeprefix(proxy), headers=headers)
@@ -531,8 +531,7 @@ def test_page_url(monkeypatch, nextcloud_url, root):
     else:
         monkeypatch.setenv("NEXTCLOUD_URL", nextcloud_url)
     assert settings_page.webroot() == root
-    for app_id in ("cassini_live", "live_transcription"):
-        assert settings_page.page_url(app_id) == (
-            root + f"/index.php/apps/app_api/proxy/{app_id}/settings/index.html"
-        )
+    assert settings_page.page_url("cassini_live") == (
+        root + "/index.php/apps/app_api/proxy/cassini_live/settings/index.html"
+    )
     assert settings_page.admin_settings_url() == root + "/index.php/settings/admin/ai"

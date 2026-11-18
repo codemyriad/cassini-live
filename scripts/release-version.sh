@@ -42,7 +42,7 @@ EOF
 report() {
   local from="$1" to="$2" branch
   branch="$(rv_release_branch "$to")"
-  echo "version ${from} -> ${to} in both manifests (image-tag kept in lockstep), pyproject.toml, cassini_live/__init__.py and uv.lock"
+  echo "version ${from} -> ${to} in the manifest (image-tag kept in lockstep), pyproject.toml, cassini_live/__init__.py and uv.lock"
   echo
   echo "Next steps, on ${branch} (or run scripts/prepare-release.sh, which checks them):"
   echo "  git commit -am \"release: ${to}\""

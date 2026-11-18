@@ -60,7 +60,7 @@ name with hyphens replaced by underscores: `--public-url` maps to
 | `--hpb-url` | Required |
 | `--hpb-secret` | Required |
 | `--admin-user` / `--admin-password` | `admin` / `admin` (development credentials) |
-| `--container` | `nc_app_live_transcription` |
+| `--container` | `nc_app_cassini_live` |
 | `--daemon` | `cassini_live_dev` |
 | `--image` | `cassini-live:dev` |
 | `--aa-version` | `5.0.0` (AppAPI deployment environment) |
@@ -106,9 +106,6 @@ the previous deployment running. Later failures leave resources available for
 inspection and retry; the script does not automatically roll back.
 
 An existing unowned container or caption provider causes an early failure.
-For a one-time migration from the old wrapper script, explicitly unregister the
-old development `live_transcription` ExApp and remove its container after saving
-any state you need. The new helper does not adopt or overwrite that installation.
 Cassini's `gocassini` recording ExApp remains separate. An existing daemon is
 reused only if its type, host, protocol and Nextcloud URL match the supplied values.
 
@@ -118,16 +115,16 @@ Container logs use Docker's bounded `local` driver. To inspect a failure with th
 default names:
 
 ```sh
-docker logs --tail 100 nc_app_live_transcription
-docker exec nc_app_live_transcription python -m cassini_live.capacity --installed
+docker logs --tail 100 nc_app_cassini_live
+docker exec nc_app_cassini_live python -m cassini_live.capacity --installed
 ```
 
 To remove the helper's default installation while retaining its data:
 
 ```sh
 docker exec -u www-data spreedtest-nextcloud-1 php occ \
-  app_api:app:unregister live_transcription --force
-docker rm -f nc_app_live_transcription
+  app_api:app:unregister cassini_live --force
+docker rm -f nc_app_cassini_live
 docker exec -u www-data spreedtest-nextcloud-1 php occ \
   app_api:daemon:unregister cassini_live_dev
 ```

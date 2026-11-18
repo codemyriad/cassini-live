@@ -30,7 +30,7 @@ test('a user sees the two steps, the Live transcript bookmark and a green status
   await expect(bookmark).toHaveAttribute('draggable', 'true')
   const href = await bookmark.getAttribute('href')
   expect(href.startsWith('javascript:')).toBe(true)
-  expect(href).toContain('/apps/app_api/proxy/live_transcription/panel/panel.js')
+  expect(href).toContain('/apps/app_api/proxy/cassini_live/panel/panel.js')
   await expect(home.locator('#how-add svg')).toHaveAttribute('aria-label', /bookmarks bar/)
   await expect(home.locator('#how-click')).toHaveAttribute('aria-label', /Live transcription tab/)
   await expect(home.locator('#admin')).toBeHidden()
@@ -75,7 +75,7 @@ test('an administrator right after install gets the setup list and links', async
   await expect(home.locator('.setup-step strong')).toHaveText(['Connect to Talk', 'Set container limits'])
   await expect(home.locator('[data-step="limits"] a')).toHaveText('Read the guide')
   await expect(home.locator('[data-step="talk"] a')).toHaveAttribute(
-    'href', '/index.php/apps/app_api/proxy/live_transcription/settings/index.html')
+    'href', '/index.php/apps/app_api/proxy/cassini_live/settings/index.html')
   await expect(home.locator('[data-step="engine"] .setup-state')).toHaveText('Waiting')
   // The facts and links replace the setup list once captions are ready.
   await expect(home.locator('#admin')).toBeHidden()
@@ -96,7 +96,7 @@ test('the page follows setup as it completes, without a reload', async ({ page }
   await expect(home.locator('#admin')).toBeVisible()
   await expect(home.locator('#fact-talk')).toHaveText('Connected')
   await expect(home.locator('#diagnostics-link')).toHaveAttribute(
-    'href', '/index.php/apps/app_api/proxy/live_transcription/diagnostics/')
+    'href', '/index.php/apps/app_api/proxy/cassini_live/diagnostics/')
 })
 
 test('a non-administrator is told to ask one, and never sees the admin block', async ({ page }) => {

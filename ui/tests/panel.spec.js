@@ -14,7 +14,7 @@ async function bookmarkletCode(name) {
   expect(url).toContain('__CASSINI_LIVE_APP_ID__')
   return decodeURIComponent(url.slice('javascript:'.length)).replaceAll(
     '__CASSINI_LIVE_APP_ID__',
-    'live_transcription',
+    'cassini_live',
   )
 }
 

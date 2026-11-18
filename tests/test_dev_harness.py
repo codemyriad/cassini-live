@@ -77,7 +77,7 @@ class FakeHarness(dev.Harness):
         if args[0] == "config:system:get":
             return self.url
         if args[0] == "app_api:app:list":
-            return "ExApps:\nlive_transcription (Cassini Live): 0.10.0 [enabled]" \
+            return "ExApps:\ncassini_live (Cassini Live): 0.10.0 [enabled]" \
                 if self.app_present else "ExApps:"
         if args[0] == "app_api:daemon:list":
             return json.dumps(self.daemons)

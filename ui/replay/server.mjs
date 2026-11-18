@@ -24,7 +24,7 @@ import { renderPage, NONCE } from './page.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const distDir = join(here, '..', 'dist')
 
-const APP_ID = 'live_transcription'
+const APP_ID = 'cassini_live'
 const PROXY = `/index.php/apps/app_api/proxy/${APP_ID}`
 const TOKEN = 'replay'
 // A partial older than this is stale: no engine keeps a preview up that long.

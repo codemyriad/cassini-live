@@ -16,7 +16,7 @@
 # single `Release`-environment job, so the signed release + store push pause for
 # ONE approval; declining it aborts the release (the image still builds).
 #
-# The packaged manifest is appstore/info.xml, under the store app id
+# The packaged manifest is appinfo/info.xml, under the store app id
 # (cassini_live). See docs/release.md and docs/appstore-checklist.md.
 
 name: Release
@@ -95,7 +95,7 @@ jobs:
             echo "publish=$publish"
             echo "commit=$(git rev-parse HEAD)"
             echo "dry_run=${INPUT_DRY_RUN:-false}"
-            echo "app_id=$(sed -n 's|.*<id>\(.*\)</id>.*|\1|p' appstore/info.xml | head -n1)"
+            echo "app_id=$(sed -n 's|.*<id>\(.*\)</id>.*|\1|p' appinfo/info.xml | head -n1)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Tag is on the branch its version is cut on

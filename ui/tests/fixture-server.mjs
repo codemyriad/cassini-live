@@ -114,7 +114,7 @@ const pageScript = `
     // picks them up on its next /history poll (this is how a final reaches the
     // viewer without ever being a live caption event)
     appendTimeline(token, entries) {
-      return fetch('/index.php/apps/app_api/proxy/live_transcription/fixture-append', {
+      return fetch('/index.php/apps/app_api/proxy/cassini_live/fixture-append', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ token, entries }),
@@ -122,7 +122,7 @@ const pageScript = `
     },
     // simulate a new call's empty buffer for a conversation
     clearTimeline(token) {
-      return fetch('/index.php/apps/app_api/proxy/live_transcription/fixture-append', {
+      return fetch('/index.php/apps/app_api/proxy/cassini_live/fixture-append', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ token, clear: true }),
@@ -216,7 +216,7 @@ const PAGE_CSP = [
   "form-action 'none'",
   "frame-ancestors 'none'",
 ].join('; ')
-const DIAGNOSTICS = /^(?:\/diag\/([\w-]+))?(?:\/index\.php\/apps\/app_api\/proxy\/live_transcription)?\/diagnostics\/(.*)$/
+const DIAGNOSTICS = /^(?:\/diag\/([\w-]+))?(?:\/index\.php\/apps\/app_api\/proxy\/cassini_live)?\/diagnostics\/(.*)$/
 const DIAGNOSTICS_FILES = {
   '': ['index.html', 'text/html; charset=utf-8'],
   'index.html': ['index.html', 'text/html; charset=utf-8'],
@@ -331,7 +331,7 @@ export function startFixtureServer(port = PORT) {
     }
     // The ExApp's "turn captions on" route — check the request is what the
     // ExApp accepts (cassini_live/app.py), and record which conversation.
-    if (url.pathname.endsWith('/live_transcription/captions/transcribe') && req.method === 'POST') {
+    if (url.pathname.endsWith('/cassini_live/captions/transcribe') && req.method === 'POST') {
       let raw = ''
       req.on('data', (c) => (raw += c))
       req.on('end', () => {
@@ -380,7 +380,7 @@ export function startFixtureServer(port = PORT) {
     }
     if (url.pathname === '/fixture-home.js') {
       const body = (await readFile(join(distDir, 'home.js'), 'utf8'))
-        .replaceAll('__CASSINI_LIVE_APP_ID__', 'live_transcription')
+        .replaceAll('__CASSINI_LIVE_APP_ID__', 'cassini_live')
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
       res.end(body)
       return
@@ -395,17 +395,17 @@ export function startFixtureServer(port = PORT) {
       })
       return
     }
-    if (url.pathname.endsWith('/live_transcription/status')) {
+    if (url.pathname.endsWith('/cassini_live/status')) {
       res.writeHead(homeState.status ? 200 : 503, { 'content-type': 'application/json' })
       res.end(JSON.stringify(homeState.status || {}))
       return
     }
-    if (url.pathname.endsWith('/live_transcription/settings/api/state')) {
+    if (url.pathname.endsWith('/cassini_live/settings/api/state')) {
       res.writeHead(homeState.admin ? 200 : 403, { 'content-type': 'application/json' })
       res.end(JSON.stringify(homeState.admin || { error: { code: 'forbidden' } }))
       return
     }
-    if (url.pathname.endsWith('/live_transcription/img/app.svg')) {
+    if (url.pathname.endsWith('/cassini_live/img/app.svg')) {
       res.writeHead(200, { 'content-type': 'image/svg+xml' })
       res.end('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="white"/></svg>')
       return
@@ -415,7 +415,7 @@ export function startFixtureServer(port = PORT) {
       res.end(JSON.stringify(enabled))
       return
     }
-    if (url.pathname.endsWith('/live_transcription/fixture-append')) {
+    if (url.pathname.endsWith('/cassini_live/fixture-append')) {
       let raw = ''
       req.on('data', (c) => (raw += c))
       req.on('end', () => {
@@ -437,7 +437,7 @@ export function startFixtureServer(port = PORT) {
       })
       return
     }
-    if (url.pathname.endsWith('/live_transcription/history')) {
+    if (url.pathname.endsWith('/cassini_live/history')) {
       const token = url.searchParams.get('token') || ''
       const since = Number(url.searchParams.get('since') || 0)
       const tl = timeline(token)
@@ -491,7 +491,7 @@ export function startFixtureServer(port = PORT) {
         // The ExApp fills in its app id when it serves the bundle (panel_page.py); so
         // does this fixture, with the id its routes use.
         const body = (await readFile(join(distDir, 'panel.js'), 'utf8'))
-          .replaceAll('__CASSINI_LIVE_APP_ID__', 'live_transcription')
+          .replaceAll('__CASSINI_LIVE_APP_ID__', 'cassini_live')
         res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
         res.end(body)
       } catch {

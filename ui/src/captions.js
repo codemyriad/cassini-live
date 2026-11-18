@@ -5,9 +5,8 @@
  *
  * This asks the ExApp directly, through its USER proxy route
  * /captions/transcribe, with the body Talk itself sends to the provider. Talk's
- * own endpoint only reaches an app registered as live_transcription, so it
- * cannot start captions for the App Store install (cassini_live); the ExApp's
- * route works under either id and re-checks what Talk would have (the caller's
+ * own caption button only reaches its hardcoded provider app, never
+ * cassini_live; the ExApp's route re-checks what Talk would have (the caller's
  * own session, in the call). See cassini_live/call_access.py.
  *
  * `ncSessionId` is Talk's Nextcloud session id for this tab (the signalling

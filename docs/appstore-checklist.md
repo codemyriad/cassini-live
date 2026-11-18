@@ -13,16 +13,16 @@ was `0.2.0-alpha.3` (2026-07-11), after running `0.1.0` internally.
 
 ## 1. In this repository (scaffolded on `feat/appstore-release`)
 
-- [x] Store manifest `appstore/info.xml` under the app id `cassini_live`, with a
+- [x] Store manifest `appinfo/info.xml` under the app id `cassini_live`, with a
       store description, `<documentation>`, `<author>`, categories, bugs and
       repository links.
-- [x] `scripts/check_manifest.py` validates both manifests against the vendored
-      store schema, keeps their runtime sections identical, and keeps their
-      versions equal to `pyproject.toml` and `__version__`.
+- [x] `scripts/check_manifest.py` validates the manifest against the vendored
+      store schema and keeps its version equal to `pyproject.toml` and
+      `__version__`.
 - [x] Release scripts ported from gocassini: `lib-release-version.sh`,
       `release-version.sh`, `prepare-release.sh`, `release-preview.sh`,
       `fold-changelog.sh`, `extract-release-notes.sh`, `check-tag-branch.sh`,
-      `sync-release-to-main.sh`. The version bump rewrites all five files that
+      `sync-release-to-main.sh`. The version bump rewrites all four files that
       carry the version, `uv.lock` included.
 - [x] Store package: `build-appstore-tarball.sh` (allowlist: manifest,
       `img/app.svg`, `CHANGELOG.md`, `LICENSE`; signing via `occ-nextcloud.sh`)
@@ -56,9 +56,9 @@ local store rehearsal.
 ## 2. Decisions (settled 2026-11-11)
 
 - [x] **The store app id: `cassini_live`.** It can't be renamed after the
-      certificate is issued. The older manifest `appinfo/info.xml` stays for a
-      short time, for installs made before the store release, and will be
-      removed.
+      certificate is issued. The older `live_transcription` drop-in manifest
+      stayed for a short time, for installs made before the store release, and
+      has been removed: `appinfo/info.xml` is now the store manifest.
 - [x] **The first store version: `0.12.0-alpha.1`.** Not a restart at 0.1.0:
       the hosts still hold old `cassini-live:0.1.0` images that a
       `ghcr.io → local` mapping would pick up.
@@ -79,14 +79,13 @@ Everything here is done.
 
 - [x] The app id comes from AppAPI: `cassini_live/appapi.py` reads `APP_ID`
       once (`create_app`, and the `capacity` CLI) and everything below gets it
-      passed in. As `cassini_live` the app logs that Talk's caption button
-      does not reach it.
+      passed in.
 - [x] Captions start from the panel: the USER route `POST /captions/transcribe` (`cassini_live/app.py`,
       checks in `cassini_live/call_access.py`). Same body and core as Talk's
       `/api/v1/call/transcribe`; re-checks, as the caller, room membership and
       the lobby, that the session is the caller's own (and in the call, to
       start), CSRF (`X-Cassini-Request`, same origin, JSON) and 10 toggles a
-      minute per user. In both manifests and `check_manifest.py`. Guests can't
+      minute per user. In the manifest and `check_manifest.py`. Guests can't
       use it: USER proxy routes need a Nextcloud login.
 - [x] `ui/src/captions.js` posts to that route instead of Talk's
       `/live-transcription/{token}`, with the tab's Talk
@@ -100,7 +99,7 @@ Everything here is done.
       `panel_page.create_router(app_id)` fills in. `replay.py` finds models
       under `APP_PERSISTENT_STORAGE` instead of a fixed volume path.
 - [x] PR #8 (0.11.0, diagnostics page) is on main through #12, and its routes
-      are in both manifests.
+      are in the manifest.
 - [x] The HPB secret can be entered after installation, on the settings
       page's **Talk connection** section: Nextcloud 34 and later show no deploy
       options on the Apps page.
@@ -110,11 +109,11 @@ Everything here is done.
       server's reason until they start.
 - [x] Screenshot: `img/screenshots/01-talk-transcript-panel.png` (a Talk call
       with the transcript panel; made on a local Nextcloud with made-up users
-      and synthetic speech), listed in `appstore/info.xml` by its
+      and synthetic speech), listed in `appinfo/info.xml` by its
       raw.githubusercontent.com URL on `main`, as Cassini does. The file is on
       `main` (PR #15) and the URL resolves. Up to 10 are allowed; the Apps
       page shows only the first.
-- [x] The store description in `appstore/info.xml` describes store mode: the
+- [x] The store description in `appinfo/info.xml` describes store mode: the
       panel's bookmark starts captions, logged-in users only, and the container
       limits are set after installation.
 - [x] `docs/install.md` (the store's admin documentation link) starts with the

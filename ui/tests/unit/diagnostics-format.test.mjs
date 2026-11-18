@@ -439,10 +439,10 @@ test('polls back off 2, 4, 8, 16 then 30 s', () => {
 test('the feed path is relative to the page', () => {
   assert.equal(feedPath(0), 'api/feed?since=0')
   assert.equal(feedPath(1234.567), 'api/feed?since=1234.567')
-  assert.equal(new URL(feedPath(5), 'https://nc.example/index.php/apps/app_api/proxy/live_transcription/diagnostics/').pathname,
-    '/index.php/apps/app_api/proxy/live_transcription/diagnostics/api/feed')
-  assert.equal(new URL(feedPath(5), 'https://nc.example/index.php/apps/app_api/proxy/live_transcription/diagnostics/index.html').pathname,
-    '/index.php/apps/app_api/proxy/live_transcription/diagnostics/api/feed')
+  assert.equal(new URL(feedPath(5), 'https://nc.example/index.php/apps/app_api/proxy/cassini_live/diagnostics/').pathname,
+    '/index.php/apps/app_api/proxy/cassini_live/diagnostics/api/feed')
+  assert.equal(new URL(feedPath(5), 'https://nc.example/index.php/apps/app_api/proxy/cassini_live/diagnostics/index.html').pathname,
+    '/index.php/apps/app_api/proxy/cassini_live/diagnostics/api/feed')
 })
 
 test('a server clock that went back means a restart', () => {
