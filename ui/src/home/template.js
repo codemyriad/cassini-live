@@ -8,8 +8,7 @@
  *
  * Colours, radii and type are Cassini's saturn-light / saturn-dark themes
  * (gocassini: cassini-viewer/src/app.css), light by default and dark with
- * prefers-color-scheme, as in the Cassini app. In the picture of a Talk call the
- * sidebar follows the theme and the call itself stays dark, as in Talk.
+ * prefers-color-scheme, as in the Cassini app. Both pictures follow the theme.
  */
 
 const KEY = (label) => `<kbd>${label}</kbd>`
@@ -148,8 +147,7 @@ export const STYLES = `
   --warn: color-mix(in oklch, var(--wa) 50%, var(--bc)); --warn-bg: color-mix(in oklab, var(--wa) 18%, var(--b1));
   --quiet-border: color-mix(in oklab, var(--bc) 30%, transparent);
   --r-box: 0.5rem; --r-field: 0.5rem; --r-sel: 0.32rem;
-  /* Talk's call area is dark in both themes; its sidebar follows the theme. */
-  --call-bg: #0d0f11; --call-fg: #e9ecee; --call-ctl: #24332d; --call-line: #2e3438; --call-leave: #e5484d;
+  --call-leave: #e5484d;
   color-scheme: light;
   color: var(--fg); background: var(--bg);
   font-family: ui-sans-serif, system-ui, sans-serif;
@@ -227,14 +225,14 @@ kbd { padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; bac
 .i-chip { fill: var(--bg); stroke: var(--primary); stroke-width: 2; stroke-dasharray: 5 4; }
 .i-chip-text { font-size: 12px; font-weight: 600; fill: var(--primary-text); }
 .i-arrow { fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
-.callview { display: flex; min-height: 150px; background: var(--call-bg); color: var(--call-fg); }
+.callview { display: flex; min-height: 150px; background: var(--soft); color: var(--fg); }
 .callview svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .stage { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
 .stage-mid { flex: 1; display: flex; align-items: center; justify-content: center; }
-.av { width: 38px; height: 38px; border-radius: 50%; background: var(--call-line); }
+.av { width: 38px; height: 38px; border-radius: 50%; background: var(--border); }
 .ctl { display: flex; align-items: center; gap: 4px; padding: 8px; }
-.ctl span { width: 18px; height: 18px; border-radius: 5px; background: var(--call-ctl); flex: none; display: flex; align-items: center; justify-content: center; }
-.ctl .leave { width: 22px; margin-left: auto; background: var(--call-leave); }
+.ctl span { width: 18px; height: 18px; border-radius: 5px; background: var(--bg); color: var(--fg); flex: none; display: flex; align-items: center; justify-content: center; }
+.ctl .leave { width: 22px; margin-left: auto; background: var(--call-leave); color: #ffffff; }
 .side { flex: 0 0 50%; min-width: 0; background: var(--bg); color: var(--fg); border-left: 1px solid var(--border); display: flex; flex-direction: column; font-size: 9px; }
 .side-tabs { display: flex; gap: 6px; padding: 7px 8px 0; border-bottom: 1px solid var(--border); color: var(--muted); }
 .side-tabs span { flex: 1 1 0; min-width: 0; padding-bottom: 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: center; }
