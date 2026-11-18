@@ -13,6 +13,7 @@ from collections.abc import Callable
 
 from . import admin_form, catalog
 from .engine_switch import EngineManager, SwitchRefused
+from .nc_client import close_client
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ class SettingsSync:
         self.published_at = -float("inf")
         self.publish_failed = False
         self.logged: set[str] = set()
+        # The poller and publisher share one client; the lock keeps an error in one task
+        # from closing a client the other is using.
+        self.ocs_lock = asyncio.Lock()
         self.dirty = asyncio.Event()
         self.poller: asyncio.Task | None = None
         self.publisher: asyncio.Task | None = None
@@ -55,16 +59,20 @@ class SettingsSync:
     # Nextcloud access
 
     async def _ocs(self, call):
-        if self.nc is None:
-            self.nc = self.nc_factory()
-        try:
-            async with asyncio.timeout(OCS_TIMEOUT_S):
-                result = await call(self.nc)
-        except Exception:
-            self.nc = None  # Recreate the client after any error.
-            raise
-        self.logged.clear()
-        return result
+        async with self.ocs_lock:
+            if self.nc is None:
+                self.nc = self.nc_factory()
+            try:
+                async with asyncio.timeout(OCS_TIMEOUT_S):
+                    result = await call(self.nc)
+            except Exception:
+                # Recreate the client after any error — closing it first: a dropped
+                # client's QUIC sockets hold their fds forever.
+                nc, self.nc = self.nc, None
+                await close_client(nc)
+                raise
+            self.logged.clear()
+            return result
 
     def _log(self, what, error):
         kind = f"{what}:{type(error).__name__}"
@@ -113,6 +121,9 @@ class SettingsSync:
                     await self._ocs(lambda nc: nc.ui.settings.register_form(form))
             except Exception as error:
                 self._log("final publish", error)
+        if self.nc is not None:
+            nc, self.nc = self.nc, None
+            await close_client(nc)
 
     def _build(self, notes):
         return self.build(self.manager.panel(), self.status(), notes, page_url=self.page_url)

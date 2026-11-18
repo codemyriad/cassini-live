@@ -3,6 +3,8 @@
 import asyncio
 import time
 
+from .nc_client import nc_client
+
 
 class RoomMembership:
     """Authorize by acting as the requesting user and asking Talk for the room's
@@ -28,9 +30,11 @@ class RoomMembership:
         if key in self._until:
             return True
         try:
-            nc = self.nc_factory()
-            await nc.set_user(username)
-            await nc.ocs("GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants")
+            async with nc_client(self.nc_factory) as nc:
+                await nc.set_user(username)
+                await nc.ocs(
+                    "GET", f"/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/participants"
+                )
         except Exception:
             self._until.pop(key, None)
             return False
