@@ -43,7 +43,7 @@ Nextcloud's Live Transcription app can stay installed; Talk's **Show captions** 
 ## Related
 
 Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
-  <version>0.11.1</version>
+  <version>0.11.2</version>
   <licence>agpl</licence>
   <author homepage="https://codemyriad.io">Codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -65,7 +65,7 @@ Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassi
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.11.1</image-tag>
+      <image-tag>0.11.2</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -86,19 +86,24 @@ empty and enter it on the Cassini Live settings page after installation.</descri
         <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 1 fps; stops under resource pressure. Default off. The admin-only diagnostics page shows the same without this option.</description>
       </variable>
     </environment-variables>
-    <!-- Native caption endpoints are server-to-server, never browser-proxied. The settings
-         page and its API are admin-only; the app checks methods and CSRF itself. -->
+    <!-- Native caption endpoints (/api/v1/..., /capabilities) are server-to-server, never
+         browser-proxied: they trust their caller, as Talk's provider API does. The
+         settings page and its API are admin-only; the app checks methods and CSRF itself. -->
     <routes>
       <route><url>^/?status$</url><verb>GET</verb><access_level>USER</access_level></route>
       <!-- USER: late-joiner catch-up. GET /history?token=<roomToken> returns the
            current call's finals; membership is re-checked in the handler by acting
            as the caller over Talk's OCS API. -->
       <route><url>^/?history$</url><verb>GET</verb><access_level>USER</access_level></route>
-      <!-- USER: start/stop captions from the transcript panel, for app ids Talk's caption
-           button does not reach. The body Talk sends to /api/v1/call/transcribe; the
-           handler re-checks what Talk would have, acting as the caller over Talk's OCS API:
-           the caller's own session (in the call, to start), past the lobby. It also
-           requires a same-origin JSON request with X-Cassini-Request and rate-limits. -->
+      <!-- USER, temporary: stand-ins for Talk's live-transcription endpoints (POST starts
+           captions for the caller's session, DELETE stops them), because Talk calls only
+           the app id live_transcription (nextcloud/spreed#20296). The handler makes Talk's
+           checks, acting as the caller over Talk's OCS API (the caller's own session, in
+           the call to start, past the lobby), requires a same-origin JSON request with
+           X-Cassini-Request, rate-limits, then sends the native route what Talk sends. -->
+      <route><url>^/?mock_talk_proxy/live-transcription/[A-Za-z0-9]{1,64}$</url><verb>POST,DELETE</verb><access_level>USER</access_level></route>
+      <!-- USER, deprecated: the route panels built before mock_talk_proxy call. Kept for
+           one release so a tab holding an old panel keeps working across an upgrade. -->
       <route><url>^/?captions/transcribe$</url><verb>POST</verb><access_level>USER</access_level></route>
       <!-- The transcript panel bundle the "Live transcript" bookmark loads: read-only
            static content for any logged-in user. Same-origin serving is what lets

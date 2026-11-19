@@ -1,3 +1,3 @@
 """Cassini Live: private, local captions for Nextcloud Talk."""
 
-__version__ = "0.11.1"
+__version__ = "0.11.2"

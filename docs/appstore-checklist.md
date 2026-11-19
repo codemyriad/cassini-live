@@ -62,7 +62,7 @@ local store rehearsal.
 - [x] **The first store version: `0.12.0-alpha.1`.** Not a restart at 0.1.0:
       the hosts still hold old `cassini-live:0.1.0` images that a
       `ghcr.io → local` mapping would pick up.
-- [x] **Main's version.** Main is at 0.11.1 (0.11.0 is the deployed version), so the first
+- [x] **Main's version.** Main is at 0.11.2 (0.11.0 is the deployed version), so the first
       cut is `prepare-release.sh --bump minor` → `0.12.0-alpha.1`. After the first
       beta, main carries the next untagged `X.Y.0-alpha.0`, as in Cassini.
 - [x] **Release branches: Cassini's model.** Alphas on main; `release/X.Y`
@@ -81,14 +81,21 @@ Everything here is done.
       once (`create_app`, and the `capacity` CLI) and everything below gets it
       passed in. As `cassini_live` the app logs that Talk's caption button
       does not reach it.
-- [x] Captions start from the panel: the USER route `POST /captions/transcribe` (`cassini_live/app.py`,
-      checks in `cassini_live/call_access.py`). Same body and core as Talk's
-      `/api/v1/call/transcribe`; re-checks, as the caller, room membership and
-      the lobby, that the session is the caller's own (and in the call, to
-      start), CSRF (`X-Cassini-Request`, same origin, JSON) and 10 toggles a
-      minute per user. In both manifests and `check_manifest.py`. Guests can't
-      use it: USER proxy routes need a Nextcloud login.
-- [x] `ui/src/captions.js` posts to that route instead of Talk's
+- [x] Captions start from the panel: the USER routes `POST` and `DELETE
+      /mock_talk_proxy/live-transcription/{token}` (`cassini_live/mock_talk_proxy.py`,
+      checks in `cassini_live/call_access.py`) stand in for Talk's endpoints.
+      They re-check, as the caller, room membership and the lobby, that the
+      session is the caller's own (and in the call, to start), CSRF
+      (`X-Cassini-Request`, same origin, JSON) and 10 toggles a minute per
+      user, then send the native `/api/v1/call/transcribe` the request Talk
+      sends, over HTTP. In both manifests and `check_manifest.py`. Guests can't
+      use them: USER proxy routes need a Nextcloud login. `POST
+      /captions/transcribe` is the earlier form, kept for one release.
+- [x] The native caption API answers as `nextcloud/live_transcription` does
+      (routes, status codes, `{"error": ...}`, messages), translation routes
+      included: they say translation is not available. `auto` is the one
+      added language. None of it is reachable from the browser.
+- [x] `ui/src/captions.js` posts to the stand-in route instead of Talk's
       `/live-transcription/{token}`, with the tab's Talk
       session id (the signalling connection's `nextcloudSessionId`) as
       `ncSessionId`, `langId: auto` and the `X-Cassini-Request: 1` header. The
@@ -164,7 +171,7 @@ In this order:
       stacked on it).
 - [ ] Run `image.yml` by hand on `main`; make the GHCR package public.
 - [ ] Cut the first pre-release on `main`:
-      `./scripts/prepare-release.sh --bump minor --push` (0.11.1 →
+      `./scripts/prepare-release.sh --bump minor --push` (0.11.2 →
       0.12.0-alpha.1). It folds the changelog fragments and pushes the tag,
       which starts `image.yml` and `release.yml`; `release.yml` then waits
       for approval in the `Release` environment.

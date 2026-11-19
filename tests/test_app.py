@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,7 @@ from cassini_live.app import create_app
 from cassini_live.config import Config, websocket_url
 from cassini_live.pool import WorkerPool
 from cassini_live.service import CaptionService
+from cassini_live.talk.types import SpreedClientException
 from tests.test_streaming import FakeWorker
 
 
@@ -41,35 +43,124 @@ def test_native_talk_contract(headers):
     client = TestClient(app)
     supported = client.get("/api/v1/languages", headers=headers).json()
     assert set(supported) == {"auto", "en", "de", "fr", "es", "it", "nl", "pl"}
+    assert supported["de"] == {"name": "German", "metadata": {"separator": " ", "rtl": False}}
     caps = client.get("/capabilities", headers=headers).json()["live_transcription"]
-    assert caps["features"] == ["live_transcription"]
+    assert caps["features"] == ["live_transcription"] and "live_translation" not in caps
+    assert caps["live_transcription"]["supported_languages"] == supported
     req = {"roomToken": "room1", "ncSessionId": "session1"}
     assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 200
     assert service.request.call_args.args[0].langId == "auto"
-    assert (
-        client.post(
-            "/api/v1/call/transcribe", headers=headers, json={**req, "langId": "xx"}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            "/api/v1/call/transcribe",
-            headers=headers,
-            json={**req, "translationTargetLangId": "de"},
-        ).status_code
-        == 400
-    )
-    assert (
-        client.post(
-            "/api/v1/call/set-language",
-            headers=headers,
-            json={"roomToken": "room1", "langId": "de"},
-        ).status_code
-        == 404
-    )
     service.enabled = False
     assert client.post("/api/v1/call/transcribe", headers=headers, json=req).status_code == 503
+
+
+class Room:
+    """A captioned room, as far as the native routes look at one."""
+
+    def __init__(self, language="de", targets=("session1",)):
+        self.room_lang_id, self.targets, self.defunct = language, set(targets), asyncio.Event()
+
+    async def add_target(self, session):
+        self.targets.add(session)
+
+    async def is_target(self, session):
+        return session in self.targets
+
+    async def set_language(self, language):
+        self.room_lang_id = language
+
+
+def test_native_routes_answer_as_the_upstream_provider_does(headers):
+    """Status codes, the body's one key and the wording of nextcloud/live_transcription
+    2.1.3 (ex_app/lib/main.py and service.py); "auto" is the one addition."""
+    app, service = make_app()
+    client = TestClient(app)
+
+    def call(route, body):
+        res = client.post(f"/api/v1/{route}", headers=headers, json=body)
+        return res.status_code, res.json()
+
+    req = {"roomToken": "room1", "ncSessionId": "session1"}
+    done = {"message": "Transcription or translation request processed successfully."}
+    assert call("call/transcribe", req) == (200, done)
+    assert call("call/transcribe", {**req, "enable": False}) == (200, done)
+    assert call("call/transcribe", {**req, "langId": "auto"}) == (200, done)
+    bad_language = (400, {"error": "Invalid or unsupported language ID provided."})
+    assert call("call/transcribe", {**req, "langId": "xx"}) == bad_language
+    assert call("call/set-language", {"roomToken": "room1", "langId": "xx"}) == bad_language
+    assert call("call/set-language", {"roomToken": "room1", "langId": "de"}) == (
+        404,
+        {
+            "error": "No SpreedClient for room token room1, cannot set language."
+            " Start a call and add at least one participant first."
+        },
+    )
+    assert call("call/leave", {"roomToken": "room1"}) == (
+        200, {"message": "Leave call request processed."}
+    )
+    # A malformed body is FastAPI's own 422 on both sides.
+    for route in ("call/transcribe", "call/set-language", "call/leave"):
+        status, body = call(route, {})
+        assert status == 422 and isinstance(body["detail"], list)
+
+    service.clients["room1"] = Room()
+    assert call("call/set-language", {"roomToken": "room1", "langId": "fr"}) == (
+        200, {"message": "Language set successfully for the call"}
+    )
+    service.request.side_effect = RuntimeError("boom")
+    assert call("call/transcribe", req) == (
+        500, {"error": "Failed to process transcription or translation request."}
+    )
+    service.request.side_effect = SpreedClientException("no signalling")
+    status, body = call("call/transcribe", req)
+    assert status == 503 and set(body) == {"error"}
+
+
+def test_translation_is_answered_as_not_available(headers):
+    app, service = make_app()
+    client = TestClient(app)
+
+    def target(body):
+        res = client.post("/api/v1/translation/set-target-language", headers=headers, json=body)
+        return res.status_code, res.json()
+
+    listed = client.get("/api/v1/translation/languages?roomToken=room1", headers=headers)
+    assert (listed.status_code, listed.json()) == (
+        550, {"error": "A fatal error occurred while fetching translation languages."}
+    )
+    assert client.get("/api/v1/translation/languages", headers=headers).status_code == 422
+    req = {"roomToken": "room1", "ncSessionId": "session1", "langId": "en"}
+    assert target(req) == (
+        404, {"error": "No SpreedClient for room token room1, cannot set target language"}
+    )
+    room = service.clients["room1"] = Room()
+    # The status Talk reads as "translation is not supported".
+    assert target(req) == (550, {"error": "Translation is not supported"})
+    assert target({**req, "langId": "de"}) == (
+        400, {"error": "Target language 'de' is the same as the original language 'de'"}
+    )
+    status, body = target({**req, "ncSessionId": "session2"})
+    assert status == 412 and "session2" in body["error"]
+    # Turning translation off puts the session back on captions in the spoken language.
+    assert target({"roomToken": "room1", "ncSessionId": "session2"}) == (
+        200, {"message": "Target translation language set successfully for the participant."}
+    )
+    assert "session2" in room.targets
+
+    transcribe = {"roomToken": "room1", "ncSessionId": "session1", "translationTargetLangId": "en"}
+    res = client.post("/api/v1/call/transcribe", headers=headers, json=transcribe)
+    assert (res.status_code, res.json()) == (550, {"error": "Translation is not supported"})
+    res = client.post(
+        "/api/v1/call/transcribe",
+        headers=headers,
+        json={**transcribe, "translationTargetLangId": "de"},
+    )
+    assert res.status_code == 400 and "same as the original language" in res.json()["error"]
+    service.request.assert_not_awaited()
+    # Turning captions off ignores it, as upstream does.
+    transcribe["enable"] = False
+    off = client.post("/api/v1/call/transcribe", headers=headers, json=transcribe)
+    assert off.status_code == 200
 
 
 def test_disable_closes_all_rooms(headers):
@@ -232,7 +323,8 @@ def test_english_engine_refuses_other_languages(headers):
     client = TestClient(app)
     req = {"roomToken": "room1", "ncSessionId": "session1", "langId": "de"}
     response = client.post("/api/v1/call/transcribe", headers=headers, json=req)
-    assert response.status_code == 400 and "does not support" in response.json()["detail"]
+    assert response.status_code == 400
+    assert response.json() == {"error": "Invalid or unsupported language ID provided."}
     response = client.post(
         "/api/v1/call/set-language", headers=headers, json={"roomToken": "room1", "langId": "de"}
     )
