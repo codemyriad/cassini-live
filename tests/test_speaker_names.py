@@ -1,4 +1,4 @@
-"""Participant names for the diagnostic video: read as a room member, never required."""
+"""Participant names for the diagnostics page: read as a room member, never required."""
 
 import asyncio
 from types import SimpleNamespace
@@ -20,7 +20,7 @@ def room(**fields):
     defaults = {
         "room_token": "tok",
         "name_user": "alice",
-        "names_shown": True,  # this room owns the running diagnostic video
+        "names_shown": True,  # a member is watching this room on the diagnostics page
         "speaker_names": {},
         "nc_sid_map": {},
         "_names_at": -1e9,
@@ -176,7 +176,7 @@ async def test_a_join_during_a_request_is_read_by_one_more_request(monkeypatch):
     assert asyncio.get_running_loop().time() - started >= 0.04
 
 
-async def test_names_are_read_and_kept_only_while_the_rooms_video_runs():
+async def test_names_are_read_and_kept_only_while_someone_holds_them():
     FakeApp.reply = [{"displayName": "Ana", "sessionIds": ["nc1"]}]
     fake = room(names_shown=False)
     fake.refresh_names()
@@ -188,7 +188,7 @@ async def test_names_are_read_and_kept_only_while_the_rooms_video_runs():
     FakeApp.gate = asyncio.Event()
     fake.refresh_names()
     task = fake._names_task
-    fake.show_names(False)  # the video stopped or moved to another room
+    fake.show_names(False)  # the page's viewer left or the feed moved rooms
     assert fake.speaker_names == {}
     await asyncio.gather(task, return_exceptions=True)
     assert task.cancelled() and fake.speaker_names == {}

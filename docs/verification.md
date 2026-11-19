@@ -23,6 +23,10 @@ resource snapshot, the engine duty sample and the governor tick together;
 
 ## Diagnostic video
 
+The diagnostic video has since been removed; the admin diagnostics page shows
+the same picture. This section remains as the verification record of the
+release that introduced it.
+
 Release checks: 114 tests passed; Ruff, manifest validation, source packaging
 and the amd64 container build passed.
 

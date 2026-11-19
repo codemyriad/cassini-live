@@ -1,21 +1,17 @@
 /**
  * The speaker lanes and the lag graph under them, from the feed's latest sample and its
- * history columns. Pure: no DOM. Rules, wording and scales are the diagnostic video's
- * (diagnostic_video._render_lanes), so the page and the video say the same things about
- * the same data.
+ * history columns. Pure: no DOM.
  *
- * The video draws its ring of samples one 6 px column each, newest against the "now"
- * line. The page draws the feed's own history (feed.feedHistory: lane ids are only
- * meaningful within one Cassini Live process), which can still have gaps the video's
- * never has (a sample that failed or ran late), so the page places columns by their
- * server time `t`, in seconds before the answer's `now`: 0 is now, the window (two
- * minutes) the oldest edge. Each column covers the second before its `t`. On contiguous
- * columns the two agree exactly.
+ * The page draws the feed's own history (feed.feedHistory: lane ids are only meaningful
+ * within one Cassini Live process), which can have gaps (a sample that failed or ran
+ * late), so the page places columns by their server time `t`, in seconds before the
+ * answer's `now`: 0 is now, the window (two minutes) the oldest edge. Each column covers
+ * the second before its `t`.
  */
 
 import { fixed, get, int, known, mics, plural, seconds, thresholds } from './format.js'
 
-// diagnostics.MAX_LANES and diagnostic_video.NAME_MAX.
+// diagnostics.MAX_LANES and diagnostics.NAME_CHARS.
 export const MAX_LANES = 10
 export const NAME_MAX = 40
 // Two minutes of one-second columns (diagnostic_history.COLUMNS).
@@ -24,20 +20,19 @@ export const COLUMN_S = 1
 // Columns are a second apart; a longer silence between two breaks a run or the lag line
 // rather than drawing it across time nobody sampled.
 export const GAP_S = 2.5
-// The lag graph's ceiling (diagnostic_video gy()): higher lag is drawn at 2.5 s.
+// The lag graph's ceiling: higher lag is drawn at 2.5 s.
 export const LAG_MAX = 2.5
 
 export const UNNAMED = 'Participant'
 export const OTHER_CALL = 'other call'
-// The video's legend, in its order; each is also the state's class on the page.
+// The legend, in order; each entry is also the state's class on the page.
 export const LEGEND = ['captioned', 'held', 'paused', 'lost']
-// diagnostic_history.history_column's lane states. The video draws any other state as
-// captioned speech.
+// diagnostic_history.history_column's lane states; any other draws as captioned speech.
 const STATES = { speech: 'captioned', waiting: 'held', paused: 'paused', lost: 'lost' }
 
 const newest = (columns) => (columns.length ? columns[columns.length - 1].t : 0)
 
-/** The name over a lane's oldest end: {text, other} (diagnostic_video._lane_label). */
+/** The name over a lane's oldest end: {text, other}. */
 export function laneLabel(lane) {
   if (lane.other) return { text: OTHER_CALL, other: true }
   // Code points, as Python slices; the feed already cut names to 40 (diagnostics.clip_name).
@@ -117,7 +112,7 @@ export function clampLag(value) {
 /**
  * The lag graph over the window: the control lag as polylines of {x, lag} (x in seconds
  * before `now` at each column's middle, lag clamped), broken where columns are more than
- * GAP_S apart and joined across columns without a reading, as the video joins them;
+ * GAP_S apart and joined across columns without a reading;
  * a mark where a speaker was paused, a tick where a caption line was sent; and the admit
  * and shed thresholds with their labels.
  */
@@ -144,7 +139,7 @@ export function lagGraph(columns, sample, span = WINDOW_S, now = newest(columns)
   }
   if (line.length) lines.push(line)
   return {
-    // A single reading draws no line (the video needs two points too).
+    // A single reading draws no line.
     lines: lines.filter((points) => points.length > 1),
     sheds,
     sent,

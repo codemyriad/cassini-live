@@ -44,7 +44,7 @@ export function historyStart(start, body) {
 }
 
 /**
- * The page's columns that belong to the feed's own history: the video's `history`. Older
+ * The page's columns that belong to the feed's own history. Older
  * columns stay in the ring, but the seconds between them and the feed's restart were never
  * counted.
  */

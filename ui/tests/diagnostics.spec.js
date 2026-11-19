@@ -72,7 +72,6 @@ test('renders the status, hero, five pipeline cards and three panels from the fe
     'Only a crash stops captions',
   ])
   await expect(page.locator('#memory')).toHaveText('1.07/3 GiB')
-  await expect(page.locator('#video')).toHaveText('Diagnostic video off')
   await expect(page.locator('#lanes-title')).toHaveText('Speakers, last two minutes')
   await expect(page.locator('#lane-names .lane-name')).toHaveText([HOSTILE_NAME, 'Bo'])
   await expect(page.locator('#lane-tags .tag-name')).toHaveText(['scribe 1', 'scribe 2'])
@@ -326,7 +325,7 @@ test('draws ten lanes: names, tags, every state, the lag graph', async ({ page }
   expect(await paint('#band rect.seg.paused')).toEqual(['rgb(107, 79, 5)', 'rgb(252, 183, 0)', '2px'])
   await expect(page.locator('#lane-tags')).toBeVisible()
 
-  // Runs sit where the video draws them: newest against "now" at the right, oldest left.
+  // Runs sit newest against "now" at the right, oldest left.
   const runs = await drawnRuns(page)
   const watched = (Date.now() - openedAt) / 1000
   // Chidi was paused for the first answer's last twelve columns, and has been since.
@@ -525,8 +524,8 @@ test('long, emoji and right-to-left names fit a 375 px phone', async ({ page }, 
     return { ...n.getBoundingClientRect().toJSON(), padding: parseFloat(style.paddingLeft) + parseFloat(style.paddingRight), text: n.textContent, cut: n.scrollWidth > n.clientWidth }
   }))
   for (const box of chips) {
-    // The name gets a quarter of the band (the chip its padding besides, as the video
-    // fits it), so a long name never hides the recent history.
+    // The name gets a quarter of the band (the chip its padding besides), so a long
+    // name never hides the recent history.
     if (box.text !== 'other call') {
       expect(box.width - box.padding).toBeLessThanOrEqual(band.width / 4 + 1)
     }
