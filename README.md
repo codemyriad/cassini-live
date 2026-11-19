@@ -13,7 +13,10 @@ Cassini Live declares support for all three versions. On each, Talk’s **Show c
 1. **Once per browser**, open **Cassini Live** in Nextcloud’s app menu. Drag **Live transcript** to the bookmarks bar. On a phone or tablet, use the page’s copy option and paste the address into a bookmark.
 2. **In a Talk call**, click the bookmark. It opens the transcript in Talk’s right sidebar and starts captions for you.
 
-**When can users skip the bookmarklet?** We asked the Talk team to let administrators choose Cassini Live as the provider behind **Show captions**. Their open pull request adds that choice through `occ`. As of 19 November 2026, it carries the **Next Patch (35)** milestone and awaits merge. A release date is unconfirmed. The proposal covers Talk’s built-in captions. The scrollable transcript sidebar still uses the bookmarklet. [Cassini Live’s upstream request](https://github.com/nextcloud/spreed/issues/20296) · [Talk’s implementation PR](https://github.com/nextcloud/spreed/pull/20369)
+**When can users skip the bookmarklet?**
+
+- **For live captions**, the Talk team’s open PR would let an administrator set `live_transcription_app_id` to `cassini_live`. Participants could then click **Show captions** in Talk. As of 19 November 2026, the PR carries the **Next Patch (35)** milestone. A Nextcloud 36 harness is testing the proposed change. End-to-end confirmation and a release date are pending. [Provider request](https://github.com/nextcloud/spreed/issues/20296) · [Talk’s implementation PR](https://github.com/nextcloud/spreed/pull/20369)
+- **For scrollable history**, the bookmarklet opens Cassini Live’s sidebar today. We’ve separately proposed a native Talk sidebar so participants could also catch up there. [Talk transcript history proposal](https://github.com/nextcloud/spreed/issues/20400)
 
 ## Deploying Cassini Live
 
@@ -31,18 +34,19 @@ Install the `cassini_live` external app from a checkout while the first App Stor
 
 ~~~mermaid
 flowchart LR
-    Panel["Talk transcript sidebar"] -->|Start via AppAPI| API["Cassini Live API"]
+    Panel["Talk transcript sidebar"] -->|Start via AppAPI| Proxy["Temporary Talk proxy"]
+    Proxy -->|HTTP| API["Native caption provider API"]
     API -->|Join call| Room["Room manager and HPB client"]
     Room -->|WebRTC audio per speaker| VAD["Silero speech detection"]
     VAD -->|Speech segments| Engine["Whistle or Nemotron"]
     Engine -->|Caption text| HPB["Talk HPB"]
     HPB -->|Live captions| Panel
-    API -->|In-memory call history| Panel
+    History["Call history in memory"] -->|Catch up via AppAPI| Panel
 ~~~
 
 | Follow the code | Entry points |
 | --- | --- |
-| Start a caption session | The panel calls the authenticated proxy. It checks call access and invokes the provider API. The room manager owns the signalling connection and subscriptions. [Proxy](cassini_live/mock_talk_proxy.py) · [API](cassini_live/app.py) · [Room manager](cassini_live/service.py) |
+| Start a caption session | The temporary proxy verifies the user’s call session, then sends the same HTTP start or stop request Talk would send to the native provider API. The room manager owns the signalling connection and subscriptions. [Proxy](cassini_live/mock_talk_proxy.py) · [API](cassini_live/app.py) · [Room manager](cassini_live/service.py) |
 | Turn speech into text | The Talk client receives one audio track per speaker. The transcriber gates speech and feeds bounded audio queues to a pool of Whistle worker processes or one shared Nemotron process with a stream per speaker. [Talk transport](cassini_live/talk/) · [Transcriber](cassini_live/transcriber.py) · [Whistle pool](cassini_live/pool.py) · [Nemotron host](cassini_live/engine_host.py) |
 | Render the transcript | The sidebar merges live HPB messages with finalized lines from the history endpoint. Shared sequence numbers let it fill gaps and catch up late joiners without duplicating lines. [Panel code](ui/src/) · [UI design and tests](ui/README.md) |
 
