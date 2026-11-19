@@ -1,190 +1,63 @@
 # Cassini Live
 
-Live captions for Nextcloud Talk, running on your own server.
+Cassini Live adds live captions to Nextcloud Talk calls. Open the **Live transcript** tab to follow each speaker by name, including yourself. Speech recognition runs on your server, on the CPU.
 
-In a Talk call, open Cassini Live's transcript panel and captions start.
-Cassini Live receives each speaker's audio and shows what they say under their
-name, in a transcript panel beside the call.
-Audio stays on your infrastructure. There is no speech API subscription,
-saved transcript or recording to clean up afterward.
+![Four participants in a Talk call with speaker names, caption text and a “You joined here” divider in the right sidebar](img/screenshots/01-talk-transcript-panel.png)
 
-I want captions to be useful without making the rest of the server miserable.
-The kernel's limits keep the call safe; if the machine cannot keep up, Cassini
-Live captions fewer speakers rather than everyone late.
+**Joining late?** Scroll above “You joined here” to read recent lines from the current call. Cassini Live keeps a bounded history in memory and clears it when the call’s caption session ends. It processes the call’s available audio tracks and writes neither audio nor transcripts to disk. [Privacy details](docs/privacy.md)
 
-## Where it stands
+## Getting captions on Nextcloud 33, 34 and 35
 
-**0.8.0 is a development release.** It offers a choice of speech engine, including
-two optional, more accurate NVIDIA Nemotron engines downloaded on demand,
-per-speaker admission on live load, worker handoffs that prefer pauses in
-speech, and an optional dashboard inside the call. Captions and the dashboard have run in a real Talk browser call
-with recorded speech. Validation in everyday meetings is still needed.
+Cassini Live declares support for all three versions. On each, Talk’s **Show captions** button calls Nextcloud’s own `live_transcription` app. To use Cassini Live under its own app ID, signed-in participants start captions with a bookmarklet. Guests cannot open the panel. The project has verified captions in a Nextcloud 34 browser call. Test coverage across all three versions is incomplete. [App manifest](appinfo/info.xml) · [Verification](docs/verification.md) · [Known limitations](docs/known-limitations.md)
 
-0.8.0 implements the [instant-admission design](docs/proposals/0.8.0-instant-admission.md).
-Captions start as soon as the engine has loaded: there is no capacity test on
-every start, switch or restart any more. Each speaker is admitted when they
-start talking, from live caption lag, memory headroom and CPU stall; when
-captions fall behind, the newest speaker is paused instead of every room
-closing; only an OOM kill or repeated engine crashes stop captions. Until the
-staging lag measurement fixes its thresholds, admission observes only and
-reports what it would do under `resourceSafety.admission` in `/status`.
+1. **Once per browser**, open **Cassini Live** in Nextcloud’s app menu. Drag **Live transcript** to the bookmarks bar. On a phone or tablet, use the page’s copy option and paste the address into a bookmark.
+2. **In a Talk call**, click the bookmark. It opens the transcript in Talk’s right sidebar and starts captions for you.
 
-* One speech engine serves the whole server. Administrators choose it under
-  **Administration settings → Assistant → Cassini Live**. The **?** next to the
-  section title opens an admin-only settings page with every engine's details,
-  live download and switch progress, cancel, model removal, licenses, the live
-  speaker count and an on-demand capacity measurement.
-* Whistle is the bundled default. It runs on the CPU and needs about 2 GiB of
-  container memory. It supports seven languages: English, German, French,
-  Spanish, Italian, Dutch and Polish. Broad accuracy testing across these
-  languages is still missing.
-* Two optional NVIDIA Nemotron engines are more accurate on our English
-  meetings (8.6% and 12.8% word errors, against 19% for Whistle). Nemotron
-  English is English only; Nemotron Multilingual covers the same seven
-  languages. Each needs 2.25-3 GiB of container memory and twice that on the
-  host. They are not in the image: Cassini Live downloads one (about 450 MiB)
-  when an administrator chooses it, and rolls back if it does not load. See
-  [choose a speech engine](docs/install.md#choose-a-speech-engine).
-* The Nemotron model weights have their own licenses, separate from Cassini
-  Live's AGPL: the NVIDIA Open Model License for Nemotron English and
-  OpenMDW-1.1 for Nemotron Multilingual. The settings page shows each license
-  and its full text; there is no acceptance step.
-* Upgrading from 0.7.0: 0.7.1 adds admin-only proxy routes. Update with
-  `occ app_api:app:update cassini_live` (or reinstall); AppAPI re-reads
-  routes only on a version change.
-* Speech detection filters silent and noisy tracks before recognition.
-  Ten unmuted microphones do not reserve ten recognizers, though receiving and
-  checking their audio still costs resources.
-* Speakers share recognition time fairly, with bounded queues and waits.
-* An administrator can measure how many simultaneous speakers the installation
-  handles, with a bundled recording among ten open audio tracks. The result is
-  shown, never used as a gate.
+**When can users skip the bookmarklet?** We asked the Talk team to let administrators choose Cassini Live as the provider behind **Show captions**. Their open pull request adds that choice through `occ`. As of 19 November 2026, it carries the **Next Patch (35)** milestone and awaits merge. A release date is unconfirmed. The proposal covers Talk’s built-in captions. The scrollable transcript sidebar still uses the bookmarklet. [Cassini Live’s upstream request](https://github.com/nextcloud/spreed/issues/20296) · [Talk’s implementation PR](https://github.com/nextcloud/spreed/pull/20369)
 
-The service requires enforced CPU, memory and process limits, with swap disabled,
-and refuses to load an engine that would not fit. The operating system enforces
-the limits even if the application misbehaves. An OOM kill or repeated engine
-crashes stop captions; the service waits, with longer waits after repeated
-failures (container restarts preserve them), and becomes available again
-automatically. An interrupted call may need captions toggled back on.
-See [load, admission and capacity](docs/capacity.md).
+## Deploying Cassini Live
 
-Changes in 0.11.0:
+Install the `cassini_live` external app from a checkout while the first App Store release is in preparation. [Installation guide](docs/install.md#from-a-checkout) · [App Store release status](docs/appstore-checklist.md)
 
-* A live diagnostics page for administrators, served by the app at
-  `/index.php/apps/app_api/proxy/cassini_live/diagnostics/` and linked
-  from the settings page's Status section. It shows both views of the
-  diagnostic video at once, updated every second, without joining a call or
-  setting a deploy option. The app samples for it only while the page polls,
-  and shows speakers' names only to administrators who are participants of
-  the sampled call's Talk conversation. See
-  [diagnostics page](docs/diagnostics-page.md).
-* Upgrading from 0.10.0: 0.11.0 adds admin-only proxy routes for the page.
-  Update with `occ app_api:app:update cassini_live` (or reinstall);
-  AppAPI re-reads routes only on a version change.
+| What to check | What your installation needs or provides |
+| --- | --- |
+| Talk connection | Working calls through Talk’s High-performance backend (HPB), its internal secret, and AppAPI with a Docker deploy daemon. |
+| Host limits | Linux with cgroup v2, enforced CPU, memory and process limits, and container swap disabled. Set the limits before loading an engine. |
+| Speech recognition | Whistle is bundled and runs offline. Allow about 2 GiB of container memory. It captions English, German, French, Spanish, Italian, Dutch and Polish in the spoken language. |
+| Engine choice | Administrators select one engine for the server. Optional Nemotron English and Nemotron Multilingual models download on demand and need at least 2.25 GiB of container memory. [Engine comparison](docs/install.md#choose-a-speech-engine) |
+| Operations | Administrators can measure simultaneous-speaker capacity and inspect caption lag and resource use during a call. [Capacity](docs/capacity.md) · [Live diagnostics](docs/diagnostics-page.md) |
 
-Changes in 0.10.0:
+## Architecture at a glance
 
-* The transcript panel catches up late joiners: the app keeps a bounded
-  in-memory transcript of the current call and serves it, to participants only,
-  from `GET /history?token=<roomToken>` (any logged-in member of the call). The
-  panel shows the earlier lines, a "You joined here" divider, then the live
-  continuation. The transcript is per-call: a new call in the same conversation
-  starts fresh, and the buffer is dropped when the call's caption session ends.
-  The panel mounts as a Talk sidebar tab and is scoped to the current call.
+~~~mermaid
+flowchart LR
+    Panel["Talk transcript sidebar"] -->|Start via AppAPI| API["Cassini Live API"]
+    API -->|Join call| Room["Room manager and HPB client"]
+    Room -->|WebRTC audio per speaker| VAD["Silero speech detection"]
+    VAD -->|Speech segments| Engine["Whistle or Nemotron"]
+    Engine -->|Caption text| HPB["Talk HPB"]
+    HPB -->|Live captions| Panel
+    API -->|In-memory call history| Panel
+~~~
 
-Changes in 0.9.0:
+| Follow the code | Entry points |
+| --- | --- |
+| Start a caption session | The panel calls the authenticated proxy. It checks call access and invokes the provider API. The room manager owns the signalling connection and subscriptions. [Proxy](cassini_live/mock_talk_proxy.py) · [API](cassini_live/app.py) · [Room manager](cassini_live/service.py) |
+| Turn speech into text | The Talk client receives one audio track per speaker. The transcriber gates speech and feeds bounded audio queues to a pool of Whistle worker processes or one shared Nemotron process with a stream per speaker. [Talk transport](cassini_live/talk/) · [Transcriber](cassini_live/transcriber.py) · [Whistle pool](cassini_live/pool.py) · [Nemotron host](cassini_live/engine_host.py) |
+| Render the transcript | The sidebar merges live HPB messages with finalized lines from the history endpoint. Shared sequence numbers let it fill gaps and catch up late joiners without duplicating lines. [Panel code](ui/src/) · [UI design and tests](ui/README.md) |
 
-* New transcript panel for Talk calls, delivered as a bookmarklet and served by
-  the app (any logged-in user): a scrollable, speaker-grouped live
-  transcript that also shows your own lines. Pick up the bookmarklet on the
-  **Cassini Live** page in Nextcloud's app menu. See [ui/](ui/).
-
-Changes in 0.8.2:
-
-* `CASSINI_LIVE_WORKERS` is gone: Cassini Live sizes itself from the CPU limit;
-  a leftover value is ignored. See [upgrading to 0.8.2](docs/install.md#upgrading-to-082).
-
-Changes in 0.8.1:
-
-* Calls with many participants: up to 24 open microphones per server (was 10),
-  and a Nemotron speaker's engine stream closes after a minute of silence, so
-  any 12 people can speak within a minute instead of only the first 12.
-* The diagnostic video lists the people who spoke in the last two minutes,
-  with a count of silent microphones.
-
-Changes in 0.8.0:
-
-* No automatic capacity check: a start, engine switch, rollback or restart is
-  ready in load time instead of up to two minutes.
-* Per-speaker admission and lag-driven shedding (observe-only until measured).
-* Removed trips: CPU quota stalls, host CPU pressure, a lagging event loop,
-  memory or PID use above 80%, low host memory, changed limits and the capacity
-  check no longer close every room; the governor holds or pauses speakers
-  instead. Only an OOM kill or repeated engine crashes still do.
-* Half-host CPU and memory and the PID count are advice, not requirements; PSI
-  is optional. Whistle is no longer capped at two rooms.
-* A late answer from a live engine loses one request instead of counting as a
-  crash.
-* A 0.7.x recovery journal and settings are read as they are. A 0.7.x cooldown
-  from one of the removed trips, and a capacity-check verdict, are dropped on
-  the first start; a cooldown after an OOM kill, repeated crashes or a crash
-  while running or loading is still waited out.
-
-An optional [diagnostic video](docs/diagnostic-video.md) shows, inside a call,
-how captions are made: each speaker's lane under their name, the caption lag,
-admission decisions and resource use, including its own overhead. We enable it
-on our deployments; other installations default to off. Administrators can see
-the same on the [diagnostics page](docs/diagnostics-page.md) without joining a
-call or setting any option.
-
-## Try it
-
-You need Nextcloud with Talk's High-performance backend, AppAPI, a deploy daemon
-and Linux with cgroup v2 (PSI pressure statistics are optional: without them
-admission does not use the CPU-stall input). The image includes
-Whistle and runs offline after installation. Only an optional Nemotron engine
-needs a download (from dist.gocassini.com), when an administrator chooses it. An administrator must supply the
-HPB internal secret.
-
-Follow the [installation instructions](docs/install.md). Cassini Live installs
-from the Nextcloud App Store, under the app id `cassini_live`. The first store
-release, 0.12.0-alpha.1, is being prepared (see the
-[App Store checklist](docs/appstore-checklist.md)); until it is published,
-install from a checkout as the instructions describe.
-
-Talk sends its **Show captions** button only to Nextcloud's own Live
-Transcription app, so people turn captions on from Cassini Live's transcript
-panel instead. Nextcloud's app can stay installed.
-
-[Known limitations](docs/known-limitations.md) lists what Cassini Live does not
-do. [Cassini](https://github.com/codemyriad/gocassini) can stay installed for
-recordings.
+[Architecture details](docs/architecture.md) · [Load and recovery](docs/capacity.md)
 
 ## Development
 
-To run this checkout against an existing Nextcloud/Talk harness with no Cassini
-checkout dependency, use the [standalone development script](docs/dev-harness.md).
+With Python 3.12 and uv, run the backend checks from the repository root:
 
-With Python 3.12 and [uv](https://docs.astral.sh/uv/):
-
-```sh
+~~~sh
 uv sync --frozen
 uv run python scripts/prepare_vad.py
 uv run pytest -m 'not integration'
-```
+~~~
 
-For real recognition tests, run `uv run python scripts/prepare_model.py`, then
-`uv run pytest`. Models go in ignored `models/`. Build the container with
-`docker build -t cassini-live:0.11.2 .`.
+For recognition tests with real speech, run `uv run python scripts/prepare_model.py`, then `uv run pytest`. To exercise the full path in a Talk browser call, use the [development harness](docs/dev-harness.md). To inspect panel output from a recorded meeting, use the [replay viewer](docs/replay.md).
 
-To see what the transcript panel would have shown at any moment of a past
-meeting, replay one of Cassini's archived recordings through the pipeline and
-scrub the result: [docs/replay.md](docs/replay.md).
-
-This project is substantially AI-assisted. Automated checks cover the audio
-pipeline, signalling, WebRTC and resource refusal; they do not establish
-production readiness or replace human review.
-
-[Known limitations](docs/known-limitations.md) · [Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Privacy](docs/privacy.md) ·
-[Releasing](docs/release.md) · [App Store checklist](docs/appstore-checklist.md) ·
-[Third-party notices](NOTICE.md) · [AGPL-3.0-or-later](LICENSE)
+This project is substantially AI-assisted. [Verification record](docs/verification.md) · [Changelog](CHANGELOG.md) · [Release guide](docs/release.md) · [Third-party notices](NOTICE.md) · [AGPL-3.0-or-later](LICENSE)
