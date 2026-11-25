@@ -56,10 +56,8 @@ def no_automatic_capacity_check(monkeypatch):
 @pytest.mark.parametrize(
     "change,reason",
     [
-        ({"cpuQuotaCpus": None}, "finite cgroup v2"),
-        ({"memoryLimitBytes": None}, "finite cgroup v2"),
-        ({"pidsLimit": None}, "finite cgroup v2"),
-        ({"swapLimitBytes": 1}, "disable container swap"),
+        # A 2-CPU host spares 1 CPU by default, under Whistle's minimum (D-930).
+        ({"cpuQuotaCpus": None, "effectiveCpus": 1.0, "affinityCpus": 2}, "Whistle needs 2 CPUs"),
         ({"memoryLimitBytes": 512 * MIB}, "memory budget is too small"),
         ({"memoryCurrentBytes": 2000 * MIB}, "Not enough memory to load Whistle"),
         ({"memoryCurrentBytes": None}, "cannot be read"),
@@ -107,6 +105,43 @@ def test_requested_workers_must_fit_budget():
     assert static_problem(SAFE, 3)
     assert static_problem({**SAFE, "memoryLimitBytes": 512 * MIB}, 2)
     assert static_problem(SAFE, 2) is None
+
+
+async def test_missing_limits_load_on_default_budgets_and_advise_the_command():
+    # D-930: a bare store install (no kernel limits at all) loads on default budgets,
+    # observe-only, and /status names the command that enforces the real thing.
+    pool = WorkerPool(2, worker_factory=FakeWorker)
+    bare = {
+        **SAFE,
+        "cpuQuotaCpus": None,
+        "effectiveCpus": 4.0,  # snapshot() derives this from the default budget
+        "memoryLimitBytes": None,
+        "pidsLimit": None,
+        "swapLimitBytes": None,
+        "pidsCurrent": 20,
+        "swapCurrentBytes": 0,
+    }
+    guard = SafetyController(pool, CapacityAssessment(pool), reader=lambda: dict(bare))
+    try:
+        await guard.start()
+        assert guard.state == "ready" and not guard.admin_action
+        status = guard.status()
+        assert any("docker update" in note for note in status["advice"])
+        budgets = status["budgets"]
+        assert budgets["cpuSource"] == "default" and budgets["cpus"] == 4.0
+        assert budgets["memorySource"] == "default" and budgets["memoryMiB"] == 2048
+        assert budgets["pids"] == 128 and budgets["pidsSource"] == "default"
+        assert not budgets["swapLimited"]
+        assert budgets["kernelLimits"] == {
+            "cpus": None, "memoryBytes": None, "pids": None, "swapBytes": None,
+        }  # fmt: skip
+        assert status["admission"]["memoryLimitMiB"] is None  # no tick has sampled yet
+        assert set(budgets["watch"]) == {
+            "memoryOverBudgetTicks", "memoryPeakMiB", "pidsHighTicks", "pidsPeak",
+            "swapGrewTicks", "swapCurrentMiB",
+        }  # fmt: skip
+    finally:
+        await guard.close()
 
 
 async def test_start_is_ready_in_load_time_with_every_worker_admitted():
@@ -472,7 +507,8 @@ def test_measuring_refuses_rooms_and_tracks():
 ADMISSION_KEYS = {
     "open", "reason", "seats", "ceiling", "speaking", "paused", "lagSeconds",
     "lagSustainedSeconds", "captionAgeSeconds", "cpuStall", "cpuPressureAvg10",
-    "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryStatAvailable",
+    "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryLimitSource",
+    "memoryStatAvailable",
     "pressureAvailable", "engineDuty", "lastRefusal", "lastShed", "shedEvents",
     "measuring", "tickMs", "observeOnly",
 }  # fmt: skip

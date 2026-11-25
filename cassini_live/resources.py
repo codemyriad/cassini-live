@@ -13,7 +13,29 @@ MIB = 1024 * 1024
 # the supervisor's RSS with safety.MAX_TRACKS (24) tracks and the video on, then 1.5x the
 # peak, would justify it (a track adds 0.6-0.9 MiB locally, see safety.MAX_TRACKS).
 SUPERVISOR_MARGIN_MIB = 128
+# D-930: a default budget stands in for a missing kernel limit, so a store install runs
+# without `docker update`. An administrator's limit always wins for its resource; defaults
+# only fill gaps, so a configured install keeps today's behavior to the byte.
+CPU_BUDGET_CAP = 4.0  # the runbook's --cpus=4; also capped at half the host's CPUs
+PIDS_BUDGET = 128  # the runbook's --pids-limit; watched, never enforced by us
+# Shown wherever we advise enforcement; matches docs/install.md and the runbook.
+LIMITS_COMMAND = "docker update --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 <container>"
 _stat_warned = False
+
+
+def default_cpu_budget(affinity):
+    """CPU budget when cpu.max is missing: at most the runbook's 4, at most half the
+    reachable CPUs (advice() asks an administrator for the same), never below 1."""
+    return max(1.0, min(CPU_BUDGET_CAP, affinity / 2))
+
+
+def default_memory_budget(engine_id, host_bytes):
+    """Memory budget when memory.max is missing: the engine's recommended container size,
+    capped at half the host's RAM; the recommendation alone when the host cannot be read."""
+    recommended = catalog.get(engine_id).requirements.recommended_memory_mib * MIB
+    if host_bytes:
+        return min(recommended, host_bytes // 2)
+    return recommended
 
 
 def _number(path):
@@ -90,7 +112,8 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     severity_available = True
     monitored = False
     unreadable = False
-    memory_current = memory_file = memory_shmem = None
+    memory_current = memory_file = memory_shmem = swap_current = None
+    pids_current = None
     binding = None
     paths = _paths(root)
     for path in paths:
@@ -115,6 +138,9 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         if mem_now is not None and (binding is None or (limit, len(path.parts)) < binding):
             binding, memory_current = (limit, len(path.parts)), mem_now
             memory_file, memory_shmem = _stat_memory(path)
+            swap_current = _number(path / "memory.swap.current")
+        if pid_now is not None:
+            pids_current = max(pids_current or 0, pid_now)
         if pid_max and pid_now is not None:
             pids_ratio = max(pids_ratio, pid_now / pid_max)
         if mem_max is not None and mem_now is None or pid_max is not None and pid_now is None:
@@ -144,6 +170,9 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
     except (OSError, ValueError, IndexError):
         pass
     cpu = min(quotas) if quotas else None
+    # Sizing follows the budget: the kernel quota when one is set, the default otherwise
+    # (D-930). effectiveCpus is what every thread, worker and seat formula reads.
+    cpu_budget = cpu if cpu else default_cpu_budget(affinity)
     cpu_pressure = [_pressure(proc / "pressure/cpu"), _pressure(root / "cpu.pressure")]
     cpu_recent = [
         _pressure(proc / "pressure/cpu", "avg10"),
@@ -171,8 +200,10 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         "cpuStallUsec": cpu_stall,
         "hostCpuStallUsec": _pressure_total(proc / "pressure/cpu"),
         "memoryPressure": max(memory_pressure) if psi_available else None,
-        "effectiveCpus": min(affinity, cpu) if cpu else float(affinity),
+        "effectiveCpus": min(affinity, cpu_budget),
         "cpuQuotaCpus": cpu,
+        "cpuBudgetCpus": cpu_budget,
+        "cpuBudgetSource": "kernel" if cpu else "default",
         "affinityCpus": affinity,
         "memoryLimitBytes": min(memory) if memory else None,
         "memoryCurrentBytes": memory_current,
@@ -180,7 +211,11 @@ def snapshot(root=Path("/sys/fs/cgroup"), proc=Path("/proc")):
         "memoryShmemBytes": memory_shmem,
         "memoryStatAvailable": memory_file is not None,
         "swapLimitBytes": min(swap) if swap else None,
+        "swapCurrentBytes": swap_current,
         "pidsLimit": min(pids) if pids else None,
+        "pidsBudget": min(pids) if pids else PIDS_BUDGET,
+        "pidsBudgetSource": "kernel" if pids else "default",
+        "pidsCurrent": pids_current,
         "memoryFraction": memory_ratio,
         "pidsFraction": pids_ratio,
         "hostMemoryBytes": meminfo.get("MemTotal"),
@@ -197,23 +232,67 @@ def limits(root=Path("/sys/fs/cgroup")):
     return {k: data[k] for k in ("effectiveCpus", "memoryLimitBytes", "affinityCpus")}
 
 
+def apply_budgets(data, engine_id):
+    """A snapshot with D-930 budgets standing in for missing kernel limits, plus a `budget`
+    block for /status. CPU and PID budgets are engine-free and already in snapshot();
+    memory needs the engine (its recommended container size is the default), so it is
+    filled here, and `memoryLimitBytes` carries the budget so every fit and headroom
+    reader works unchanged. The kernel's own value stays under memoryKernelLimitBytes.
+    Idempotent, and tolerant of partial snapshots (tests, old journal readers)."""
+    data = dict(data)
+    affinity = data.get("affinityCpus") or 1
+    cpu = data.get("cpuQuotaCpus")
+    cpu_budget = cpu if cpu else data.get("cpuBudgetCpus") or default_cpu_budget(affinity)
+    data["cpuBudgetCpus"], data["cpuBudgetSource"] = cpu_budget, "kernel" if cpu else "default"
+    data["effectiveCpus"] = min(affinity, cpu_budget)
+    if "memoryKernelLimitBytes" not in data:
+        data["memoryKernelLimitBytes"] = data.get("memoryLimitBytes")
+    memory = data["memoryKernelLimitBytes"]
+    memory_budget = memory or default_memory_budget(engine_id, data.get("hostMemoryBytes"))
+    data["memoryLimitBytes"] = memory_budget
+    data["memoryBudgetSource"] = "kernel" if memory else "default"
+    pids = data.get("pidsLimit")
+    pids_budget = pids if pids else PIDS_BUDGET
+    data["pidsBudget"], data["pidsBudgetSource"] = pids_budget, "kernel" if pids else "default"
+    swap = data.get("swapLimitBytes")
+    data["budget"] = {
+        "cpus": cpu_budget,
+        "cpuSource": data["cpuBudgetSource"],
+        "memoryMiB": int(memory_budget // MIB),
+        "memorySource": data["memoryBudgetSource"],
+        "pids": pids_budget,
+        "pidsSource": data["pidsBudgetSource"],
+        "swapLimited": swap == 0,
+        "kernelLimits": {"cpus": cpu, "memoryBytes": memory, "pids": pids, "swapBytes": swap},
+    }
+    return data
+
+
 def static_problem(data, workers, engine_id="whistle"):
     """Why this container can never run the engine as configured, or None.
 
-    Only rules the kernel cannot enforce for us block (0.8.0 Decision 5): finite cgroup v2
-    limits with swap off, a worker count within the CPU ceiling, and the measured memory
-    floor. Half-host and PID-count rules are advice (see advice())."""
-    cpu, memory, processes = data["cpuQuotaCpus"], data["memoryLimitBytes"], data["pidsLimit"]
-    if not cpu or not memory or not processes or data["swapLimitBytes"] != 0:
-        return "Set finite cgroup v2 CPU, memory and PID limits, and disable container swap"
+    Since D-930, missing kernel limits no longer block: a default budget stands in
+    (apply_budgets) and advice() names the command that enforces the real thing. What
+    still blocks is a configuration no budget can satisfy: a worker count over the CPU
+    ceiling, the engine's memory floor over the budget, and a CPU budget under the
+    engine's minimum. For Whistle the minimum blocks only a default budget: an
+    administrator's explicit quota keeps the pre-D-930 behavior."""
+    data = apply_budgets(data, engine_id)
+    cpu, memory = data["cpuBudgetCpus"], data["memoryLimitBytes"]
     engine = catalog.get(engine_id)
+    needs = engine.requirements
     if engine.kind == "worker_pool":
+        if data["cpuBudgetSource"] == "default" and cpu < needs.min_cpu_quota:
+            return (
+                f"{engine.name} needs {needs.min_cpu_quota:g} CPUs and this host spares "
+                f"only {cpu:g} without a CPU limit: set one ({LIMITS_COMMAND}) "
+                "or switch to Nemotron"
+            )
         if not 1 <= workers <= catalog.worker_ceiling(engine_id, cpu):
             return "Requested recognition workers exceed the CPU budget (maximum four)"
         if memory < (384 + workers * 192) * MIB:
             return "The memory budget is too small for the requested recognition workers"
         return None
-    needs = engine.requirements
     if not 1 <= workers <= catalog.worker_ceiling(engine_id, cpu):
         return f"Requested simultaneous speakers exceed the CPU budget for {engine.name}"
     if cpu < needs.min_cpu_quota:
@@ -228,13 +307,27 @@ def static_problem(data, workers, engine_id="whistle"):
 
 
 def advice(data):
-    """Installation advice that no longer blocks captions (0.8.0 Decision 5): the kernel's
-    limits protect the host, so these only make the host more comfortable."""
+    """Installation advice that never blocks captions (0.8.0 Decision 5, widened by D-930):
+    missing kernel limits are advised back with the command that sets them, and the
+    comfort rules stay advice. Reads kernel values, so it accepts raw or budget-applied
+    snapshots alike."""
     notes = []
-    cpu, memory, processes = data["cpuQuotaCpus"], data["memoryLimitBytes"], data["pidsLimit"]
-    if cpu and cpu > data["affinityCpus"] / 2:
+    cpu, processes = data.get("cpuQuotaCpus"), data.get("pidsLimit")
+    memory = data.get("memoryKernelLimitBytes", data.get("memoryLimitBytes"))
+    swap = data.get("swapLimitBytes")
+    if not cpu or not memory or not processes:
+        notes.append(
+            "No enforced container limits; captions run on a default budget. Kernel "
+            f"limits protect the call even if captions misbehave: {LIMITS_COMMAND}"
+        )
+    if swap != 0:
+        notes.append(
+            "Disable container swap (set --memory-swap equal to --memory): a swapped "
+            "caption engine stalls and its paging slows the whole host"
+        )
+    if cpu and cpu > (data.get("affinityCpus") or 1) / 2:
         notes.append("Reserve at least half the available CPU capacity for the host")
-    host_memory = data["hostMemoryBytes"]
+    host_memory = data.get("hostMemoryBytes")
     if memory and (not host_memory or memory > host_memory / 2):
         notes.append("Reserve at least half the host memory outside the caption container")
     if processes and processes > 256:
@@ -275,10 +368,10 @@ def start_problem(data, engine_id, rss_mib=None, workers=1):
 
     rss_mib is the last resident size the engine's host reported; the catalog's model_mib
     stands in before a first load. Whistle's workers are spawned one at a time, so workers
-    counts those still to start."""
+    counts those still to start. Without a kernel memory limit the D-930 default budget
+    bounds the fit, so a store install loads without `docker update`."""
     engine = catalog.get(engine_id)
-    if data.get("memoryLimitBytes") is None:
-        return "Set finite cgroup v2 memory limits"
+    data = apply_budgets(data, engine_id)
     headroom = headroom_mib(data)
     if headroom is None:
         return "Container memory use cannot be read"
@@ -299,3 +392,52 @@ def start_problem(data, engine_id, rss_mib=None, workers=1):
     if headroom < need:
         return f"Not enough memory to load {engine.name}: {need} MiB needed, {headroom} MiB free"
     return None
+
+
+class BudgetWatch:
+    """Observe-only D-930 counters, one tick() per safety-monitor second: what budget
+    enforcement would have done, so a staging run can justify (or drop) each trip before
+    any of them may pause captions. Nothing here acts; /status reports it. Counted: ticks
+    with unreclaimable memory over the budget, ticks with the process count at or over the
+    PID budget, and ticks where the container's own swap use grew."""
+
+    def __init__(self):
+        self.memory_over_ticks = 0
+        self.memory_peak_mib = None
+        self.pids_high_ticks = 0
+        self.pids_peak = None
+        self.swap_grew_ticks = 0
+        self._swap_previous = None
+
+    def tick(self, data):
+        """Feed one budget-applied snapshot (apply_budgets); unreadable inputs skip their
+        signal rather than failing the monitor tick."""
+        charged = charged_bytes(data)
+        if charged is not None:
+            self.memory_peak_mib = max(self.memory_peak_mib or 0, charged // MIB)
+            budget = data.get("memoryLimitBytes")
+            if budget and charged > budget:
+                self.memory_over_ticks += 1
+        pids = data.get("pidsCurrent")
+        if pids is not None:
+            self.pids_peak = max(self.pids_peak or 0, pids)
+            budget = data.get("pidsBudget")
+            if budget and pids >= budget:
+                self.pids_high_ticks += 1
+        swap = data.get("swapCurrentBytes")
+        if swap is not None:
+            if self._swap_previous is not None and swap > self._swap_previous:
+                self.swap_grew_ticks += 1
+            self._swap_previous = swap
+
+    def status(self):
+        return {
+            "memoryOverBudgetTicks": self.memory_over_ticks,
+            "memoryPeakMiB": self.memory_peak_mib,
+            "pidsHighTicks": self.pids_high_ticks,
+            "pidsPeak": self.pids_peak,
+            "swapGrewTicks": self.swap_grew_ticks,
+            "swapCurrentMiB": (
+                None if self._swap_previous is None else self._swap_previous // MIB
+            ),
+        }

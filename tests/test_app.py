@@ -380,7 +380,8 @@ def test_status_keeps_its_shape_and_exports_the_observing_admission_block(header
     assert set(admission) == {
         "open", "reason", "seats", "ceiling", "speaking", "paused", "lagSeconds",
         "lagSustainedSeconds", "captionAgeSeconds", "cpuStall", "cpuPressureAvg10",
-        "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryStatAvailable",
+        "memoryHeadroomMiB", "memoryUsedMiB", "memoryLimitMiB", "memoryLimitSource",
+        "memoryStatAvailable",
         "pressureAvailable", "engineDuty", "lastRefusal", "lastShed", "shedEvents",
         "measuring", "tickMs", "observeOnly",
     }  # fmt: skip

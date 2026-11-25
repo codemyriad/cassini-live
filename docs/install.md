@@ -23,15 +23,16 @@ Live Transcription app can stay installed. See
 
    AppAPI pulls `ghcr.io/codemyriad/cassini-live` at the released version, for
    amd64 or arm64.
-3. [Set the container limits](#set-the-container-limits) on
-   `nc_app_cassini_live`. Until you do, Cassini Live stays blocked and loads no
-   speech engine.
+3. [Set the container limits](#set-the-container-limits-advised) on
+   `nc_app_cassini_live` (advised). Without them Cassini Live runs on a default
+   budget of at most 4 CPUs and the engine's recommended memory, each capped at
+   half the host; kernel limits are the stronger protection.
 4. Enter the HPB internal secret: **Administration settings > Assistant**, then
    **?** next to Cassini Live, section **Talk connection**. The section checks
    that the HPB accepts the secret, and takes an HPB URL override if the
    container cannot reach the public one.
-5. Reload the settings page until it shows "Captions are ready." (seconds once
-   the limits are set).
+5. Reload the settings page until it shows "Captions are ready." (a matter of
+   seconds).
 6. Talk's **Show captions** button does not reach Cassini Live, so people
    turn captions on from Cassini Live's transcript panel. Each person opens
    the **Cassini Live** page in Nextcloud's app menu once per browser and
@@ -91,12 +92,15 @@ app is registered from the manifest in the checkout. The image tag must match
 5. Continue with steps 3 to 7 of [From the App Store](#from-the-app-store):
    container limits, the settings page, the transcript panel and the check.
 
-## Set the container limits
+## Set the container limits (advised)
 
-A newly created container without enforced limits stays blocked and does not
-load recognition workers. The container is named after the app id:
-`nc_app_cassini_live`. For an example host with at least eight available CPUs and
-4 GiB RAM:
+A newly created container works without enforced limits: Cassini Live sizes
+itself from a default budget (at most 4 CPUs and the engine's recommended
+memory, each capped at half the host — [load and admission](capacity.md)).
+Kernel limits are still the stronger protection, because the kernel enforces
+them even if captions misbehave, so we advise setting them. The container is
+named after the app id: `nc_app_cassini_live`. For an example host with at
+least eight available CPUs and 4 GiB RAM:
 
 ```sh
 docker update --cpus=4 --memory=2g --memory-swap=2g --pids-limit=128 nc_app_cassini_live
@@ -109,8 +113,10 @@ admission](capacity.md)), and a low CPU weight (`docker update --cpu-shares`)
 makes the kernel take CPU from captions first when the host is busy.
 Persist CPU and memory limits in the AppAPI daemon's deployment options.
 AppAPI may not preserve PID and swap limits across container recreation;
-reapply them after upgrades. Until then, captions refuse to start. Corrections
-are detected automatically within 15 seconds.
+reapply them after upgrades — until then those resources run on the watched
+defaults. Changes are detected automatically within 15 seconds, and `/status`
+(`resourceSafety.budgets`) shows which values are enforced by the kernel and
+which are defaults.
 
 Keep the recovery journal on persistent storage across container recreation
 (see [recovery policy](capacity.md)). Give the app user write access.

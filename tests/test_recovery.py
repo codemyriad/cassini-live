@@ -212,8 +212,8 @@ async def test_only_sustained_ready_resets_backoff(harness):
 async def test_configuration_fix_recalculates_default_workers(harness):
     guard, pool, data, clock = harness
     pool.size = 4
-    data["cpuQuotaCpus"] = None
-    data["effectiveCpus"] = 8
+    # Missing limits no longer block (D-930); a memory budget under the worker floor does.
+    data["memoryLimitBytes"] = 512 * 1024 * 1024
     try:
         await guard.start()
         assert guard.admin_action and not pool.workers

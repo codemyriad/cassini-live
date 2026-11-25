@@ -215,12 +215,12 @@ ADVISORY = [{"code": "cpu_quota", "message": "The CPU quota is too high."}]
             "nemotron-multilingual",
             {"cards": {"nemotron-multilingual": card(
                 "nemotron-multilingual", eligible=False, reasons=[{
-                    "code": "limits_missing",
-                    "message": "Set CPU and memory limits and disable swap for the container "
-                               "first.",
+                    "code": "budget",
+                    "message": "Container limits are not fully enforced; captions run on a "
+                               "budget of 4 CPUs and 3.0 GiB.",
                 }],
             )}},
-            "Nemotron Multilingual — unavailable: container limits not set",
+            "Nemotron Multilingual — unavailable: container limits advised",
         ),
         (
             "nemotron-en",

@@ -19,9 +19,8 @@ from typing import Literal
 from . import __version__, catalog, resources
 from .model_store import ModelState
 
-ReasonCode = Literal["limits_missing", "memory_limit", "host_memory", "cpu_quota",
-                     "cpu_instructions", "disk_space", "network", "storage", "architecture",
-                     "budget"]
+ReasonCode = Literal["memory_limit", "host_memory", "cpu_quota", "cpu_instructions",
+                     "disk_space", "network", "storage", "architecture", "budget"]
 NetworkStatus = Literal["reachable", "unreachable", "unknown"]
 ARCHITECTURES = ("x86_64", "aarch64")
 GIB = 1024**3
@@ -137,17 +136,24 @@ def assess(engine: catalog.Engine, facts: HostFacts, model: ModelState) -> Eligi
         reasons.append(Reason(code, message, measured, required))
 
     quota, memory, host = facts.cpu_quota, facts.memory_limit_bytes, facts.host_memory_bytes
+    cpu_budget = quota or resources.default_cpu_budget(facts.affinity_cpus)
+    memory_budget = memory or resources.default_memory_budget(engine.id, host)
+    advisories = []
     if not quota or not memory or facts.swap_limit_bytes != 0:
-        fail("limits_missing",
-             "Set CPU and memory limits and disable swap for the container first.")
-    if memory and memory < floor:
+        # Advice since D-930: a default budget stands in for a missing limit; the kernel's
+        # own limits are the stronger protection, so the command that sets them is shown.
+        advisories.append(Reason("budget",
+             f"Container limits are not fully enforced; captions run on a budget of "
+             f"{_cpus(cpu_budget)} and {_gib(memory_budget)} GiB. Kernel limits are "
+             f"stronger: {resources.LIMITS_COMMAND}."))
+    if memory_budget < floor:
         fail("memory_limit",
-             f"The container memory limit is {_gib(memory)} GiB. {engine.name} needs at least "
+             f"The container memory {'limit' if memory else 'budget'} is "
+             f"{_gib(memory_budget)} GiB. {engine.name} needs at least "
              f"{_gib(floor, up=True)} GiB "
              f"({_gib(needs.recommended_memory_mib * MIB)} GiB recommended).",
-             memory, floor)
-    host_needed = 2 * max(memory or 0, floor)
-    advisories = []
+             memory_budget, floor)
+    host_needed = 2 * max(memory_budget, floor)
     if not host or host < host_needed:
         # Advice since 0.8.0 (Decision 5): the container's own limit protects the host.
         advisories.append(Reason("host_memory",
@@ -155,10 +161,11 @@ def assess(engine: catalog.Engine, facts: HostFacts, model: ModelState) -> Eligi
               "The host memory cannot be read. ")
              + f"{engine.name} runs best with at least {_gib(host_needed, up=True)} GiB, "
              "twice the container limit.", host, host_needed))
-    if quota and quota < needs.min_cpu_quota:
+    if cpu_budget < needs.min_cpu_quota:
         fail("cpu_quota",
-             f"The CPU quota is {_cpus(quota)}. {engine.name} needs at least "
-             f"{_cpus(needs.min_cpu_quota)}.", quota, needs.min_cpu_quota)
+             f"The CPU {'quota' if quota else 'budget'} is {_cpus(cpu_budget)}. "
+             f"{engine.name} needs at least "
+             f"{_cpus(needs.min_cpu_quota)}.", cpu_budget, needs.min_cpu_quota)
     if facts.arch not in ARCHITECTURES:
         fail("architecture", "This processor architecture is not supported.", facts.arch)
     elif facts.arch == "x86_64" and facts.cpu_flags:

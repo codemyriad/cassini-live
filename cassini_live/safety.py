@@ -1,9 +1,11 @@
 """One supervisor owns admission, shutdown and crash-only recovery.
 
-The kernel's cgroup limits protect the call (docs/proposals/0.8.0-instant-admission.md):
-a start is a memory fit check and a load, ready in load time; per-speaker admission and
-shedding live in the load governor; only a real crash (an OOM kill or the backend's
-failure circuit) stops captions and waits out a back-off.
+The kernel's cgroup limits protect the call when an administrator sets them
+(docs/proposals/0.8.0-instant-admission.md); without them a default budget stands in for
+sizing and fit, observe-only (D-930). A start is a memory fit check and a load, ready in
+load time; per-speaker admission and shedding live in the load governor; only a real
+crash (an OOM kill or the backend's failure circuit) stops captions and waits out a
+back-off.
 """
 
 import asyncio
@@ -18,7 +20,7 @@ from .diagnostics import process_usage
 from .load import THRESHOLDS, LoadGovernor, per_speaker_mib
 from .pool import CapacityError
 from .recovery import RecoveryJournal, RecoveryPolicy
-from .resources import advice, snapshot, start_problem, static_problem
+from .resources import BudgetWatch, advice, apply_budgets, snapshot, start_problem, static_problem
 
 LOGGER = logging.getLogger(__name__)
 # Trips 0.7.x had and 0.8.0 does not (its capacity check, CPU and memory pressure, limit
@@ -118,6 +120,8 @@ class SafetyController:
         self.last_trip = None
         self.cpu_health = {}
         self.advice = []
+        self.budget = None  # the `budget` block of the latest snapshot (apply_budgets)
+        self.budget_watch = BudgetWatch()
         self.tracks = set()
         self.monitor = None
         self.lock = asyncio.Lock()
@@ -161,11 +165,19 @@ class SafetyController:
         pool.governor = self.governor
         self._engine_cpu = None
 
+    def _read(self):
+        """One snapshot with D-930 budgets applied for the current engine: a missing kernel
+        limit is stood in by a default, so sizing, fit and headroom work either way, and
+        /status can show the budgets with their source."""
+        data = apply_budgets(self.reader(), self.engine_id)
+        self.budget = data.get("budget")
+        return data
+
     def _start_check(self):
         """Why the backend must not spawn an engine process now, or None. Consulted before
         every spawn, restarts included: one model load inside a container the kernel has
         just OOM-killed would only be killed again, and the next one must fit."""
-        data = self.reader()
+        data = self._read()
         if self.oom_baseline is not None and data["oomKills"] > self.oom_baseline:
             return "The caption memory limit was exceeded"
         return start_problem(data, self.engine_id, getattr(self.pool, "rss_mib", None))
@@ -223,6 +235,7 @@ class SafetyController:
             "closingRooms": len(getattr(self.service, "closing", {})),
             "cpuHealth": self.cpu_health,
             "advice": list(self.advice),
+            "budgets": {**(self.budget or {}), "watch": self.budget_watch.status()},
             "admission": self.governor.status(),
         }
 
@@ -370,7 +383,7 @@ class SafetyController:
             while self.desired_enabled:
                 pause = self.policy.poll
                 try:
-                    data = self.reader()
+                    data = self._read()
                     self.advice = advice(data)
                     if self.pool.closed and data.get("effectiveCpus"):
                         self._size_pool(data["effectiveCpus"])
@@ -439,7 +452,7 @@ class SafetyController:
             )
             return
         try:
-            self.initial = self.reader()
+            self.initial = self._read()
             self.oom_baseline = self.initial["oomKills"]
         except Exception:
             # Monitoring broke right after the load. Never leave a running engine behind a
@@ -475,7 +488,7 @@ class SafetyController:
             now = self.clock()
             lag, expected = now - expected, now + self.policy.monitor
             started = time.perf_counter()
-            current = self.reader()
+            current = self._read()
             self._observe(current, now)
             tick_ms = round((time.perf_counter() - started) * 1000, 2)
             if current["oomKills"] > previous["oomKills"]:
@@ -506,8 +519,10 @@ class SafetyController:
             # sheds speakers on them, and the next tick simply reads the new numbers.
 
     def _observe(self, current, now):
-        """Feed the governor one sample: the snapshot plus the engine host's duty."""
+        """Feed the governor one sample: the snapshot plus the engine host's duty. The
+        budget watch counts, observe-only, what enforcement would have done (D-930)."""
         self.governor.measuring = self.measuring
+        self.budget_watch.tick(current)
         self.governor.tick({**current, "engineDuty": self._engine_duty(now)}, now)
 
     def _engine_duty(self, now):

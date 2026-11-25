@@ -48,7 +48,7 @@ LANGUAGE_NAMES = {
 CANCELLABLE = frozenset({"downloading", "verifying", "stopping", "loading"})
 # One short phrase per eligibility reason; the full sentence is on the settings page.
 REASON_PHRASES = {
-    "limits_missing": "container limits not set",
+    "budget": "container limits advised",
     "memory_limit": "needs more container memory",
     "host_memory": "needs more host memory",
     "cpu_quota": "needs more CPU",

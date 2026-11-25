@@ -6,39 +6,71 @@ before captions start: an engine is ready as soon as it has loaded (a Nemotron
 load takes 1.2-1.9 s from a warm disk). The design and the provenance of every
 number below are in [the 0.8.0 proposal](proposals/0.8.0-instant-admission.md).
 
-## The kernel protects the call
+## Kernel limits when set, default budgets otherwise
 
-The container's cgroup v2 limits are what keep captions from hurting the call,
-and Linux enforces them whatever the application does:
+The container's cgroup v2 limits are the strongest protection for the call,
+because Linux enforces them whatever the application does:
 
 * `cpu.max` caps the CPU the container can use.
-* A low `cpu.weight` (we run 10 against Talk's and Nextcloud's 100) makes the
-  kernel take CPU from the caption engine first when the host is contended.
+* A low `cpu.weight` (we recommend 10 against Talk's and Nextcloud's 100) makes
+  the kernel take CPU from the caption engine first when the host is contended.
 * `memory.max` with swap off bounds memory. The engine host runs with
   `oom_score_adj=1000`, so if the container runs out, the kernel kills the
   engine, not Talk and not the service.
 * `pids.max` bounds processes and threads.
 
-So the service only requires that these limits exist. Before loading an engine
-it checks, every 15 seconds while something is missing:
+Since D-930 these limits are advised, not required. A missing limit is stood
+in by a default budget, so a store install captions without `docker update`
+and keeps captioning after an app update recreates the container without its
+PID and swap settings:
 
-* finite CPU, memory and PID limits, and swap disabled;
-* the engine's memory floor and the worker or speaker ceiling (table below);
+* CPU: the quota, else min(4, half the host's CPUs), at least 1.
+* Memory: the limit, else min(the engine's recommended container size, half
+  the host's RAM).
+* Processes: the limit, else 128, watched only.
+
+An administrator's limit always wins for its resource; a default only fills a
+gap, so a configured install behaves exactly as before. Every sizing formula —
+recognizer threads, workers, seats, the load fit and admission headroom —
+reads the budget. `/status` shows the budgets and their source (`kernel` or
+`default`) under `resourceSafety.budgets`, with observe-only counters under
+`budgets.watch` of what enforcement would have done: monitor ticks with
+unreclaimable memory over the budget, ticks with the process count at or past
+the PID budget, and ticks where the container's own swap use grew. Nothing
+acts on them; a staging run decides which, if any, become enforcement.
+
+A default budget is sizing, not enforcement: nothing stops the engine taking
+more than it. The call is still protected at the terminal edge — the host-wide
+OOM killer honors `oom_score_adj=1000`, so even an unlimited container loses
+its engine first when the host itself runs out of memory — but only kernel
+limits bound CPU and swap, which is why the advice names the command that sets
+them.
+
+Before loading an engine the service still checks, every 15 seconds while
+something is wrong:
+
+* the engine's memory floor and the worker or speaker ceiling (table below)
+  against the budget;
+* Whistle's 2-CPU minimum when the CPU budget is a default (a 2-CPU host
+  spares only 1 by default): an explicit `--cpus` keeps the pre-D-930
+  behavior, and Nemotron, whose minimum is 1 CPU, still runs;
 * that the engine fits: the memory the container cannot reclaim, plus the
   engine's measured size and its allowance for streams and batches, must stay
-  under `memory.max`. Page cache does not count, because the kernel reclaims it
+  under the budget. Page cache does not count, because the kernel reclaims it
   before killing anything; tmpfs pages do count, since with swap off nothing can
   take them.
 
-Unlimited or unreadable configurations leave the API running with captions
-blocked and the reason shown, with "Administrator action required". A start that
-does not fit is reported the same way and is not counted as a failure.
+An unreadable configuration leaves the API running with captions blocked and
+the reason shown, with "Administrator action required". A start that does not
+fit is reported the same way and is not counted as a failure.
 
-These are **advice** only and never block captions: a CPU quota above half the
-host's CPUs, a memory limit above half the host's RAM, and a PID limit above
-256. `/status` lists them under `resourceSafety.advice`, and the settings page
-shows them as warnings. Pressure statistics (PSI) are used when present and are
-no longer required.
+These are **advice** only and never block captions: missing kernel limits
+(with the `docker update --cpus=4 --memory=2g --memory-swap=2g
+--pids-limit=128` command to set them), container swap left on, a CPU quota
+above half the host's CPUs, a memory limit above half the host's RAM, and a
+PID limit above 256. `/status` lists them under `resourceSafety.advice`, and
+the settings page shows them as warnings. Pressure statistics (PSI) are used
+when present and are not required.
 
 ## Admission per speaker
 

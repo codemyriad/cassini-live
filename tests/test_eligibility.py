@@ -24,7 +24,6 @@ GOOD = HostFacts(
     network={"nemotron-en": "reachable", "nemotron-multilingual": "unknown"},
 )
 CASES = {
-    "limits_missing": dict(swap_limit_bytes=None),
     "memory_limit": dict(memory_limit_bytes=2 * GIB),
     "cpu_quota": dict(cpu_quota=0.5),
     "cpu_instructions": dict(cpu_flags=frozenset({"sse4_2", "avx"})),
@@ -87,16 +86,34 @@ def test_every_failing_rule_is_reported():
             for k, v in case.items()
             if k not in ("arch", "free_disk_bytes")
         }
-        | {"host_memory_bytes": 4 * GIB},
+        | {"host_memory_bytes": 4 * GIB, "swap_limit_bytes": None},
     )
     assert set(codes(assess(catalog.get("nemotron-en"), facts, ABSENT))) == {
-        "limits_missing",
+        "budget",
         "memory_limit",
         "host_memory",
         "cpu_quota",
         "cpu_instructions",
         "network",
     }
+
+
+def test_missing_limits_are_advice_with_the_command_not_a_block():
+    # D-930: a bare store install stays eligible on a default budget; the advisory names
+    # the budget and the command that enforces kernel limits instead.
+    bare = dataclasses.replace(
+        GOOD, cpu_quota=None, memory_limit_bytes=None, swap_limit_bytes=None
+    )
+    result = assess(catalog.get("nemotron-en"), bare, ABSENT)
+    assert result.eligible and result.advisory and codes(result) == ["budget"]
+    assert "docker update" in result.reasons[0].message
+    assert "3.0 GiB" in result.reasons[0].message  # min(recommended 3 GiB, half of 16)
+    # A small host halves the default budget below the floor: that still disables.
+    small = dataclasses.replace(bare, host_memory_bytes=4 * GIB)
+    result = assess(catalog.get("nemotron-en"), small, ABSENT)
+    assert not result.eligible and "memory_limit" in codes(result)
+    reasons = {r.code: r for r in result.reasons}
+    assert "memory budget is 2.0 GiB" in reasons["memory_limit"].message
 
 
 def test_host_memory_follows_a_larger_container_limit():
@@ -191,7 +208,8 @@ def test_whistle_is_never_disabled_and_carries_advisory_budget_reasons():
     result = assess(whistle, unsafe, ModelState("whistle", "bundled", None))
     assert result.eligible and result.advisory
     assert codes(result) == ["budget"]
-    assert result.reasons[0].message.startswith("Set finite cgroup v2 CPU, memory and PID")
+    # Advice since D-930: swap on no longer blocks, it is advised off.
+    assert result.reasons[0].message.startswith("Disable container swap")
 
 
 def test_host_facts_from_a_fake_reader_and_cpuinfo(tmp_path):
