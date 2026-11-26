@@ -15,13 +15,25 @@ from cassini_live.talk.types import SpreedClientException
 from tests.test_streaming import FakeWorker
 
 
-def make_app(app_id=None):
+class FakeEncryption:
+    """Talk's call end-to-end encryption flag, as the routes ask for it."""
+
+    def __init__(self, value=False):
+        self.value = value
+
+    async def active(self):
+        return self.value
+
+
+def make_app(app_id=None, encryption=None):
     config = Config(None, 2, "secret", "")
     service = CaptionService(config)
     service.enabled = True
     service.settings = object()
     service.request = AsyncMock()
-    app = create_app(config, WorkerPool(2), service, app_id=app_id)
+    app = create_app(
+        config, WorkerPool(2), service, app_id=app_id, encryption=encryption or FakeEncryption()
+    )
     app.state.safety.state = "ready"
     return app, service
 
@@ -163,6 +175,22 @@ def test_translation_is_answered_as_not_available(headers):
     assert off.status_code == 200
 
 
+def test_encrypted_calls_refuse_captions_with_a_reason(headers):
+    """When Talk's call end-to-end encryption is on, starting captions is refused with
+    a message saying why, instead of joining the call and producing nothing."""
+    app, service = make_app(encryption=FakeEncryption(True))
+    client = TestClient(app)
+    req = {"roomToken": "room1", "ncSessionId": "session1"}
+    response = client.post("/api/v1/call/transcribe", headers=headers, json=req)
+    assert response.status_code == 409
+    assert "end-to-end encrypted" in response.json()["error"]
+    service.request.assert_not_awaited()
+    # Turning captions off is never refused: a running room must stay stoppable.
+    off = client.post("/api/v1/call/transcribe", headers=headers, json={**req, "enable": False})
+    assert off.status_code == 200
+    assert service.request.await_count == 1
+
+
 def test_disable_closes_all_rooms(headers):
     app, service = make_app()
     nc = AsyncMock()
@@ -293,7 +321,7 @@ def make_engine_app(engine_id):
     service.enabled = True
     service.settings = object()
     service.request = AsyncMock()
-    app = create_app(config, FakeBackend(engine_id, 2), service)
+    app = create_app(config, FakeBackend(engine_id, 2), service, encryption=FakeEncryption())
     app.state.safety.state = "ready"
     return app, service
 

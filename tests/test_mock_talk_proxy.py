@@ -16,6 +16,7 @@ from cassini_live.config import Config
 from cassini_live.mock_talk_proxy import NativeApi
 from cassini_live.pool import WorkerPool
 from cassini_live.service import CaptionService
+from tests.test_app import FakeEncryption
 from tests.test_streaming import FakeWorker  # noqa: F401 (import side effects as elsewhere)
 
 ALICE_IN_CALL = {"actorType": "users", "actorId": "alice", "sessionIds": ["s-alice"], "inCall": 7}
@@ -55,7 +56,7 @@ def over_http(app, hops):
     return send
 
 
-def build(participants=(ALICE_IN_CALL, BOB_IN_CALL)):
+def build(participants=(ALICE_IN_CALL, BOB_IN_CALL), encryption=None):
     seen, hops = [], []
     config = Config(None, 2, "secret", "")
     service = CaptionService(config)
@@ -63,7 +64,13 @@ def build(participants=(ALICE_IN_CALL, BOB_IN_CALL)):
     service.settings = object()
     service.request = AsyncMock()
     rows = None if participants is None else list(participants)
-    app = create_app(config, WorkerPool(2), service, nc_factory=lambda: FakeNc(rows, seen))
+    app = create_app(
+        config,
+        WorkerPool(2),
+        service,
+        nc_factory=lambda: FakeNc(rows, seen),
+        encryption=encryption or FakeEncryption(),
+    )
     app.state.safety.state = "ready"
     app.state.native_api = NativeApi("live_transcription", over_http(app, hops))
     client = TestClient(app)
@@ -237,6 +244,18 @@ def test_passes_on_the_native_apis_refusal(panel_headers):
     client.app.state.safety.state, client.app.state.safety.measuring = "ready", True
     res = post(client, panel_headers)
     assert res.status_code == 503 and int(res.headers["Retry-After"]) >= 1
+
+
+def test_passes_on_the_encrypted_call_refusal(panel_headers):
+    """The panel shows the 409 detail and stops retrying: end-to-end encryption does
+    not pass by waiting. Stopping captions stays allowed."""
+    client, service, _ = build(encryption=FakeEncryption(True))
+    res = post(client, panel_headers)
+    assert res.status_code == 409
+    assert "end-to-end encrypted" in res.json()["detail"]
+    service.request.assert_not_awaited()
+    assert delete(client, panel_headers).status_code == 200
+    assert service.request.await_count == 1
 
 
 def test_reads_only_the_error_key_as_talk_does(panel_headers):
