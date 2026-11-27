@@ -1,6 +1,6 @@
 """Offline Silero VAD: shared CPU model, independent recurrent state per track.
 
-The input/state contract follows upstream Silero v6.2.1's ONNX wrapper.
+The input/state contract follows upstream Silero's ONNX wrapper.
 Only the immutable inference session is shared. No downloads at runtime.
 """
 

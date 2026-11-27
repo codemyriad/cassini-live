@@ -72,8 +72,8 @@ HaRP's FRP client comes from Nextcloud/HaRP revision
 
 The Cassini orbit icon comes from the sibling `gocassini` repository (AGPL-3.0).
 
-Speech gating uses [Silero VAD v6.2.1](https://github.com/snakers4/silero-vad),
-MIT, revision `7e30209a3e901f9842f81b225f3e93d8199902b1`. The model is pinned
+Speech gating uses [Silero VAD v6.3](https://github.com/snakers4/silero-vad/releases/tag/v6.3),
+MIT, revision `63d4a2a7bfce8cd9bb39ed8fa0afcb5236d73e01`. The model is pinned
 and checksum-verified in `scripts/prepare_vad.py`; its notice is in
 `LICENSES/silero-vad.txt`. The NumPy state/context adapter follows upstream's
 ONNX input contract. ONNX Runtime supplies CPU inference (MIT).

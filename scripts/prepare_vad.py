@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 from urllib.request import urlopen
 
-REVISION = "7e30209a3e901f9842f81b225f3e93d8199902b1"
-SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+REVISION = "63d4a2a7bfce8cd9bb39ed8fa0afcb5236d73e01"  # v6.3
+SHA256 = "f6f4407b41e05e277e7f5cfd9b9ae957b1dfe763c6076a934734c0b448e09b31"
 URL = f"https://raw.githubusercontent.com/snakers4/silero-vad/{REVISION}/src/silero_vad/data/silero_vad.onnx"
 
 

@@ -50,7 +50,7 @@ actual loaded worker's thread count. Local development without
 PyAV resamples decoded audio while preserving channels; NumPy averages the
 channels afterward. This avoids the equal-power stereo downmix gain that can
 clip identical microphone channels. The capture queue holds at most six
-chunks of at most one second. Silero VAD v6.2.1 checks 512-sample (32 ms) frames
+chunks of at most one second. Silero VAD v6.3 checks 512-sample (32 ms) frames
 using one shared ONNX CPU session with one inference thread, and separate recurrent
 state/context for every audio track. Two of three frames above 0.5 probability
 start a segment; 0.35 keeps an existing segment active. The gate retains 320 ms
