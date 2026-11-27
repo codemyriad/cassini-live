@@ -4,11 +4,12 @@ COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
-COPY scripts/prepare_model.py scripts/prepare_model.py
-COPY scripts/prepare_vad.py scripts/prepare_vad.py
+COPY scripts/prepare_assets.py scripts/prepare_model.py scripts/prepare_vad.py scripts/
 ENV NEEDLE_TELEMETRY=0 DO_NOT_TRACK=1
-RUN .venv/bin/python scripts/prepare_model.py /opt/whistle
-RUN .venv/bin/python scripts/prepare_vad.py /opt/whistle
+RUN --mount=type=cache,target=/var/cache/cassini-models \
+    export CASSINI_BUILD_MODEL_CACHE=/var/cache/cassini-models \
+    && .venv/bin/python scripts/prepare_model.py /opt/whistle \
+    && .venv/bin/python scripts/prepare_vad.py /opt/whistle
 
 # HaRP's client includes Nextcloud's metadata authentication extension.
 ARG TARGETARCH

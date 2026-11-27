@@ -15,9 +15,9 @@ is neither advertised nor connected to any provider.
 
 Whistle's Python wrapper and native engine are supplied by
 [`cactus-needle==3.2.0`](https://github.com/cactus-compute/needle), Apache-2.0.
-The native engine version is 3.3.0, as selected by that wrapper. Model and engine
-repositories are pinned in `scripts/prepare_model.py`; the image includes a
-manifest with their revisions and SHA-256 checksums. Model weights come from
+The wrapper selects native engine version 3.3.0. The build pins the model and
+engine revisions and verifies their mirrored files in `scripts/prepare_model.py`.
+The image includes a manifest with their revisions and SHA-256 checksums. Model weights come from
 [Cactus-Compute/whistle](https://huggingface.co/Cactus-Compute/whistle), Apache-2.0.
 
 The optional Nemotron engines run on
