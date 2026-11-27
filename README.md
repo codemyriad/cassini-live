@@ -32,17 +32,7 @@ Install the `cassini_live` external app from a checkout while the first App Stor
 
 ## Architecture at a glance
 
-~~~mermaid
-flowchart LR
-    Panel["Talk transcript sidebar"] -->|Start via AppAPI| Proxy["Temporary Talk proxy"]
-    Proxy -->|HTTP| API["Native caption provider API"]
-    API -->|Join call| Room["Room manager and HPB client"]
-    Room -->|WebRTC audio per speaker| VAD["Silero speech detection"]
-    VAD -->|Speech segments| Engine["Whistle or Nemotron"]
-    Engine -->|Caption text| HPB["Talk HPB"]
-    HPB -->|Live captions| Panel
-    History["Call history in memory"] -->|Catch up via AppAPI| Panel
-~~~
+![Three zones: browser, Nextcloud server and the Cassini Live container. The transcript sidebar starts captions through AppAPI and a temporary Talk proxy; the caption provider API joins the call. Talk's HPB sends WebRTC audio per speaker to the room manager, Silero VAD gates speech segments into Whistle or Nemotron, and caption text returns through the HPB to every participant. The API reads the in-memory call history for catch-up.](img/architecture.svg)
 
 | Follow the code | Entry points |
 | --- | --- |
