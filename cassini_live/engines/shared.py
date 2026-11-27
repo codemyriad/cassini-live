@@ -547,7 +547,7 @@ class SharedEngine:
             "pausedDrops": self.paused_drops,
             "droppedSpeechChunks": self.dropped_chunks,
             "speechGating": True,
-            "speechDetector": "silero-v6.2.1",
+            "speechDetector": "silero-v6.3",
             "waitingSpeakers": self.waiting,
             "schedulingYields": self.scheduling_yields,
             "streamEnds": dict(self.stream_ends),

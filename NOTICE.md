@@ -15,9 +15,9 @@ is neither advertised nor connected to any provider.
 
 Whistle's Python wrapper and native engine are supplied by
 [`cactus-needle==3.2.0`](https://github.com/cactus-compute/needle), Apache-2.0.
-The native engine version is 3.3.0, as selected by that wrapper. Model and engine
-repositories are pinned in `scripts/prepare_model.py`; the image includes a
-manifest with their revisions and SHA-256 checksums. Model weights come from
+The wrapper selects native engine version 3.3.0. The build pins the model and
+engine revisions and verifies their mirrored files in `scripts/prepare_model.py`.
+The image includes a manifest with their revisions and SHA-256 checksums. Model weights come from
 [Cactus-Compute/whistle](https://huggingface.co/Cactus-Compute/whistle), Apache-2.0.
 
 The optional Nemotron engines run on
@@ -72,8 +72,8 @@ HaRP's FRP client comes from Nextcloud/HaRP revision
 
 The Cassini orbit icon comes from the sibling `gocassini` repository (AGPL-3.0).
 
-Speech gating uses [Silero VAD v6.2.1](https://github.com/snakers4/silero-vad),
-MIT, revision `7e30209a3e901f9842f81b225f3e93d8199902b1`. The model is pinned
+Speech gating uses [Silero VAD v6.3](https://github.com/snakers4/silero-vad/releases/tag/v6.3),
+MIT, revision `63d4a2a7bfce8cd9bb39ed8fa0afcb5236d73e01`. The model is pinned
 and checksum-verified in `scripts/prepare_vad.py`; its notice is in
 `LICENSES/silero-vad.txt`. The NumPy state/context adapter follows upstream's
 ONNX input contract. ONNX Runtime supplies CPU inference (MIT).

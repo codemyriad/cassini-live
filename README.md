@@ -62,6 +62,8 @@ uv run python scripts/prepare_vad.py
 uv run pytest -m 'not integration'
 ~~~
 
-For recognition tests with real speech, run `uv run python scripts/prepare_model.py`, then `uv run pytest`. To exercise the full path in a Talk browser call, use the [development harness](docs/dev-harness.md). To inspect panel output from a recorded meeting, use the [replay viewer](docs/replay.md).
+For recognition tests with real speech, run `uv run python scripts/prepare_model.py`, then `uv run pytest`. Both preparation scripts download from `dist.gocassini.com`. Rerun the same command to resume an interrupted download.
+
+To exercise the full path in a Talk browser call, use the [development harness](docs/dev-harness.md). To inspect panel output from a recorded meeting, use the [replay viewer](docs/replay.md).
 
 This project is substantially AI-assisted. [Verification record](docs/verification.md) · [Changelog](CHANGELOG.md) · [Release guide](docs/release.md) · [Third-party notices](NOTICE.md) · [AGPL-3.0-or-later](LICENSE)

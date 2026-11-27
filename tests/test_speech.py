@@ -33,6 +33,15 @@ def test_real_vad_preserves_speech_and_flushes_silence():
     assert gate.feed(silence) == []
 
 
+def test_real_vad_opens_for_short_speech_onset():
+    gate = SpeechGate()
+    # The first 384 ms of the fixture ends just after speech begins.
+    # With v6.2.1 this excerpt fell short of the two-frame onset vote.
+    excerpt = speech_fixture()[:6144]
+    chunks = gate.feed(excerpt) + gate.feed(np.zeros(16000, dtype="<f4"))
+    assert chunks and chunks[-1].end_reason == "silence"
+
+
 def test_flush_preserves_sequence_and_final_partial_frame():
     from .test_streaming import AlwaysSpeech
 

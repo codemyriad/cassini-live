@@ -50,12 +50,15 @@ actual loaded worker's thread count. Local development without
 PyAV resamples decoded audio while preserving channels; NumPy averages the
 channels afterward. This avoids the equal-power stereo downmix gain that can
 clip identical microphone channels. The capture queue holds at most six
-chunks of at most one second. Silero VAD v6.2.1 checks 512-sample (32 ms) frames
+chunks of at most one second. Silero VAD v6.3 checks 512-sample (32 ms) frames
 using one shared ONNX CPU session with one inference thread, and separate recurrent
 state/context for every audio track. Two of three frames above 0.5 probability
 start a segment; 0.35 keeps an existing segment active. The gate retains 320 ms
 of pre-roll and ends after 608 ms of non-speech, or after one second without
-received frames. Its pinned model is included at build time; runtime never downloads it.
+received frames. At build time, the image fetches the pinned Silero model,
+Whistle weights and matching native runtime from `dist.gocassini.com` as
+resumable Zstandard downloads. It verifies both compressed and decoded
+checksums and bundles the files for offline inference.
 
 A full queue discards its oldest chunk. Queued chunks older than four seconds are also
 discarded, including a second age check after waiting for a worker. Sequence
@@ -136,8 +139,7 @@ The Nemotron models are downloaded on demand from `https://dist.gocassini.com`
 (one resumable Zstandard object per file, `User-Agent: cassini-live/<version>`) into
 `APP_PERSISTENT_STORAGE/models/<engine>/`, pinned by the SHA-256 of every
 compressed object and every decompressed file, and stored with their license and
-notice files. The image
-contains only Whistle.
+notice files. The image bundles Whistle as its default recognizer.
 
 ## Verification boundaries
 
