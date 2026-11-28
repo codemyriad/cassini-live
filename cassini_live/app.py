@@ -25,6 +25,7 @@ from . import (
 from .auth import SafeAppAPIAuthMiddleware
 from .capacity import CapacityAssessment
 from .config import Config, state_dir
+from .e2ee import CallEncryption
 from .eligibility import NetworkProbe
 from .engine_switch import EngineManager, SwitchRefused
 from .membership import RoomMembership
@@ -46,6 +47,11 @@ LOGGER = logging.getLogger(__name__)
 # 422 on both sides. The one addition is the language "auto", also the default.
 BAD_LANGUAGE = "Invalid or unsupported language ID provided."
 NO_TRANSLATION = "Translation is not supported"
+E2EE_CALLS = (
+    "Talk's calls are end-to-end encrypted on this server, and Cassini Live cannot hear "
+    "them, so captions are off. An administrator can turn off Talk's call end-to-end "
+    "encryption setting."
+)
 DISABLED_NOTE = "Cassini Live is disabled. Enable it to change the speech engine."
 STOPPED_NOTE = "Cassini Live is restarting or stopped. Reload this page in a minute."
 
@@ -81,6 +87,7 @@ def create_app(
     safety_factory=SafetyController,
     discovery_delay=15,
     app_id=None,
+    encryption=None,
 ):
     config = config or Config.from_env()
     # The one read of the app id (see appapi): everything below gets it passed in.
@@ -94,6 +101,8 @@ def create_app(
         talk_file = storage / "cassini-live-talk.json" if production else None
         talk = TalkSetup.from_config(config, talk_file)
         service = CaptionService(config, talk=talk)
+    # Asked before captions start: an end-to-end encrypted call cannot be captioned.
+    encryption = encryption or CallEncryption(nc_factory)
     assessment = CapacityAssessment(pool)
     safety = safety_factory(pool, assessment, service)
     if safety_factory is SafetyController:
@@ -296,6 +305,11 @@ def create_app(
             return failure(503, "Cassini Live is not enabled or Talk is not ready")
         if req.langId not in manager.languages():
             return failure(400, BAD_LANGUAGE)
+        if req.enable and await encryption.active():
+            # Refused rather than joining the call and producing nothing: the audio
+            # reaches this server encrypted (docs/known-limitations.md). 409, not 5xx:
+            # the transcript panel retries 5xx, and this does not pass by waiting.
+            return failure(409, E2EE_CALLS)
         if req.enable and req.translationTargetLangId:
             client = room_client(req.roomToken)
             spoken = client.room_lang_id if client else req.langId

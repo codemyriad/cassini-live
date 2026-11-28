@@ -49,6 +49,19 @@ in the pull request that lifts it.
 
 ## Captions
 
+- **No captions in end-to-end encrypted calls.** When Talk's call end-to-end
+  encryption (the `call_end_to_end_encryption` setting, out of beta since
+  November 2026) is on, participants encrypt their audio in the browser and
+  the HPB forwards it still encrypted, so the server cannot hear the call.
+  The failure is silent: observed against Talk 25.0.6, the signalling and
+  WebRTC connections succeed and nothing is logged — the encrypted frames
+  decode as noise, which voice detection mostly gates out, leaving no captions
+  beyond an occasional hallucinated short phrase. Starting captions is
+  therefore refused with a message saying why while the setting is on; the
+  flag is re-read within half a minute of an administrator changing it.
+  Captioning encrypted calls would need Cassini Live to join Talk's key
+  exchange as a trusted participant (as Talk's recording backend does) and is
+  not supported.
 - **No translation.** Captions are in the spoken language; Talk's translated
   captions are refused.
 - **Seven languages:** English, German, French, Spanish, Italian, Dutch and
