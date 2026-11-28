@@ -80,7 +80,11 @@ class FakeHarness(dev.Harness):
             return "ExApps:\ncassini_live (Cassini Live): 0.10.0 [enabled]" \
                 if self.app_present else "ExApps:"
         if args[0] == "app_api:daemon:list":
-            return json.dumps(self.daemons)
+            # AppAPI prints a table (or prose when empty), never JSON that is
+            # portable across the supported majors.
+            if not self.daemons:
+                return "No registered daemon configs."
+            return "\n".join(f"{d['name']} [manual-install] http" for d in self.daemons)
         return ""
 
     def page(self, path):
@@ -107,11 +111,23 @@ class LifecycleTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(dev.Failure):
                 harness.preflight()
 
-    def test_conflicting_daemon_fails(self):
+    def test_existing_daemon_is_replaced_with_the_supplied_configuration(self):
         harness = FakeHarness()
         harness.daemons = [{"name": harness.cfg.daemon, "deploy_id": "docker-install"}]
-        with self.assertRaises(dev.Failure):
-            harness.preflight()
+        harness.preflight()
+        harness.deploy()
+        args = [call[0] for call in harness.calls]
+        unregister = next(i for i, a in enumerate(args) if a[0] == "app_api:daemon:unregister")
+        register = next(i for i, a in enumerate(args) if a[0] == "app_api:daemon:register")
+        self.assertLess(unregister, register)
+
+    def test_fresh_daemon_registers_without_unregistering(self):
+        harness = FakeHarness()
+        harness.preflight()
+        harness.deploy()
+        args = [call[0] for call in harness.calls]
+        self.assertTrue(any(a[0] == "app_api:daemon:register" for a in args))
+        self.assertFalse(any(a[0] == "app_api:daemon:unregister" for a in args))
 
     def test_owned_rerun_builds_before_removal_and_preserves_volume(self):
         harness = FakeHarness()

@@ -1,0 +1,11 @@
+# The pinned Cassini (gocassini) commit that provides the Nextcloud
+# compatibility harness and its locked baseline inventory
+# (ci/nextcloud-compatibility.json in that repo).
+#
+# scripts/check_nc_support.py validates this repo's advertised <nextcloud>
+# bounds against the inventory at this exact commit, and
+# .github/workflows/nextcloud-compat.yml checks the commit out to boot the
+# locked Nextcloud stacks. Update the SHA deliberately: the checks fail when
+# the manifests and the pinned inventory disagree.
+repo=codemyriad/gocassini
+sha=0357de6bce431d167ad803320679c641f2997178
