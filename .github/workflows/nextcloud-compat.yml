@@ -1,0 +1,167 @@
+# Installed Nextcloud compatibility — the runtime half of the support claim.
+#
+# ci/cassini-harness.lock pins the gocassini commit whose harness boots the
+# locked Nextcloud baselines (nc33/nc34/nc35, digest-pinned). Each matrix leg
+# boots one baseline (Nextcloud + Talk + AppAPI + HPB, no gocassini ExApp),
+# then runs scripts/dev_harness.py: build the image, deploy and register the
+# ExApp through AppAPI, wait for engine readiness, authenticate to the HPB and
+# check the panel/settings routes.
+#
+# Tier policy mirrors gocassini's installed-compatibility job:
+#   pull request                 -> reference + exact minimum (nc35 + nc33)
+#   `full-ci` label / push /
+#   manual dispatch              -> every locked baseline
+# Docs-only changes never run this workflow (paths filter below).
+name: Nextcloud compatibility
+on:
+  push:
+    branches: [main]
+    # Keep this list identical to pull_request.paths below.
+    paths:
+      - 'cassini_live/**'
+      - 'appinfo/**'
+      - 'appstore/**'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/dev_harness.py'
+      - 'scripts/check_nc_support.py'
+      - 'scripts/entrypoint.py'
+      - 'scripts/prepare_assets.py'
+      - 'scripts/prepare_model.py'
+      - 'scripts/prepare_vad.py'
+      - 'ci/cassini-harness.lock'
+      - '.github/workflows/nextcloud-compat.yml'
+  pull_request:
+    # `labeled` so applying `full-ci` re-runs with every baseline.
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'cassini_live/**'
+      - 'appinfo/**'
+      - 'appstore/**'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'scripts/dev_harness.py'
+      - 'scripts/check_nc_support.py'
+      - 'scripts/entrypoint.py'
+      - 'scripts/prepare_assets.py'
+      - 'scripts/prepare_model.py'
+      - 'scripts/prepare_vad.py'
+      - 'ci/cassini-harness.lock'
+      - '.github/workflows/nextcloud-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nc-compat-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tier:
+    name: Select locked baselines
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      harness-repo: ${{ steps.lock.outputs.repo }}
+      harness-sha: ${{ steps.lock.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the harness pin
+        id: lock
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r key value; do
+            case "$key" in repo|sha) echo "$key=$value" >> "$GITHUB_OUTPUT" ;; esac
+          done < ci/cassini-harness.lock
+      - name: Derive the baseline matrix from the pinned inventory
+        id: select
+        env:
+          FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -euo pipefail
+          tier=pr
+          [[ "$FULL" == "true" ]] && tier=all
+          matrix="$(python3 scripts/check_nc_support.py matrix --tier "$tier")"
+          echo "Tier $tier: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  compat:
+    name: Installed smoke (${{ matrix.baseline }})
+    needs: tier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.tier.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout the pinned Cassini harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.tier.outputs.harness-repo }}
+          ref: ${{ needs.tier.outputs.harness-sha }}
+          path: gocassini
+      - name: Boot the locked Nextcloud stack
+        env:
+          BASELINE: ${{ matrix.baseline }}
+        run: |
+          set -euo pipefail
+          python3 gocassini/scripts/nextcloud_compatibility.py \
+            --inventory gocassini/ci/nextcloud-compatibility.json \
+            prepare --baseline "$BASELINE" --out "$RUNNER_TEMP/compat-lock"
+          # env.sh pins every compose service image to the baseline's digests
+          # and points CASSINI_COMPAT_LOCK at the stack, so the harness installs
+          # the baseline's locked Talk release (checksum-verified). That locked
+          # install path only runs inside a disposable fixture, which a fresh CI
+          # runner is; CASSINI_COMPAT_FIXTURE=1 declares exactly that.
+          source "$RUNNER_TEMP/compat-lock/env.sh"
+          export CASSINI_COMPAT_FIXTURE=1
+          # Cassini Live needs Nextcloud + Talk + AppAPI + HPB only: the
+          # harness skips its own ExApp (CASSINI_HARNESS_CASSINI_MODE defaults
+          # to none) and the Talk recording backend stays unconfigured.
+          export CASSINI_HARNESS_RECORDING_BACKEND=none
+          ./gocassini/harness/bin/up.sh
+      - name: Configure Nextcloud for the Live deployment
+        run: |
+          set -euo pipefail
+          # The harness's AppAPI phase only runs for its own ExApp mode;
+          # dev_harness.py requires the app enabled.
+          docker exec -u www-data spreedtest-nextcloud-1 php occ app:enable app_api
+          # local-http harness mode leaves overwrite.cli.url unset, and
+          # dev_harness.py requires it to equal its --public-url. This is the
+          # exact remedy its preflight error message prescribes.
+          docker exec -u www-data spreedtest-nextcloud-1 php occ \
+            config:system:set overwrite.cli.url --value http://localhost:28080
+      - name: Deploy Cassini Live and run the installed smoke checks
+        run: |
+          set -euo pipefail
+          # The HPB runs with network_mode: host, so from the Live container it
+          # is reachable at the compose network's gateway address.
+          gateway="$(docker network inspect spreedtest_default -f '{{(index .IPAM.Config 0).Gateway}}')"
+          conf=gocassini/harness/runtime/generated/signaling.conf
+          [[ -f "$conf" ]] || conf=gocassini/harness/config/signaling.conf
+          secret="$(sed -n 's/^internalsecret *= *//p' "$conf" | head -n1)"
+          [[ -n "$secret" ]] || { echo "No internalsecret in $conf" >&2; exit 1; }
+          export LIVE_DEV_HPB_URL="http://${gateway}:28082"
+          LIVE_DEV_HPB_SECRET="$secret"
+          export LIVE_DEV_HPB_SECRET
+          python3 scripts/dev_harness.py
+      - name: Collect evidence
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          docker ps -a > "$RUNNER_TEMP/evidence/containers.txt" 2>&1 || true
+          for name in nc_app_cassini_live spreedtest-nextcloud-1 \
+                      spreedtest-signaling-1 spreedtest-db-1; do
+            docker logs "$name" > "$RUNNER_TEMP/evidence/$name.log" 2>&1 || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nc-compat-${{ matrix.baseline }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 7
+          if-no-files-found: ignore
