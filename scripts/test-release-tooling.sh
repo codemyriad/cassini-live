@@ -2,9 +2,9 @@
 # test-release-tooling.sh — fast, local tests for the release scripts.
 #
 # Ported from codemyriad/gocassini, with its operator-migration check removed
-# and tests added for what differs here: the version lives in five files
-# (rv_write_release_version) and the store package carries appstore/info.xml
-# under its own app id.
+# and tests added for what differs here: the version lives in four files
+# (rv_write_release_version) and the store package carries appinfo/info.xml
+# under the app id cassini_live.
 #
 # Sources scripts/lib-release-version.sh and exercises the pure version
 # functions plus the info.xml read/write mechanic against a throwaway fixture.
@@ -210,11 +210,9 @@ echo "rv_write_release_version — every version-carrying file in lockstep"
 # make_release_files <root> <version> — a minimal tree carrying every file
 # rv_write_release_version rewrites, all at <version>.
 make_release_files() {
-  local root="$1" v="$2" m
-  mkdir -p "$root/appinfo" "$root/appstore" "$root/cassini_live"
-  for m in appinfo/info.xml appstore/info.xml; do
-    printf '<?xml version="1.0"?>\n<info>\n  <version>%s</version>\n  <external-app><docker-install><image-tag>%s</image-tag></docker-install></external-app>\n</info>\n' "$v" "$v" >"$root/$m"
-  done
+  local root="$1" v="$2"
+  mkdir -p "$root/appinfo" "$root/cassini_live"
+  printf '<?xml version="1.0"?>\n<info>\n  <version>%s</version>\n  <external-app><docker-install><image-tag>%s</image-tag></docker-install></external-app>\n</info>\n' "$v" "$v" >"$root/appinfo/info.xml"
   printf '[project]\nname = "cassini-live"\nversion = "%s"\n\n[tool.ruff]\ntarget-version = "py312"\n' "$v" >"$root/pyproject.toml"
   printf '"""Cassini Live."""\n\n__version__ = "%s"\n' "$v" >"$root/cassini_live/__init__.py"
   printf '[[package]]\nname = "aiortc"\nversion = "1.14.0"\n\n[[package]]\nname = "cassini-live"\nversion = "%s"\nsource = { virtual = "." }\n' "$(rv_pep440 "$v")" >"$root/uv.lock"
@@ -222,15 +220,13 @@ make_release_files() {
 RF="$TMP/release-files"
 make_release_files "$RF" 0.11.0
 if rv_write_release_version "$RF" 0.12.0-alpha.1 >/dev/null 2>&1; then ok "rv_write_release_version succeeds"; else bad "rv_write_release_version should succeed"; fi
-eq "native manifest <version>"    "0.12.0-alpha.1" "$(rv_read_version "$RF/appinfo/info.xml")"
-eq "native manifest <image-tag>"  "0.12.0-alpha.1" "$(rv_read_image_tag "$RF/appinfo/info.xml")"
-eq "store manifest <version>"     "0.12.0-alpha.1" "$(rv_read_version "$RF/appstore/info.xml")"
-eq "store manifest <image-tag>"   "0.12.0-alpha.1" "$(rv_read_image_tag "$RF/appstore/info.xml")"
+eq "manifest <version>"    "0.12.0-alpha.1" "$(rv_read_version "$RF/appinfo/info.xml")"
+eq "manifest <image-tag>"  "0.12.0-alpha.1" "$(rv_read_image_tag "$RF/appinfo/info.xml")"
 eq "pyproject.toml version" 'version = "0.12.0-alpha.1"' "$(grep '^version' "$RF/pyproject.toml")"
 eq "__version__" '__version__ = "0.12.0-alpha.1"' "$(grep '^__version__' "$RF/cassini_live/__init__.py")"
 eq "uv.lock cassini-live (PEP 440)" 'version = "0.12.0a1"' "$(grep -A1 -xF 'name = "cassini-live"' "$RF/uv.lock" | tail -n1)"
 eq "uv.lock leaves dependencies alone" 'version = "1.14.0"' "$(grep -A1 -xF 'name = "aiortc"' "$RF/uv.lock" | tail -n1)"
-eq "rv_release_files lists all five" "5" "$(rv_release_files "$RF" | wc -l | tr -d ' ')"
+eq "rv_release_files lists all four" "4" "$(rv_release_files "$RF" | wc -l | tr -d ' ')"
 # A Python version that disagrees with the manifest is a broken state.
 make_release_files "$TMP/drift" 0.11.0
 sed -i 's/^__version__ = .*/__version__ = "0.10.0"/' "$TMP/drift/cassini_live/__init__.py"
@@ -394,7 +390,6 @@ git -C "$PR" checkout -q -- appinfo/info.xml
 # Happy path: bump minor 0.2.0 -> 0.3.0-alpha.1.
 if prep --bump minor >/dev/null 2>&1; then ok "prepare-release --bump minor succeeds"; else bad "prepare-release --bump minor should succeed"; fi
 eq "info.xml bumped to next alpha" "0.3.0-alpha.1" "$(rv_read_version "$PR/appinfo/info.xml")"
-eq "store manifest bumped with it" "0.3.0-alpha.1" "$(rv_read_version "$PR/appstore/info.xml")"
 eq "uv.lock bumped with it" 'version = "0.3.0a1"' "$(grep -A1 -xF 'name = "cassini-live"' "$PR/uv.lock" | tail -n1)"
 if git -C "$PR" show --stat HEAD | grep -qF pyproject.toml; then ok "release commit carries pyproject.toml"; else bad "release commit should carry pyproject.toml"; fi
 if grep -qF "## [0.3.0-alpha.1]" "$PR/CHANGELOG.md"; then ok "CHANGELOG got the new section"; else bad "CHANGELOG should get the new section"; fi
@@ -558,7 +553,7 @@ rm -rf "$SY"
 
 echo "build/validate-appstore-tarball.sh — packaging"
 # Build against the real repo's source files, writing only into a temp dir.
-SRCV="$(rv_read_version "$(git rev-parse --show-toplevel)/appstore/info.xml")"
+SRCV="$(rv_read_version "$(git rev-parse --show-toplevel)/appinfo/info.xml")"
 BD="$(mktemp -d)"
 TARBALL="$BD/cassini_live.tar.gz"
 if "$SCRIPT_DIR/build-appstore-tarball.sh" --version "$SRCV" --staging "$BD/appstore" --output "$TARBALL" >/dev/null 2>&1; then
@@ -633,14 +628,8 @@ else
   ok "validate rejects a non-cassini_live archive root"
 fi
 
-# The packaged manifest is the store one: its <id> is never Talk's
-# live_transcription, and the validator refuses to be pointed at that id.
+# The packaged manifest carries the store app id.
 eq "packaged manifest id" "cassini_live" "$(tar -xzOf "$TARBALL" cassini_live/appinfo/info.xml | sed -n 's|.*<id>\(.*\)</id>.*|\1|p')"
-if "$SCRIPT_DIR/validate-appstore-tarball.sh" --version "$SRCV" --tarball "$TARBALL" --app-id live_transcription >/dev/null 2>&1; then
-  bad "validate should refuse the live_transcription id"
-else
-  ok "validate refuses the live_transcription id"
-fi
 
 # Store-schema validation (pre-info.xslt -> info.xsd). Needs xsltproc + xmllint;
 # skip cleanly where they are absent (CI installs them so this always runs there).

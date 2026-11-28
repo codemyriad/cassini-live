@@ -1,11 +1,10 @@
 /**
  * The app id of the ExApp this bundle talks to through the AppAPI proxy.
  *
- * The same bundle serves both registrations (cassini_live from the App Store,
- * live_transcription by hand), so the id is not known at build time. The ExApp
- * fills it in from its APP_ID when it serves the bundle and the bookmarklets
- * (cassini_live/panel_page.py, APP_ID_PLACEHOLDER: keep the two in step).
- * Test and replay servers fill in their own.
+ * The id is not hardcoded at build time: the ExApp fills it in from its APP_ID
+ * when it serves the bundle and the bookmarklets (cassini_live/panel_page.py,
+ * APP_ID_PLACEHOLDER: keep the two in step). Test and replay servers fill in
+ * their own.
  *
  * Only the entry points (main.js, loader.js) import APP_ID; everything below
  * them gets the id passed in.

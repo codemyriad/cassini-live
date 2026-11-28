@@ -1,4 +1,4 @@
-"""Authenticated Nextcloud ExApp and native Talk caption provider."""
+"""Authenticated Nextcloud ExApp serving Talk's caption-provider API."""
 
 import asyncio
 import logging
@@ -227,12 +227,6 @@ def create_app(
         nonlocal discovery_task
         if not os.environ.get("APP_SECRET"):
             raise RuntimeError("APP_SECRET is required; register Cassini Live through AppAPI")
-        if not appapi.is_talk_provider(app_id):
-            LOGGER.info(
-                "Registered as %s: Talk's caption button does not reach this app; "
-                "captions start from the transcript panel",
-                app_id,
-            )
         transcriber.POOL = pool
         try:
             if production:

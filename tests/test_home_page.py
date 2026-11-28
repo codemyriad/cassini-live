@@ -27,14 +27,14 @@ def test_the_script_and_icon_are_served_fresh(headers):
 
 
 def test_the_script_names_the_app_it_is_served_by(headers):
-    for app_id in ("live_transcription", "cassini_live"):
-        app, _ = make_app(app_id=app_id)
-        headers["EX-APP-ID"] = app_id
-        script = TestClient(app).get("/ui/home.js", headers=headers).text
-        assert APP_ID_PLACEHOLDER.decode() not in script
-        # The bookmark's address and the page's own requests go through this app's proxy.
-        assert f"/apps/app_api/proxy/{app_id}/panel/panel.js" in script
-        assert "Live transcript" in script
+    app_id = "cassini_live"
+    app, _ = make_app(app_id=app_id)
+    headers["EX-APP-ID"] = app_id
+    script = TestClient(app).get("/ui/home.js", headers=headers).text
+    assert APP_ID_PLACEHOLDER.decode() not in script
+    # The bookmark's address and the page's own requests go through this app's proxy.
+    assert f"/apps/app_api/proxy/{app_id}/panel/panel.js" in script
+    assert "Live transcript" in script
 
 
 def test_the_routes_need_the_appapi_gateway():
