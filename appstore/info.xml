@@ -43,7 +43,7 @@ Nextcloud's Live Transcription app can stay installed; Talk's **Show captions** 
 ## Related
 
 Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassini), which records and transcribes Talk meetings.]]></description>
-  <version>0.11.2</version>
+  <version>0.11.3</version>
   <licence>agpl</licence>
   <author homepage="https://codemyriad.io">Codemyriad</author>
   <namespace>CassiniLive</namespace>
@@ -65,7 +65,7 @@ Cassini Live is a companion to [Cassini](https://apps.nextcloud.com/apps/gocassi
     <docker-install>
       <registry>ghcr.io</registry>
       <image>codemyriad/cassini-live</image>
-      <image-tag>0.11.2</image-tag>
+      <image-tag>0.11.3</image-tag>
     </docker-install>
     <environment-variables>
       <variable>
@@ -79,11 +79,6 @@ empty and enter it on the Cassini Live settings page after installation.</descri
         <name>CASSINI_TALK_HPB_URL</name>
         <display-name>HPB URL override (optional)</display-name>
         <description>Leave empty to discover from Talk. Override only when the container needs a different address. Can also be set on the Cassini Live settings page.</description>
-      </variable>
-      <variable>
-        <name>CASSINI_LIVE_DEBUG_VIDEO</name>
-        <display-name>Diagnostic video (optional)</display-name>
-        <description>Set to 1 to show aggregate server metrics as a video participant in the first captioned room. Visible to everyone there. One feed per server, 1 fps; stops under resource pressure. Default off. The admin-only diagnostics page shows the same without this option.</description>
       </variable>
     </environment-variables>
     <!-- Native caption endpoints (/api/v1/..., /capabilities) are server-to-server, never

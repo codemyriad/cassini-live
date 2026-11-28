@@ -11,7 +11,6 @@ anonymous numbers, never a room token, session or participant id.
 
 import copy
 import math
-from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -66,9 +65,7 @@ def redact(body: dict) -> dict:
     return {**body, "sample": sample}
 
 
-def create_router(
-    feed: DiagnosticFeed, membership: RoomMembership, video_status: Callable[[], dict]
-) -> APIRouter:
+def create_router(feed: DiagnosticFeed, membership: RoomMembership) -> APIRouter:
     router = APIRouter()
     assets = load_assets(STATIC, ASSETS)
     # The usual viewer is an administrator outside the call, polling once a second.
@@ -97,7 +94,6 @@ def create_router(
             "presence": PRESENCE_S,
             "names": member,
             **(body if member else redact(body)),
-            "video": video_status(),
         })
 
     @router.get("/diagnostics/")

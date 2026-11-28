@@ -1,5 +1,4 @@
-/* Cassini Live diagnostics page. Colours are the diagnostic video's palette
- * (cassini_live/diagnostic_video.py); a monitoring view, so dark unless the system asks
+/* Cassini Live diagnostics page. A monitoring view, so dark unless the system asks
  * for light. Served under `style-src 'self'`: no inline styles anywhere. */
 :root {
   color-scheme: dark;
@@ -33,10 +32,9 @@
 }
 
 /* Light: each state hue keeps at least 3:1 against the page and the panels (paused through
- * its edge, as in the video), and captioned (L* 33), lost (45), held (56) and the paused
- * fill (85) still differ in lightness, not only in hue. The lag figure turns from gold to
- * amber at the admit threshold: gold (L* 49, hue 95°) and amber (42, 76°) are ΔE 20 apart,
- * as the video's pair is. */
+ * its edge), and captioned (L* 33), lost (45), held (56) and the paused fill (85) still
+ * differ in lightness, not only in hue. The lag figure turns from gold to amber at the
+ * admit threshold: gold (L* 49, hue 95°) and amber (42, 76°) are ΔE 20 apart. */
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
@@ -228,8 +226,7 @@ h1 {
 
 body.waiting .pane { opacity: 0.55; }
 
-body.stale .pane > h2::after,
-body.stale .video::after {
+body.stale .pane > h2::after {
   content: " · stale";
   color: var(--amber);
 }
@@ -410,9 +407,8 @@ body.stale .video::after {
   font-size: var(--lane-font);
 }
 
-/* Over the lane's oldest end. The name gets a quarter of the band and the chip its padding
- * besides, as the video fits it (LANES_W // 4, then text + 16 px): a long name must not
- * hide the recent history. */
+/* Over the lane's oldest end. The name gets a quarter of the band and the chip its
+ * padding besides: a long name must not hide the recent history. */
 .lane-names {
   position: absolute;
   inset: 0 0 auto;
@@ -704,13 +700,6 @@ body.stale .video::after {
   gap: 8px;
 }
 .panel dd { margin: 0; }
-
-.video {
-  margin: 20px 0;
-  color: var(--tone);
-  font-family: var(--mono);
-  font-size: 0.85rem;
-}
 
 .page-footer {
   padding: 16px 0 24px;

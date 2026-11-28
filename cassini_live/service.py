@@ -10,7 +10,7 @@ from websockets.asyncio.client import connect
 
 from .config import websocket_url
 from .diagnostic_feed import DiagnosticFeed
-from .diagnostics import DiagnosticVideo, NameHolds
+from .diagnostics import NameHolds
 from .safety import ResourceRefused
 from .talk.client import SpreedClient
 from .talk.types import HPBSettings, SigConnectResult, SpreedClientException
@@ -35,9 +35,8 @@ class CaptionService:
         self.generation = 0
         self.closing = {}
         self.inflight = set()
-        # The video and the diagnostics page can both want one room's names.
+        # The diagnostics page's feed reads one room's names while a member watches.
         self.name_holds = NameHolds()
-        self.diagnostics = DiagnosticVideo(self, names=self.name_holds)
         self.diagnostic_feed = DiagnosticFeed(self, names=self.name_holds)
 
     async def discover(self, nc):
@@ -135,7 +134,6 @@ class CaptionService:
             # Transport close can call back while request() holds the room lock.
             # A synchronous dictionary removal here needs no second lock.
             async def closed(_token):
-                await self.diagnostics.stop(_token)
                 if self.clients.get(req.roomToken) is client:
                     self.clients.pop(req.roomToken, None)
 
@@ -150,7 +148,6 @@ class CaptionService:
                     if self.admission:
                         self.admission.require_ready()
                     await client.add_target(req.ncSessionId)
-                    self.diagnostics.start(req.roomToken)
                     self.diagnostic_feed.start()
             except BaseException:
                 if self.clients.get(req.roomToken) is client:
@@ -193,7 +190,6 @@ class CaptionService:
 
     async def stop_rooms(self):
         self.generation += 1
-        await self.diagnostics.stop()
         clients = list(self.clients.values())
         self.clients.clear()
         for client in clients:

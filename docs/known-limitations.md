@@ -1,6 +1,6 @@
 # Known limitations
 
-What Cassini Live does not do, or does only partly, as of 0.11.2 and the first
+What Cassini Live does not do, or does only partly, as of 0.11.3 and the first
 App Store release (not yet published). Each entry says who it affects and the
 workaround, if there is one. Add an entry when a limitation is found; remove it
 in the pull request that lifts it.
@@ -65,6 +65,3 @@ in the pull request that lifts it.
 - **After an out-of-memory kill or repeated engine crashes, captions stop**
   and come back automatically after a wait. A call that was interrupted may
   need captions turned off and on again.
-- **The optional diagnostic video is visible to everyone in the call.** It is
-  off by default; administrators can use the [diagnostics page](diagnostics-page.md)
-  instead.
