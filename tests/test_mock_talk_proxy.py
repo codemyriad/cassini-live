@@ -65,7 +65,7 @@ def build(participants=(ALICE_IN_CALL, BOB_IN_CALL)):
     rows = None if participants is None else list(participants)
     app = create_app(config, WorkerPool(2), service, nc_factory=lambda: FakeNc(rows, seen))
     app.state.safety.state = "ready"
-    app.state.native_api = NativeApi("live_transcription", over_http(app, hops))
+    app.state.native_api = NativeApi("cassini_live", over_http(app, hops))
     client = TestClient(app)
     client.hops = hops
     return client, service, seen
@@ -116,7 +116,7 @@ def test_sends_the_native_api_what_talk_sends(panel_headers):
             "AA-VERSION", "EX-APP-ID", "EX-APP-VERSION", "AUTHORIZATION-APP-API", "AA-REQUEST-ID"
         }
         assert base64.b64decode(sent["AUTHORIZATION-APP-API"]) == b"alice:test-exapp-secret"
-        assert (sent["EX-APP-ID"], sent["AA-VERSION"]) == ("live_transcription", "32.0.0")
+        assert (sent["EX-APP-ID"], sent["AA-VERSION"]) == ("cassini_live", "32.0.0")
         # Nothing of the browser's request travels on.
         assert not {"x-cassini-request", "cookie", "origin"} & {k.lower() for k in sent}
     assert enable["body"] == SENT
@@ -245,7 +245,7 @@ def test_reads_only_the_error_key_as_talk_does(panel_headers):
     async def detail_only(*_):
         return 500, {}, b'{"detail": "not where Talk looks"}'
 
-    client.app.state.native_api = NativeApi("live_transcription", detail_only)
+    client.app.state.native_api = NativeApi("cassini_live", detail_only)
     res = post(client, panel_headers)
     assert res.status_code == 500 and res.json() == {"detail": "Captions could not be changed"}
 
@@ -259,9 +259,9 @@ def test_gives_up_when_the_native_api_does_not_answer(panel_headers):
     async def down(*_):
         raise ConnectionRefusedError
 
-    client.app.state.native_api = NativeApi("live_transcription", never, timeout=0.05)
+    client.app.state.native_api = NativeApi("cassini_live", never, timeout=0.05)
     assert post(client, panel_headers).status_code == 504
-    client.app.state.native_api = NativeApi("live_transcription", down)
+    client.app.state.native_api = NativeApi("cassini_live", down)
     assert post(client, panel_headers).status_code == 502
 
 
@@ -347,7 +347,7 @@ def test_reaches_the_native_api_on_the_servers_own_socket(
 
     client, service, _ = build()
     app = client.app
-    app.state.native_api = NativeApi("live_transcription")
+    app.state.native_api = NativeApi("cassini_live")
     if behind_harp:
         # Short path: Unix socket paths are limited to about 100 bytes.
         import tempfile

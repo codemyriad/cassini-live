@@ -50,7 +50,7 @@ without them.
 For development, and until the first store release is published. The steps are
 those of the App Store install, except that the image is built locally and the
 app is registered from the manifest in the checkout. The image tag must match
-`appstore/info.xml`, here `ghcr.io/codemyriad/cassini-live:0.11.3`.
+`appinfo/info.xml`, here `ghcr.io/codemyriad/cassini-live:0.11.3`.
 
 1. Check that Talk calls work through the HPB. Obtain the HPB's internal secret.
 2. Build and tag the image on the Docker host used by your deploy daemon:
@@ -75,7 +75,7 @@ app is registered from the manifest in the checkout. The image tag must match
 
    ```sh
    occ app_api:app:register cassini_live DAEMON_NAME \
-       --info-xml /path/on/nextcloud/cassini-live/appstore/info.xml \
+       --info-xml /path/on/nextcloud/cassini-live/appinfo/info.xml \
        --env CASSINI_TALK_SIGNALING_INTERNAL_SECRET=YOUR_HPB_INTERNAL_SECRET \
        --wait-finish
    ```

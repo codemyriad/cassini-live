@@ -5,7 +5,7 @@
 ;(() => {
   const cfg = window.__REPLAY__
   const NONCE = (document.currentScript && document.currentScript.nonce) || 'replay-nonce'
-  const PANEL_SRC = '/index.php/apps/app_api/proxy/live_transcription/panel/panel.js'
+  const PANEL_SRC = '/index.php/apps/app_api/proxy/cassini_live/panel/panel.js'
   const TICK_MS = 250
   const $ = (id) => document.getElementById(id)
   const play = $('tr-play')

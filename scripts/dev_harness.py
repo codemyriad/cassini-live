@@ -30,7 +30,7 @@ DEFAULTS = {
     "hpb-secret": None,
     "admin-user": "admin",
     "admin-password": "admin",
-    "container": "nc_app_live_transcription",
+    "container": "nc_app_cassini_live",
     "daemon": "cassini_live_dev",
     "image": "cassini-live:dev",
     "aa-version": "5.0.0",

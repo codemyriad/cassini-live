@@ -32,9 +32,9 @@ def test_the_served_bundle_is_the_built_one(headers):
     served = get("/panel/panel.js", headers=headers).content
     from cassini_live.panel_page import STATIC
 
-    # The built bundle, with the app's id (conftest: live_transcription) filled in.
+    # The built bundle, with the app's id (conftest: cassini_live) filled in.
     built = (STATIC / "panel.js").read_bytes()
-    assert served == built.replace(b"__CASSINI_LIVE_APP_ID__", b"live_transcription")
+    assert served == built.replace(b"__CASSINI_LIVE_APP_ID__", b"cassini_live")
 
 
 def test_unknown_panel_paths_are_refused_with_headers(headers):
@@ -51,8 +51,8 @@ def test_panel_requires_the_appapi_gateway(headers):
     assert TestClient(app).get("/panel/panel.js").status_code == 401
 
 
-@pytest.mark.parametrize("app_id", ["cassini_live", "live_transcription"])
-def test_the_served_bundle_names_the_app_id_it_is_given(app_id):
+def test_the_served_bundle_names_the_app_id_it_is_given():
+    app_id = "cassini_live"
     assets = panel_page.load_assets(app_id)
     for name in ("panel.js",):
         built = (panel_page.STATIC / name).read_bytes()

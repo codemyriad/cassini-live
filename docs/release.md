@@ -6,7 +6,7 @@ what differs and the commands; Cassini's page has the full reasoning.
 
 A release ships two things, kept in lockstep by one version: the Docker image
 `ghcr.io/codemyriad/cassini-live:<version>` and the App Store package
-`cassini_live.tar.gz`. The git tag `v<version>` and both manifests'
+`cassini_live.tar.gz`. The git tag `v<version>` and the manifest's
 `<image-tag>` must equal it. CI enforces it.
 
 Before the first release, work through the [App Store checklist](appstore-checklist.md).
@@ -14,23 +14,17 @@ Before the first release, work through the [App Store checklist](appstore-checkl
 ## The manifest
 
 Cassini Live is released under the app id `cassini_live`, from
-`appstore/info.xml`. Talk sends its caption button only to Nextcloud's own Live
-Transcription app, so captions start from the transcript panel.
-
-The store package contains `appstore/info.xml` as `appinfo/info.xml`. The
-repository's own `appinfo/info.xml` is an older manifest, kept for a short
-time for installs made before the store release; it will be removed. Until
-then `scripts/check_manifest.py` keeps the two files' runtime
-sections (`<dependencies>`, `<external-app>`: image, deploy options, routes)
-identical, and both manifests' versions equal to `pyproject.toml` and
-`cassini_live/__init__.py`.
+`appinfo/info.xml`, the app's only manifest. Talk sends its caption button only
+to Nextcloud's own Live Transcription app, so captions start from the
+transcript panel. `scripts/check_manifest.py` keeps the manifest's version
+equal to `pyproject.toml` and `cassini_live/__init__.py`.
 
 ## Versions
 
-The version lives in five places, and the release scripts rewrite them together
+The version lives in four places, and the release scripts rewrite them together
 (`rv_write_release_version` in `scripts/lib-release-version.sh`):
 
-- `appinfo/info.xml` and `appstore/info.xml`: `<version>` and `<image-tag>`
+- `appinfo/info.xml`: `<version>` and `<image-tag>`
 - `pyproject.toml`: `[project] version`
 - `cassini_live/__init__.py`: `__version__`
 - `uv.lock`: the `cassini-live` package, in PEP 440 form (`0.12.0-alpha.1` is
@@ -73,7 +67,7 @@ your machine. The tag push starts two workflows:
    offline; no engine loads without cgroup limits) and tags them as one
    multi-arch image. A manual run of it pushes only `:sha-<commit>`, never a
    version.
-2. `release.yml` validates the tag and both manifests, builds and validates an
+2. `release.yml` validates the tag and the manifest, builds and validates an
    unsigned package, then waits for **one approval** in the `Release`
    environment. After approval it waits for the image, signs the package with
    `occ integrity:sign-app` in a throwaway Nextcloud container, creates the
@@ -120,15 +114,15 @@ pulls exactly that tag on install and update.
 
 ```bash
 ./scripts/test-release-tooling.sh                     # the release scripts' tests
-uv run python scripts/check_manifest.py               # manifests, versions, routes
+uv run python scripts/check_manifest.py               # manifest, versions, routes
 ./scripts/build-appstore-tarball.sh --version "$(./scripts/release-version.sh current)"
 ./scripts/validate-appstore-tarball.sh --version "$(./scripts/release-version.sh current)" \
   --tarball build/artifacts/appstore/cassini_live.tar.gz
 ```
 
 The store-schema step needs `xsltproc` and `xmllint`; without them the
-validator warns and skips it, and `check_manifest.py` still validates both
-manifests against the same schema.
+validator warns and skips it, and `check_manifest.py` still validates the
+manifest against the same schema.
 
 ## References
 

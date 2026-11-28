@@ -133,7 +133,7 @@ try {
   // admin only clicks the bookmarklet; it must auto-enable captions itself
   // The ExApp fills in its app id when it serves the bookmarklets (panel_page.py); this
   // reads the built one, so it fills in the id the harness registered.
-  const appId = process.env.CASSINI_LIVE_APP_ID || 'live_transcription'
+  const appId = process.env.CASSINI_LIVE_APP_ID || 'cassini_live'
   const code = decodeURIComponent((await readFile('/ui/dist/bookmarklet-inline.txt', 'utf8')).trim().slice('javascript:'.length))
     .replaceAll('__CASSINI_LIVE_APP_ID__', appId)
   await vpage.evaluate(code)

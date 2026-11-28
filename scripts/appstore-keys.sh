@@ -14,7 +14,7 @@
 #   #    "Register app" form on apps.nextcloud.com asks for.
 #   ./scripts/appstore-keys.sh register-signature ~/secure/cassini_live/cassini_live.key
 #
-# The app id defaults to appstore/info.xml's <id>; override with APP_ID.
+# The app id defaults to appinfo/info.xml's <id>; override with APP_ID.
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ USAGE
 main() {
   local cmd="${1:-}" app_id root
   root="$(cd "$SCRIPT_DIR/.." && pwd)"
-  app_id="${APP_ID:-$(rv_read_app_id "$root/appstore/info.xml")}"
+  app_id="${APP_ID:-$(rv_read_app_id "$root/appinfo/info.xml")}"
   case "$cmd" in
     csr)
       local dir="${2:?usage: $0 csr DIR}"

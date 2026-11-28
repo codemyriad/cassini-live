@@ -3,9 +3,9 @@
 All notable user-facing changes to Cassini Live will be documented in this file.
 
 This project follows semantic versioning for Nextcloud App Store releases. The
-version in both manifests (`appinfo/info.xml`, `appstore/info.xml`), their
-Docker image tag, `pyproject.toml`, `cassini_live/__init__.py` and the release
-archive must match; `scripts/check_manifest.py` checks it.
+version in the manifest (`appinfo/info.xml`), its Docker image tag,
+`pyproject.toml`, `cassini_live/__init__.py` and the release archive must
+match; `scripts/check_manifest.py` checks it.
 
 ## [Unreleased]
 
