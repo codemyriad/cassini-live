@@ -26,11 +26,11 @@ function talkStep(talk, status) {
 
 function limitsStep(host, safety, talkDone) {
   const set = Boolean(host?.cpuQuota) && Boolean(host?.memoryLimitBytes)
-  // Process and swap limits are only checked once Talk is connected; then the
-  // service names what is missing.
+  // A configuration refusal (for example Whistle under its CPU minimum) names itself.
   const refused = talkDone && safety?.state === 'blocked' && safety?.phase === 'configuration'
   const done = set && !refused
-  let detail = 'Give the container CPU, memory and process limits, and turn swap off. You do this on the server that runs the container.'
+  // Advised since D-930, not required: without limits captions run on a default budget.
+  let detail = 'Advised: give the container CPU, memory and process limits, and turn swap off, on the server that runs the container. Until then captions run on a default budget.'
   if (refused && safety.reason) detail = sentence(safety.reason)
   else if (done) detail = 'Limits are set.'
   return { id: 'limits', title: 'Set container limits', done, detail, action: 'limits-docs' }

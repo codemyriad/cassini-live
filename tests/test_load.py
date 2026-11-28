@@ -403,6 +403,7 @@ def test_status_shape_matches_the_design():
         "memoryHeadroomMiB",
         "memoryUsedMiB",
         "memoryLimitMiB",
+        "memoryLimitSource",
         "memoryStatAvailable",
         "pressureAvailable",
         "engineDuty",

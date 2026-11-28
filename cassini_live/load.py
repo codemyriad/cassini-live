@@ -478,6 +478,7 @@ class LoadGovernor:
             "memoryHeadroomMiB": headroom,
             "memoryUsedMiB": None if charged is None else charged // MIB,
             "memoryLimitMiB": None if not limit else int(limit / MIB),
+            "memoryLimitSource": self.sample.get("memoryBudgetSource"),
             "memoryStatAvailable": self.sample.get("memoryStatAvailable"),
             "pressureAvailable": self.sample.get("pressureAvailable"),
             "engineDuty": self.sample.get("engineDuty"),

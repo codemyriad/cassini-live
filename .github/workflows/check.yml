@@ -74,7 +74,39 @@ jobs:
       - run: >-
           docker run --rm --network none --entrypoint python cassini-live:test
           -c 'import needle; needle.Whistle(weights="/opt/whistle/whistle.cact"); print("Whistle ready offline")'
-      - name: Refuse to load an engine without finite cgroup limits
-        run: >-
-          docker run --rm --network none --entrypoint python cassini-live:test
-          -c 'import asyncio; from cassini_live.pool import WorkerPool; from cassini_live.capacity import CapacityAssessment; from cassini_live.safety import SafetyController; p=WorkerPool(2); s=SafetyController(p,CapacityAssessment(p)); asyncio.run(s.start()); assert s.state == "blocked" and not p.workers; print(s.status())'
+      # D-930: without cgroup limits the service runs on default budgets instead of
+      # blocking, and /status names the defaults as such.
+      - name: Load the engine on default budgets without cgroup limits
+        run: |
+          docker run --rm -i --network none --entrypoint python cassini-live:test - <<'EOF'
+          import asyncio
+
+          from cassini_live import catalog, engines
+          from cassini_live.capacity import CapacityAssessment
+          from cassini_live.config import Config
+          from cassini_live.resources import limits
+          from cassini_live.safety import SafetyController
+
+          async def main():
+              cpus = limits()["effectiveCpus"]
+              pool = engines.create_backend(
+                  "whistle",
+                  size=catalog.worker_ceiling("whistle", cpus),
+                  weights=Config.from_env().weights,
+                  threads=catalog.engine_threads(cpus),
+              )
+              controller = SafetyController(pool, CapacityAssessment(pool))
+              try:
+                  await controller.start()
+                  status = controller.status()
+                  budgets = status["budgets"]
+                  print(status["state"], status["reason"], budgets)
+                  assert status["state"] == "ready", status["reason"]
+                  assert budgets["cpuSource"] == "default", budgets
+                  assert budgets["memorySource"] == "default", budgets
+                  assert budgets["kernelLimits"]["cpus"] is None and pool.workers
+              finally:
+                  await controller.close()
+
+          asyncio.run(main())
+          EOF

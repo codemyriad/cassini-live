@@ -37,9 +37,12 @@ in the pull request that lifts it.
   deploy options where Nextcloud still offers them. Nextcloud 34 and later do
   not show deploy options when installing from the Apps page. A value set in
   deploy options takes precedence, and the settings page cannot change it.
-- **Linux with cgroup v2 and enforced CPU, memory and process limits, swap
-  off.** Without them Cassini Live stays blocked and does not load an engine.
-  See [install](install.md).
+- **Linux with cgroup v2; enforced CPU, memory and process limits with swap
+  off are advised.** Without them Cassini Live sizes itself from a default
+  budget (at most 4 CPUs and the engine's recommended memory, each capped at
+  half the host) and shows the command that sets the stronger kernel limits.
+  One exception blocks: Whistle needs 2 CPUs, which a 2-CPU host does not
+  spare by default. See [install](install.md).
 - **The Nemotron engines need outbound access to dist.gocassini.com** when an
   administrator chooses one: the models (about 450 MiB) are not in the image.
   Whistle, the default, runs offline.

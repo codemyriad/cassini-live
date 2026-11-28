@@ -174,9 +174,11 @@ def test_nemotron_start_fit_on_three_and_two_gib_and_unlimited(cgroup):
     assert resources.start_problem(cached, "nemotron-en") is None
     problem = resources.start_problem(fit_data(2048, 1500), "nemotron-en")
     assert problem == f"Not enough memory to load Nemotron English: {need} MiB needed, 548 MiB free"
-    assert resources.start_problem(fit_data(None, 300, 50), "nemotron-en") == (
-        "Set finite cgroup v2 memory limits"
-    )
+    # Without a kernel limit the D-930 default budget bounds the fit: the recommended
+    # 3 GiB alone, or half the host's RAM when that is smaller.
+    assert resources.start_problem(fit_data(None, 300, 50), "nemotron-en") is None
+    small_host = {**fit_data(None, 300, 50), "hostMemoryBytes": 3072 * MIB}
+    assert "Not enough memory" in resources.start_problem(small_host, "nemotron-en")
     assert "cannot be read" in resources.start_problem(
         {"memoryLimitBytes": 3 * GIB, "memoryCurrentBytes": None}, "nemotron-en"
     )
@@ -191,9 +193,8 @@ def test_whistle_start_fit_needs_192_mib_per_worker_still_to_start():
     assert resources.start_problem(fit_data(2048, 300, 100), "whistle", workers=4) is None
     assert resources.start_problem(fit_data(768, 300, 0), "whistle", workers=2) is None
     assert resources.start_problem(fit_data(768, 300, 0), "whistle", workers=3)
-    assert resources.start_problem(fit_data(None, 300, 0), "whistle") == (
-        "Set finite cgroup v2 memory limits"
-    )
+    # Without a kernel limit the default budget (2 GiB recommended) bounds the fit.
+    assert resources.start_problem(fit_data(None, 300, 0), "whistle") is None
 
 
 def test_reads_enforced_budget_and_refuses_missing_counters(tmp_path, monkeypatch):
@@ -248,3 +249,91 @@ def test_static_rules_block_and_half_host_rules_only_advise():
     assert resources.static_problem(greedy, 1) is None
     assert len(resources.advice(greedy)) == 3
     assert resources.advice(SAFE) == []
+
+
+def no_limits(affinity=8, host_gib=8):
+    """A bare store install: nothing enforced, usage still readable (D-930)."""
+    return {
+        "cpuQuotaCpus": None,
+        "affinityCpus": affinity,
+        "effectiveCpus": float(affinity),
+        "memoryLimitBytes": None,
+        "memoryCurrentBytes": 410 * MIB,
+        "memoryFileBytes": 0,
+        "memoryShmemBytes": 0,
+        "memoryStatAvailable": True,
+        "swapLimitBytes": None,
+        "pidsLimit": None,
+        "pidsCurrent": 20,
+        "hostMemoryBytes": host_gib * GIB,
+        "oomKills": 0,
+    }
+
+
+def test_missing_limits_run_on_default_budgets_instead_of_blocking():
+    data = resources.apply_budgets(no_limits(), "whistle")
+    assert data["cpuBudgetCpus"] == 4.0 and data["cpuBudgetSource"] == "default"
+    assert data["effectiveCpus"] == 4.0
+    assert data["memoryLimitBytes"] == 2048 * MIB  # Whistle's recommended 2 GiB
+    assert data["memoryBudgetSource"] == "default"
+    assert data["pidsBudget"] == 128 and data["pidsBudgetSource"] == "default"
+    assert resources.static_problem(no_limits(), 2, "whistle") is None
+    assert resources.static_problem(no_limits(), 1, "nemotron-en") is None
+    # Half the host caps both defaults: 4 CPUs on 8, 3 GiB of RAM on 6 for Nemotron.
+    nemotron = resources.apply_budgets(no_limits(host_gib=6), "nemotron-en")
+    assert nemotron["memoryLimitBytes"] == 3 * GIB
+
+
+def test_admin_set_limits_always_win_over_defaults():
+    # An administrator's explicit generous limits are honored, never re-capped (D-930:
+    # defaults only fill gaps, so a configured install keeps its behavior).
+    data = resources.apply_budgets(
+        {**no_limits(), "cpuQuotaCpus": 6.0, "memoryLimitBytes": 6 * GIB, "pidsLimit": 500},
+        "whistle",
+    )
+    assert data["cpuBudgetCpus"] == 6.0 and data["cpuBudgetSource"] == "kernel"
+    assert data["memoryLimitBytes"] == 6 * GIB and data["memoryBudgetSource"] == "kernel"
+    assert data["pidsBudget"] == 500 and data["pidsBudgetSource"] == "kernel"
+    # Idempotent, and a re-apply for another engine recomputes from the kernel values.
+    again = resources.apply_budgets(data, "nemotron-en")
+    assert again["memoryLimitBytes"] == 6 * GIB
+    assert resources.apply_budgets(resources.apply_budgets(no_limits(), "nemotron-en"),
+                                   "nemotron-en")["memoryLimitBytes"] == 3 * GIB
+
+
+def test_whistle_is_refused_below_its_cpu_minimum_only_on_a_default_budget():
+    # A 2-CPU host spares 1 CPU by default, under Whistle's 2-CPU minimum: refused with
+    # the fix named. An explicit 1-CPU quota keeps the pre-D-930 behavior (not blocked).
+    problem = resources.static_problem(no_limits(affinity=2), 1, "whistle")
+    assert "Whistle needs 2 CPUs" in problem and "docker update" in problem
+    explicit = {**no_limits(affinity=2), "cpuQuotaCpus": 1.0}
+    assert resources.static_problem(explicit, 1, "whistle") is None
+    # Nemotron's minimum is 1 CPU, so the same host runs it.
+    assert resources.static_problem(no_limits(affinity=2), 1, "nemotron-en") is None
+
+
+def test_advice_names_the_command_when_limits_are_missing():
+    notes = resources.advice(no_limits())
+    assert any("docker update" in note for note in notes)
+    assert any("swap" in note for note in notes)
+    # The applied snapshot carries the budget in memoryLimitBytes; advice still reads the
+    # kernel's values, so the budget itself is never advised against.
+    applied = resources.apply_budgets(no_limits(), "whistle")
+    assert resources.advice(applied) == notes
+
+
+def test_budget_watch_counts_and_never_acts():
+    watch = resources.BudgetWatch()
+    data = resources.apply_budgets(no_limits(), "whistle")
+    watch.tick(data)
+    over = {**data, "memoryCurrentBytes": 2100 * MIB, "pidsCurrent": 130,
+            "swapCurrentBytes": 10 * MIB}
+    watch.tick(over)
+    watch.tick({**over, "swapCurrentBytes": 20 * MIB})
+    status = watch.status()
+    assert status["memoryOverBudgetTicks"] == 2 and status["memoryPeakMiB"] == 2100
+    assert status["pidsHighTicks"] == 2 and status["pidsPeak"] == 130
+    assert status["swapGrewTicks"] == 1 and status["swapCurrentMiB"] == 20
+    # Unreadable inputs skip their signal rather than failing the tick.
+    watch.tick({"memoryLimitBytes": 2048 * MIB})
+    assert watch.status()["memoryOverBudgetTicks"] == 2
