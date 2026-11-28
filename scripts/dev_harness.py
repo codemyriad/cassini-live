@@ -230,14 +230,12 @@ class Harness:
         if self.registered and not self.existing:
             raise Failure("A caption provider is already registered without an owned container; "
                           "unregister the previous development installation explicitly first")
-        daemons = json.loads(self.occ("app_api:daemon:list", "--output=json"))
-        for daemon in daemons:
-            if daemon["name"] == cfg.daemon:
-                if (daemon["deploy_id"] != "manual-install" or daemon["protocol"] != "http"
-                        or daemon["host"] != cfg.container
-                        or daemon["deploy_config"]["nextcloud_url"] != cfg.nextcloud_url):
-                    raise Failure("Existing daemon does not match the supplied configuration")
-                self.daemon_exists = True
+        # app_api:daemon:list has no JSON output that works across the supported
+        # AppAPI majors (33 rejects --output; 35 prints prose for an empty
+        # list), so detect the script's daemon by name and replace it on deploy
+        # instead of verifying its configuration in place.
+        daemons = self.occ("app_api:daemon:list")
+        self.daemon_exists = bool(re.search(r"\b" + re.escape(cfg.daemon) + r"\b", daemons))
         print("Preflight passed: configured harness is running and available.", flush=True)
 
     def deploy(self):
@@ -247,11 +245,14 @@ class Harness:
         self.run(["docker", "build", "-t", cfg.image, str(ROOT)],
                  timeout=cfg.build_timeout, stream=True)
         print("Registering development daemon and starting the container", flush=True)
-        if not self.daemon_exists:
-            self.occ("app_api:daemon:register", cfg.daemon, "Cassini Live development",
-                     "manual-install", "http", cfg.container, cfg.nextcloud_url)
         if self.registered:
             self.occ("app_api:app:unregister", self.app["appid"], "--force")
+        # Re-register the owned daemon on every run so it always carries the
+        # supplied configuration; daemons under other names are never touched.
+        if self.daemon_exists:
+            self.occ("app_api:daemon:unregister", cfg.daemon)
+        self.occ("app_api:daemon:register", cfg.daemon, "Cassini Live development",
+                 "manual-install", "http", cfg.container, cfg.nextcloud_url)
         if self.existing:
             self.docker("rm", "-f", cfg.container)
         self.docker("volume", "create", cfg.volume)

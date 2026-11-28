@@ -106,8 +106,9 @@ the previous deployment running. Later failures leave resources available for
 inspection and retry; the script does not automatically roll back.
 
 An existing unowned container or caption provider causes an early failure.
-Cassini's `gocassini` recording ExApp remains separate. An existing daemon is
-reused only if its type, host, protocol and Nextcloud URL match the supplied values.
+Cassini's `gocassini` recording ExApp remains separate. The script's named
+daemon is re-registered with the supplied values on every run; daemons under
+other names are never touched.
 
 Secrets are not printed by the script. Prefer environment variables to CLI flags
 for credentials. Docker administrators can inspect container environment values.
